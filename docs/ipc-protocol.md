@@ -30,6 +30,17 @@ Current methods:
 - `turn/attach`
 - `turn/start`
 - `turn/interrupt`
+- `workstream/create`
+- `workstream/list`
+- `workstream/get`
+- `workunit/create`
+- `workunit/list`
+- `workunit/get`
+- `assignment/start`
+- `assignment/get`
+- `report/get`
+- `report/list_for_workunit`
+- `decision/apply`
 - `events/subscribe`
 
 ## Notifications
@@ -80,6 +91,18 @@ Additional query helpers now include:
 - `turn/attach`
 - `turns/recent`
 - `session/get_active`
+- `workstream/get`
+- `workunit/get`
+- `assignment/get`
+- `report/get`
+
+Current collaboration helpers now include:
+
+- `workstream/create`, `workstream/list`, `workstream/get`
+- `workunit/create`, `workunit/list`, `workunit/get`
+- `assignment/start`, `assignment/get`
+- `report/get`, `report/list_for_workunit`
+- `decision/apply`
 
 That gives new clients a deterministic bootstrap path before live notifications begin.
 
@@ -118,6 +141,13 @@ Current local consumers of this turn contract:
 - supervisor `turns list-active`
 - supervisor `turns get --thread ... --turn ...`
 - TUI turn-aware status/detail projections
+
+Current collaboration loop semantics:
+
+- `assignment/start` binds one work unit to one worker and one worker session
+- worker execution is Codex-backed, but the report is stored as an Orcas-owned object
+- `decision/apply` records the supervisor decision explicitly
+- `continue` and `redirect` create a new pending assignment for the same work unit rather than mutating one assignment forever
 
 ## Design Rules
 

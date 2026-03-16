@@ -167,6 +167,85 @@ impl OrcasIpcClient {
         Ok(())
     }
 
+    pub async fn workstream_create(
+        &self,
+        params: &ipc::WorkstreamCreateRequest,
+    ) -> OrcasResult<ipc::WorkstreamCreateResponse> {
+        self.request(ipc::methods::WORKSTREAM_CREATE, params).await
+    }
+
+    pub async fn workstream_list(&self) -> OrcasResult<ipc::WorkstreamListResponse> {
+        self.request(
+            ipc::methods::WORKSTREAM_LIST,
+            &ipc::WorkstreamListRequest::default(),
+        )
+        .await
+    }
+
+    pub async fn workstream_get(
+        &self,
+        params: &ipc::WorkstreamGetRequest,
+    ) -> OrcasResult<ipc::WorkstreamGetResponse> {
+        self.request(ipc::methods::WORKSTREAM_GET, params).await
+    }
+
+    pub async fn workunit_create(
+        &self,
+        params: &ipc::WorkunitCreateRequest,
+    ) -> OrcasResult<ipc::WorkunitCreateResponse> {
+        self.request(ipc::methods::WORKUNIT_CREATE, params).await
+    }
+
+    pub async fn workunit_list(
+        &self,
+        params: &ipc::WorkunitListRequest,
+    ) -> OrcasResult<ipc::WorkunitListResponse> {
+        self.request(ipc::methods::WORKUNIT_LIST, params).await
+    }
+
+    pub async fn workunit_get(
+        &self,
+        params: &ipc::WorkunitGetRequest,
+    ) -> OrcasResult<ipc::WorkunitGetResponse> {
+        self.request(ipc::methods::WORKUNIT_GET, params).await
+    }
+
+    pub async fn assignment_start(
+        &self,
+        params: &ipc::AssignmentStartRequest,
+    ) -> OrcasResult<ipc::AssignmentStartResponse> {
+        self.request(ipc::methods::ASSIGNMENT_START, params).await
+    }
+
+    pub async fn assignment_get(
+        &self,
+        params: &ipc::AssignmentGetRequest,
+    ) -> OrcasResult<ipc::AssignmentGetResponse> {
+        self.request(ipc::methods::ASSIGNMENT_GET, params).await
+    }
+
+    pub async fn report_get(
+        &self,
+        params: &ipc::ReportGetRequest,
+    ) -> OrcasResult<ipc::ReportGetResponse> {
+        self.request(ipc::methods::REPORT_GET, params).await
+    }
+
+    pub async fn report_list_for_workunit(
+        &self,
+        params: &ipc::ReportListForWorkunitRequest,
+    ) -> OrcasResult<ipc::ReportListForWorkunitResponse> {
+        self.request(ipc::methods::REPORT_LIST_FOR_WORKUNIT, params)
+            .await
+    }
+
+    pub async fn decision_apply(
+        &self,
+        params: &ipc::DecisionApplyRequest,
+    ) -> OrcasResult<ipc::DecisionApplyResponse> {
+        self.request(ipc::methods::DECISION_APPLY, params).await
+    }
+
     pub async fn subscribe_events(
         &self,
         include_snapshot: bool,

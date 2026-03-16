@@ -4,7 +4,8 @@ mod streaming;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use orcas_core::DecisionType;
 use tracing_subscriber::EnvFilter;
 
 use service::{RuntimeOverrides, SupervisorService};
@@ -61,6 +62,26 @@ enum SupervisorCommand {
         #[command(subcommand)]
         command: TurnsCommand,
     },
+    Workstreams {
+        #[command(subcommand)]
+        command: WorkstreamsCommand,
+    },
+    Workunits {
+        #[command(subcommand)]
+        command: WorkunitsCommand,
+    },
+    Assignments {
+        #[command(subcommand)]
+        command: AssignmentsCommand,
+    },
+    Reports {
+        #[command(subcommand)]
+        command: ReportsCommand,
+    },
+    Decisions {
+        #[command(subcommand)]
+        command: DecisionsCommand,
+    },
     Prompt(PromptArgs),
     Quickstart(QuickstartArgs),
 }
@@ -90,6 +111,37 @@ enum ThreadsCommand {
 enum TurnsCommand {
     ListActive,
     Get(TurnRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkstreamsCommand {
+    Create(WorkstreamCreateArgs),
+    List,
+    Get(WorkstreamRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkunitsCommand {
+    Create(WorkunitCreateArgs),
+    List(WorkunitListArgs),
+    Get(WorkunitRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AssignmentsCommand {
+    Start(AssignmentStartArgs),
+    Get(AssignmentRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ReportsCommand {
+    Get(ReportRefArgs),
+    ListForWorkunit(WorkunitRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum DecisionsCommand {
+    Apply(DecisionApplyArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -124,6 +176,101 @@ struct TurnRefArgs {
     thread: String,
     #[arg(long)]
     turn: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct WorkstreamCreateArgs {
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    objective: String,
+    #[arg(long)]
+    priority: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct WorkstreamRefArgs {
+    #[arg(long)]
+    workstream: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct WorkunitCreateArgs {
+    #[arg(long)]
+    workstream: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    task: String,
+    #[arg(long = "dependency")]
+    dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct WorkunitListArgs {
+    #[arg(long)]
+    workstream: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct WorkunitRefArgs {
+    #[arg(long)]
+    workunit: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct AssignmentStartArgs {
+    #[arg(long)]
+    workunit: String,
+    #[arg(long)]
+    worker: String,
+    #[arg(long)]
+    instructions: Option<String>,
+    #[arg(long)]
+    worker_kind: Option<String>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct AssignmentRefArgs {
+    #[arg(long)]
+    assignment: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ReportRefArgs {
+    #[arg(long)]
+    report: String,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DecisionTypeArg {
+    Accept,
+    Continue,
+    Redirect,
+    MarkComplete,
+    EscalateToHuman,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DecisionApplyArgs {
+    #[arg(long)]
+    workunit: String,
+    #[arg(long)]
+    rationale: String,
+    #[arg(long)]
+    report: Option<String>,
+    #[arg(long = "type", value_enum)]
+    decision_type: DecisionTypeArg,
+    #[arg(long)]
+    instructions: Option<String>,
+    #[arg(long)]
+    worker: Option<String>,
+    #[arg(long)]
+    worker_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -191,6 +338,68 @@ async fn main() -> Result<()> {
             SupervisorCommand::Turns { command } => match command {
                 TurnsCommand::ListActive => service.turns_list_active().await?,
                 TurnsCommand::Get(args) => service.turn_get(&args.thread, &args.turn).await?,
+            },
+            SupervisorCommand::Workstreams { command } => match command {
+                WorkstreamsCommand::Create(args) => {
+                    service
+                        .workstream_create(args.title, args.objective, args.priority)
+                        .await?;
+                }
+                WorkstreamsCommand::List => service.workstream_list().await?,
+                WorkstreamsCommand::Get(args) => service.workstream_get(&args.workstream).await?,
+            },
+            SupervisorCommand::Workunits { command } => match command {
+                WorkunitsCommand::Create(args) => {
+                    service
+                        .workunit_create(&args.workstream, args.title, args.task, args.dependencies)
+                        .await?;
+                }
+                WorkunitsCommand::List(args) => {
+                    service.workunit_list(args.workstream.as_deref()).await?;
+                }
+                WorkunitsCommand::Get(args) => service.workunit_get(&args.workunit).await?,
+            },
+            SupervisorCommand::Assignments { command } => match command {
+                AssignmentsCommand::Start(args) => {
+                    service
+                        .assignment_start(
+                            &args.workunit,
+                            &args.worker,
+                            args.instructions,
+                            args.worker_kind,
+                            args.cwd,
+                            args.model,
+                        )
+                        .await?;
+                }
+                AssignmentsCommand::Get(args) => service.assignment_get(&args.assignment).await?,
+            },
+            SupervisorCommand::Reports { command } => match command {
+                ReportsCommand::Get(args) => service.report_get(&args.report).await?,
+                ReportsCommand::ListForWorkunit(args) => {
+                    service.report_list_for_workunit(&args.workunit).await?;
+                }
+            },
+            SupervisorCommand::Decisions { command } => match command {
+                DecisionsCommand::Apply(args) => {
+                    service
+                        .decision_apply(
+                            &args.workunit,
+                            args.report,
+                            match args.decision_type {
+                                DecisionTypeArg::Accept => DecisionType::Accept,
+                                DecisionTypeArg::Continue => DecisionType::Continue,
+                                DecisionTypeArg::Redirect => DecisionType::Redirect,
+                                DecisionTypeArg::MarkComplete => DecisionType::MarkComplete,
+                                DecisionTypeArg::EscalateToHuman => DecisionType::EscalateToHuman,
+                            },
+                            args.rationale,
+                            args.instructions,
+                            args.worker,
+                            args.worker_kind,
+                        )
+                        .await?;
+                }
             },
             SupervisorCommand::Prompt(args) => {
                 let _ = service.prompt(&args.thread, &args.text).await?;

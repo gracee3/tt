@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::collaboration::{
+    Assignment, Decision, DecisionType, Report, WorkUnit, Worker, WorkerSession, Workstream,
+};
 use crate::events::ConnectionState;
 
 pub mod methods {
@@ -23,6 +26,17 @@ pub mod methods {
     pub const TURN_ATTACH: &str = "turn/attach";
     pub const TURN_START: &str = "turn/start";
     pub const TURN_INTERRUPT: &str = "turn/interrupt";
+    pub const WORKSTREAM_CREATE: &str = "workstream/create";
+    pub const WORKSTREAM_LIST: &str = "workstream/list";
+    pub const WORKSTREAM_GET: &str = "workstream/get";
+    pub const WORKUNIT_CREATE: &str = "workunit/create";
+    pub const WORKUNIT_LIST: &str = "workunit/list";
+    pub const WORKUNIT_GET: &str = "workunit/get";
+    pub const ASSIGNMENT_START: &str = "assignment/start";
+    pub const ASSIGNMENT_GET: &str = "assignment/get";
+    pub const REPORT_GET: &str = "report/get";
+    pub const REPORT_LIST_FOR_WORKUNIT: &str = "report/list_for_workunit";
+    pub const DECISION_APPLY: &str = "decision/apply";
     pub const EVENTS_SUBSCRIBE: &str = "events/subscribe";
     pub const EVENTS_NOTIFICATION: &str = "events/notification";
 }
@@ -383,4 +397,141 @@ pub struct TurnStartResponse {
 pub struct TurnInterruptRequest {
     pub thread_id: String,
     pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamCreateRequest {
+    pub title: String,
+    pub objective: String,
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamCreateResponse {
+    pub workstream: Workstream,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkstreamListRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamListResponse {
+    pub workstreams: Vec<Workstream>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamGetRequest {
+    pub workstream_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamGetResponse {
+    pub workstream: Workstream,
+    pub work_units: Vec<WorkUnit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkunitCreateRequest {
+    pub workstream_id: String,
+    pub title: String,
+    pub task_statement: String,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkunitCreateResponse {
+    pub work_unit: WorkUnit,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkunitListRequest {
+    pub workstream_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkunitListResponse {
+    pub work_units: Vec<WorkUnit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkunitGetRequest {
+    pub work_unit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkunitGetResponse {
+    pub work_unit: WorkUnit,
+    pub assignments: Vec<Assignment>,
+    pub reports: Vec<Report>,
+    pub decisions: Vec<Decision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentStartRequest {
+    pub work_unit_id: String,
+    pub worker_id: String,
+    pub worker_kind: Option<String>,
+    pub instructions: Option<String>,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentStartResponse {
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentGetRequest {
+    pub assignment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentGetResponse {
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Option<Report>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportGetRequest {
+    pub report_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportGetResponse {
+    pub report: Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportListForWorkunitRequest {
+    pub work_unit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportListForWorkunitResponse {
+    pub reports: Vec<Report>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionApplyRequest {
+    pub work_unit_id: String,
+    pub report_id: Option<String>,
+    pub decision_type: DecisionType,
+    pub rationale: String,
+    pub instructions: Option<String>,
+    pub worker_id: Option<String>,
+    pub worker_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionApplyResponse {
+    pub decision: Decision,
+    pub work_unit: WorkUnit,
+    pub next_assignment: Option<Assignment>,
 }

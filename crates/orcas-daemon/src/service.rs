@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::{TimeZone, Utc};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -12,6 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc};
 use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use orcas_codex::types;
 use orcas_codex::{
@@ -24,8 +26,12 @@ use orcas_core::jsonrpc::{
     JsonRpcResponse,
 };
 use orcas_core::{
-    AppConfig, AppPaths, CodexConnectionMode, ConnectionState, EventEnvelope, JsonSessionStore,
-    OrcasError, OrcasEvent, OrcasResult, OrcasSessionStore, ThreadMetadata,
+    AppConfig, AppPaths, Assignment, AssignmentStatus, CodexConnectionMode, CollaborationState,
+    ConnectionState, Decision, DecisionType, EventEnvelope, JsonSessionStore, OrcasError,
+    OrcasEvent, OrcasResult, OrcasSessionStore, Report, ReportConfidence, ReportDisposition,
+    ReportParseStatus, ThreadMetadata, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
+    WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus, Workstream,
+    WorkstreamStatus,
 };
 
 use crate::process::{
@@ -43,6 +49,7 @@ struct DaemonState {
     threads: HashMap<String, ipc::ThreadView>,
     turns: HashMap<TurnKey, ipc::TurnStateView>,
     recent_thread_id: Option<String>,
+    collaboration: CollaborationState,
 }
 
 impl Default for DaemonState {
@@ -57,8 +64,32 @@ impl Default for DaemonState {
             threads: HashMap::new(),
             turns: HashMap::new(),
             recent_thread_id: None,
+            collaboration: CollaborationState::default(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkerReportPayload {
+    disposition: String,
+    summary: String,
+    findings: Vec<String>,
+    blockers: Vec<String>,
+    questions: Vec<String>,
+    recommended_next_actions: Vec<String>,
+    confidence: String,
+}
+
+#[derive(Debug)]
+struct ParsedWorkerReport {
+    disposition: ReportDisposition,
+    summary: String,
+    findings: Vec<String>,
+    blockers: Vec<String>,
+    questions: Vec<String>,
+    recommended_next_actions: Vec<String>,
+    confidence: ReportConfidence,
+    parse_status: ReportParseStatus,
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -224,6 +255,7 @@ impl OrcasDaemonService {
             .values()
             .max_by_key(|thread| thread.summary.updated_at)
             .map(|thread| thread.summary.id.clone());
+        state.collaboration = stored.collaboration;
         Ok(())
     }
 
@@ -395,6 +427,57 @@ impl OrcasDaemonService {
                     Self::decode_params(request.params.clone())?;
                 self.turn_interrupt(params).await?;
                 serde_json::to_value(ipc::Empty::default())?
+            }
+            ipc::methods::WORKSTREAM_CREATE => {
+                let params: ipc::WorkstreamCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workstream_create(params).await?)?
+            }
+            ipc::methods::WORKSTREAM_LIST => {
+                let _: ipc::WorkstreamListRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workstream_list().await?)?
+            }
+            ipc::methods::WORKSTREAM_GET => {
+                let params: ipc::WorkstreamGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workstream_get(params).await?)?
+            }
+            ipc::methods::WORKUNIT_CREATE => {
+                let params: ipc::WorkunitCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workunit_create(params).await?)?
+            }
+            ipc::methods::WORKUNIT_LIST => {
+                let params: ipc::WorkunitListRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workunit_list(params).await?)?
+            }
+            ipc::methods::WORKUNIT_GET => {
+                let params: ipc::WorkunitGetRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.workunit_get(params).await?)?
+            }
+            ipc::methods::ASSIGNMENT_START => {
+                let params: ipc::AssignmentStartRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.assignment_start(params).await?)?
+            }
+            ipc::methods::ASSIGNMENT_GET => {
+                let params: ipc::AssignmentGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.assignment_get(params).await?)?
+            }
+            ipc::methods::REPORT_GET => {
+                let params: ipc::ReportGetRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.report_get(params).await?)?
+            }
+            ipc::methods::REPORT_LIST_FOR_WORKUNIT => {
+                let params: ipc::ReportListForWorkunitRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.report_list_for_workunit(params).await?)?
+            }
+            ipc::methods::DECISION_APPLY => {
+                let params: ipc::DecisionApplyRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.decision_apply(params).await?)?
             }
             ipc::methods::EVENTS_SUBSCRIBE => {
                 let params: ipc::EventsSubscribeRequest =
@@ -730,6 +813,651 @@ impl OrcasDaemonService {
         Ok(())
     }
 
+    async fn workstream_create(
+        &self,
+        params: ipc::WorkstreamCreateRequest,
+    ) -> OrcasResult<ipc::WorkstreamCreateResponse> {
+        let workstream = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let workstream = Workstream {
+                id: Self::new_object_id("ws"),
+                title: params.title,
+                objective: params.objective,
+                status: WorkstreamStatus::Active,
+                priority: params.priority.unwrap_or_else(|| "normal".to_string()),
+                created_at: now,
+                updated_at: now,
+            };
+            state
+                .collaboration
+                .workstreams
+                .insert(workstream.id.clone(), workstream.clone());
+            workstream
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::WorkstreamCreateResponse { workstream })
+    }
+
+    async fn workstream_list(&self) -> OrcasResult<ipc::WorkstreamListResponse> {
+        let mut workstreams = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .workstreams
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        workstreams.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ipc::WorkstreamListResponse { workstreams })
+    }
+
+    async fn workstream_get(
+        &self,
+        params: ipc::WorkstreamGetRequest,
+    ) -> OrcasResult<ipc::WorkstreamGetResponse> {
+        let state = self.state.read().await;
+        let workstream = state
+            .collaboration
+            .workstreams
+            .get(&params.workstream_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown workstream `{}`", params.workstream_id))
+            })?;
+        let mut work_units = state
+            .collaboration
+            .work_units
+            .values()
+            .filter(|work_unit| work_unit.workstream_id == params.workstream_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        work_units.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ipc::WorkstreamGetResponse {
+            workstream,
+            work_units,
+        })
+    }
+
+    async fn workunit_create(
+        &self,
+        params: ipc::WorkunitCreateRequest,
+    ) -> OrcasResult<ipc::WorkunitCreateResponse> {
+        let work_unit = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            if !state
+                .collaboration
+                .workstreams
+                .contains_key(&params.workstream_id)
+            {
+                return Err(OrcasError::Protocol(format!(
+                    "unknown workstream `{}`",
+                    params.workstream_id
+                )));
+            }
+            for dependency in &params.dependencies {
+                if !state.collaboration.work_units.contains_key(dependency) {
+                    return Err(OrcasError::Protocol(format!(
+                        "unknown dependency work unit `{dependency}`"
+                    )));
+                }
+            }
+
+            let status = if Self::dependencies_satisfied(&state.collaboration, &params.dependencies)
+            {
+                WorkUnitStatus::Ready
+            } else {
+                WorkUnitStatus::Blocked
+            };
+            let work_unit = WorkUnit {
+                id: Self::new_object_id("wu"),
+                workstream_id: params.workstream_id.clone(),
+                title: params.title,
+                task_statement: params.task_statement,
+                status,
+                dependencies: params.dependencies,
+                latest_report_id: None,
+                current_assignment_id: None,
+                created_at: now,
+                updated_at: now,
+            };
+            state
+                .collaboration
+                .work_units
+                .insert(work_unit.id.clone(), work_unit.clone());
+            if let Some(workstream) = state
+                .collaboration
+                .workstreams
+                .get_mut(&params.workstream_id)
+            {
+                workstream.updated_at = now;
+            }
+            Self::refresh_workstream_statuses(&mut state.collaboration);
+            work_unit
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::WorkunitCreateResponse { work_unit })
+    }
+
+    async fn workunit_list(
+        &self,
+        params: ipc::WorkunitListRequest,
+    ) -> OrcasResult<ipc::WorkunitListResponse> {
+        let state = self.state.read().await;
+        let mut work_units = state
+            .collaboration
+            .work_units
+            .values()
+            .filter(|work_unit| {
+                params
+                    .workstream_id
+                    .as_ref()
+                    .map(|workstream_id| &work_unit.workstream_id == workstream_id)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        work_units.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ipc::WorkunitListResponse { work_units })
+    }
+
+    async fn workunit_get(
+        &self,
+        params: ipc::WorkunitGetRequest,
+    ) -> OrcasResult<ipc::WorkunitGetResponse> {
+        let state = self.state.read().await;
+        let work_unit = state
+            .collaboration
+            .work_units
+            .get(&params.work_unit_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown work unit `{}`", params.work_unit_id))
+            })?;
+        let mut assignments = state
+            .collaboration
+            .assignments
+            .values()
+            .filter(|assignment| assignment.work_unit_id == params.work_unit_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        assignments.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut reports = state
+            .collaboration
+            .reports
+            .values()
+            .filter(|report| report.work_unit_id == params.work_unit_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        reports.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut decisions = state
+            .collaboration
+            .decisions
+            .values()
+            .filter(|decision| decision.work_unit_id == params.work_unit_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        decisions.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ipc::WorkunitGetResponse {
+            work_unit,
+            assignments,
+            reports,
+            decisions,
+        })
+    }
+
+    async fn assignment_start(
+        &self,
+        params: ipc::AssignmentStartRequest,
+    ) -> OrcasResult<ipc::AssignmentStartResponse> {
+        let session_model = params.model.clone();
+        let session_cwd = params.cwd.clone();
+        let (assignment_id, worker_id, worker_session_id) = self.prepare_assignment(params).await?;
+        let worker_session = self
+            .ensure_worker_session_thread(&worker_session_id, session_model, session_cwd)
+            .await?;
+        let thread_id = worker_session.thread_id.clone().ok_or_else(|| {
+            OrcasError::Protocol("worker session has no backing thread".to_string())
+        })?;
+
+        let instructions = {
+            let state = self.state.read().await;
+            let assignment = state
+                .collaboration
+                .assignments
+                .get(&assignment_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                })?;
+            assignment.instructions.clone()
+        };
+
+        let prompt = Self::build_worker_prompt(&instructions);
+        let turn = self
+            .turn_start(ipc::TurnStartRequest {
+                thread_id: thread_id.clone(),
+                text: prompt,
+                cwd: None,
+                model: None,
+            })
+            .await?;
+
+        {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let work_unit_id = state
+                .collaboration
+                .assignments
+                .get(&assignment_id)
+                .map(|assignment| assignment.work_unit_id.clone())
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                })?;
+            if let Some(assignment) = state.collaboration.assignments.get_mut(&assignment_id) {
+                assignment.status = AssignmentStatus::Running;
+                assignment.updated_at = now;
+            }
+            if let Some(worker) = state.collaboration.workers.get_mut(&worker_id) {
+                worker.status = WorkerStatus::Busy;
+                worker.current_assignment_id = Some(assignment_id.clone());
+            }
+            if let Some(session) = state
+                .collaboration
+                .worker_sessions
+                .get_mut(&worker_session_id)
+            {
+                session.active_turn_id = Some(turn.turn_id.clone());
+                session.runtime_status = WorkerSessionRuntimeStatus::Running;
+                session.attachability = WorkerSessionAttachability::Attachable;
+                session.updated_at = now;
+            }
+            if let Some(work_unit) = state.collaboration.work_units.get_mut(&work_unit_id) {
+                work_unit.status = WorkUnitStatus::Running;
+                work_unit.updated_at = now;
+            }
+        }
+        self.persist_collaboration_state().await?;
+
+        let turn_state = self
+            .wait_for_turn_terminal(&thread_id, &turn.turn_id)
+            .await?;
+        let raw_output = self
+            .raw_output_for_turn(&thread_id, &turn.turn_id)
+            .await
+            .unwrap_or_default();
+        let parsed_report = Self::parse_worker_report(&raw_output);
+        let report = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let assignment = state
+                .collaboration
+                .assignments
+                .get_mut(&assignment_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                })?;
+            let work_unit_id = assignment.work_unit_id.clone();
+            assignment.status = match turn_state.lifecycle {
+                ipc::TurnLifecycleState::Interrupted => AssignmentStatus::Interrupted,
+                ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
+                    AssignmentStatus::Lost
+                }
+                _ => AssignmentStatus::AwaitingDecision,
+            };
+            assignment.updated_at = now;
+
+            let report = Report {
+                id: Self::new_object_id("report"),
+                work_unit_id: work_unit_id.clone(),
+                assignment_id: assignment_id.clone(),
+                worker_id: worker_id.clone(),
+                disposition: parsed_report.disposition,
+                summary: parsed_report.summary,
+                findings: parsed_report.findings,
+                blockers: parsed_report.blockers,
+                questions: parsed_report.questions,
+                recommended_next_actions: parsed_report.recommended_next_actions,
+                confidence: parsed_report.confidence,
+                raw_output,
+                parse_status: parsed_report.parse_status,
+                created_at: now,
+            };
+            state
+                .collaboration
+                .reports
+                .insert(report.id.clone(), report.clone());
+            if let Some(work_unit) = state.collaboration.work_units.get_mut(&work_unit_id) {
+                work_unit.status = WorkUnitStatus::AwaitingDecision;
+                work_unit.latest_report_id = Some(report.id.clone());
+                work_unit.current_assignment_id = Some(assignment_id.clone());
+                work_unit.updated_at = now;
+            }
+            if let Some(worker) = state.collaboration.workers.get_mut(&worker_id) {
+                worker.status = WorkerStatus::Idle;
+                worker.current_assignment_id = None;
+            }
+            if let Some(session) = state
+                .collaboration
+                .worker_sessions
+                .get_mut(&worker_session_id)
+            {
+                session.active_turn_id = None;
+                session.runtime_status = match turn_state.lifecycle {
+                    ipc::TurnLifecycleState::Interrupted => WorkerSessionRuntimeStatus::Interrupted,
+                    ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
+                        WorkerSessionRuntimeStatus::Lost
+                    }
+                    _ => WorkerSessionRuntimeStatus::Completed,
+                };
+                session.attachability = if turn_state.attachable {
+                    WorkerSessionAttachability::Attachable
+                } else {
+                    WorkerSessionAttachability::NotAttachable
+                };
+                session.updated_at = now;
+            }
+            Self::refresh_workstream_statuses(&mut state.collaboration);
+            report
+        };
+        self.persist_collaboration_state().await?;
+
+        let (assignment, worker, worker_session) = {
+            let state = self.state.read().await;
+            (
+                state
+                    .collaboration
+                    .assignments
+                    .get(&assignment_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                    })?,
+                state
+                    .collaboration
+                    .workers
+                    .get(&worker_id)
+                    .cloned()
+                    .ok_or_else(|| OrcasError::Protocol(format!("unknown worker `{worker_id}`")))?,
+                state
+                    .collaboration
+                    .worker_sessions
+                    .get(&worker_session_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!(
+                            "unknown worker session `{worker_session_id}`"
+                        ))
+                    })?,
+            )
+        };
+        Ok(ipc::AssignmentStartResponse {
+            assignment,
+            worker,
+            worker_session,
+            report,
+        })
+    }
+
+    async fn assignment_get(
+        &self,
+        params: ipc::AssignmentGetRequest,
+    ) -> OrcasResult<ipc::AssignmentGetResponse> {
+        let state = self.state.read().await;
+        let assignment = state
+            .collaboration
+            .assignments
+            .get(&params.assignment_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown assignment `{}`", params.assignment_id))
+            })?;
+        let worker = state
+            .collaboration
+            .workers
+            .get(&assignment.worker_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown worker `{}`", assignment.worker_id))
+            })?;
+        let worker_session = state
+            .collaboration
+            .worker_sessions
+            .get(&assignment.worker_session_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown worker session `{}`",
+                    assignment.worker_session_id
+                ))
+            })?;
+        let report = state
+            .collaboration
+            .reports
+            .values()
+            .find(|report| report.assignment_id == params.assignment_id)
+            .cloned();
+        Ok(ipc::AssignmentGetResponse {
+            assignment,
+            worker,
+            worker_session,
+            report,
+        })
+    }
+
+    async fn report_get(
+        &self,
+        params: ipc::ReportGetRequest,
+    ) -> OrcasResult<ipc::ReportGetResponse> {
+        let report = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .reports
+            .get(&params.report_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown report `{}`", params.report_id))
+            })?;
+        Ok(ipc::ReportGetResponse { report })
+    }
+
+    async fn report_list_for_workunit(
+        &self,
+        params: ipc::ReportListForWorkunitRequest,
+    ) -> OrcasResult<ipc::ReportListForWorkunitResponse> {
+        let mut reports = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .reports
+            .values()
+            .filter(|report| report.work_unit_id == params.work_unit_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        reports.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(ipc::ReportListForWorkunitResponse { reports })
+    }
+
+    async fn decision_apply(
+        &self,
+        params: ipc::DecisionApplyRequest,
+    ) -> OrcasResult<ipc::DecisionApplyResponse> {
+        let response = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let work_unit = state
+                .collaboration
+                .work_units
+                .get(&params.work_unit_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown work unit `{}`", params.work_unit_id))
+                })?;
+            let current_assignment_id = work_unit.current_assignment_id.clone();
+            if let Some(assignment_id) = current_assignment_id.as_ref()
+                && let Some(assignment) = state.collaboration.assignments.get_mut(assignment_id)
+            {
+                assignment.status = AssignmentStatus::Closed;
+                assignment.updated_at = now;
+            }
+
+            let report_id = params
+                .report_id
+                .clone()
+                .or(work_unit.latest_report_id.clone());
+            let decision = Decision {
+                id: Self::new_object_id("decision"),
+                work_unit_id: params.work_unit_id.clone(),
+                report_id,
+                decision_type: params.decision_type,
+                rationale: params.rationale,
+                created_at: now,
+            };
+            state
+                .collaboration
+                .decisions
+                .insert(decision.id.clone(), decision.clone());
+
+            let next_assignment = match params.decision_type {
+                DecisionType::Accept => {
+                    if let Some(work_unit) =
+                        state.collaboration.work_units.get_mut(&params.work_unit_id)
+                    {
+                        work_unit.status = WorkUnitStatus::Accepted;
+                        work_unit.current_assignment_id = None;
+                        work_unit.updated_at = now;
+                    }
+                    None
+                }
+                DecisionType::MarkComplete => {
+                    if let Some(work_unit) =
+                        state.collaboration.work_units.get_mut(&params.work_unit_id)
+                    {
+                        work_unit.status = WorkUnitStatus::Completed;
+                        work_unit.current_assignment_id = None;
+                        work_unit.updated_at = now;
+                    }
+                    None
+                }
+                DecisionType::EscalateToHuman => {
+                    if let Some(work_unit) =
+                        state.collaboration.work_units.get_mut(&params.work_unit_id)
+                    {
+                        work_unit.status = WorkUnitStatus::NeedsHuman;
+                        work_unit.current_assignment_id = None;
+                        work_unit.updated_at = now;
+                    }
+                    None
+                }
+                DecisionType::Continue | DecisionType::Redirect => {
+                    let source_assignment = current_assignment_id
+                        .as_ref()
+                        .and_then(|assignment_id| {
+                            state.collaboration.assignments.get(assignment_id)
+                        })
+                        .cloned()
+                        .ok_or_else(|| {
+                            OrcasError::Protocol(
+                                "continue/redirect requires an existing assignment".to_string(),
+                            )
+                        })?;
+                    let worker_id = params
+                        .worker_id
+                        .clone()
+                        .unwrap_or_else(|| source_assignment.worker_id.clone());
+                    let worker_session_id = Self::ensure_worker_and_session_records(
+                        &mut state.collaboration,
+                        &worker_id,
+                        params
+                            .worker_kind
+                            .clone()
+                            .unwrap_or_else(|| "codex".to_string()),
+                    );
+                    let instructions = params
+                        .instructions
+                        .clone()
+                        .unwrap_or_else(|| source_assignment.instructions.clone());
+                    let next_assignment = Assignment {
+                        id: Self::new_object_id("assignment"),
+                        work_unit_id: params.work_unit_id.clone(),
+                        worker_id,
+                        worker_session_id,
+                        instructions,
+                        status: AssignmentStatus::Created,
+                        attempt_number: source_assignment.attempt_number + 1,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    state
+                        .collaboration
+                        .assignments
+                        .insert(next_assignment.id.clone(), next_assignment.clone());
+                    if let Some(work_unit) =
+                        state.collaboration.work_units.get_mut(&params.work_unit_id)
+                    {
+                        work_unit.status = WorkUnitStatus::Ready;
+                        work_unit.current_assignment_id = Some(next_assignment.id.clone());
+                        work_unit.updated_at = now;
+                    }
+                    Some(next_assignment)
+                }
+            };
+
+            Self::refresh_blocked_work_units(&mut state.collaboration);
+            Self::refresh_workstream_statuses(&mut state.collaboration);
+            let work_unit = state
+                .collaboration
+                .work_units
+                .get(&params.work_unit_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown work unit `{}`", params.work_unit_id))
+                })?;
+            ipc::DecisionApplyResponse {
+                decision,
+                work_unit,
+                next_assignment,
+            }
+        };
+        self.persist_collaboration_state().await?;
+        Ok(response)
+    }
+
     async fn events_subscribe(
         &self,
         params: ipc::EventsSubscribeRequest,
@@ -778,6 +1506,208 @@ impl OrcasDaemonService {
         })
     }
 
+    async fn prepare_assignment(
+        &self,
+        params: ipc::AssignmentStartRequest,
+    ) -> OrcasResult<(String, String, String)> {
+        let outcome = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let work_unit = state
+                .collaboration
+                .work_units
+                .get(&params.work_unit_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown work unit `{}`", params.work_unit_id))
+                })?;
+
+            if matches!(
+                work_unit.status,
+                WorkUnitStatus::Completed | WorkUnitStatus::NeedsHuman
+            ) {
+                return Err(OrcasError::Protocol(format!(
+                    "work unit `{}` is not startable in status `{:?}`",
+                    params.work_unit_id, work_unit.status
+                )));
+            }
+            if !Self::dependencies_satisfied(&state.collaboration, &work_unit.dependencies) {
+                return Err(OrcasError::Protocol(format!(
+                    "work unit `{}` still has incomplete dependencies",
+                    params.work_unit_id
+                )));
+            }
+
+            if let Some(assignment_id) = work_unit.current_assignment_id.clone()
+                && let Some(assignment) = state.collaboration.assignments.get(&assignment_id)
+                && matches!(assignment.status, AssignmentStatus::Created)
+            {
+                return Ok((
+                    assignment.id.clone(),
+                    assignment.worker_id.clone(),
+                    assignment.worker_session_id.clone(),
+                ));
+            }
+
+            let worker_session_id = Self::ensure_worker_and_session_records(
+                &mut state.collaboration,
+                &params.worker_id,
+                params
+                    .worker_kind
+                    .clone()
+                    .unwrap_or_else(|| "codex".to_string()),
+            );
+            let attempt_number = state
+                .collaboration
+                .assignments
+                .values()
+                .filter(|assignment| assignment.work_unit_id == params.work_unit_id)
+                .count() as u32
+                + 1;
+            let assignment = Assignment {
+                id: Self::new_object_id("assignment"),
+                work_unit_id: params.work_unit_id.clone(),
+                worker_id: params.worker_id.clone(),
+                worker_session_id: worker_session_id.clone(),
+                instructions: params
+                    .instructions
+                    .unwrap_or_else(|| work_unit.task_statement.clone()),
+                status: AssignmentStatus::Created,
+                attempt_number,
+                created_at: now,
+                updated_at: now,
+            };
+            state
+                .collaboration
+                .assignments
+                .insert(assignment.id.clone(), assignment.clone());
+            if let Some(work_unit) = state.collaboration.work_units.get_mut(&params.work_unit_id) {
+                work_unit.current_assignment_id = Some(assignment.id.clone());
+                work_unit.status = WorkUnitStatus::Ready;
+                work_unit.updated_at = now;
+            }
+            (
+                assignment.id,
+                assignment.worker_id,
+                assignment.worker_session_id,
+            )
+        };
+        self.persist_collaboration_state().await?;
+        Ok(outcome)
+    }
+
+    async fn ensure_worker_session_thread(
+        &self,
+        worker_session_id: &str,
+        model: Option<String>,
+        cwd: Option<String>,
+    ) -> OrcasResult<WorkerSession> {
+        let existing = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .worker_sessions
+            .get(worker_session_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown worker session `{worker_session_id}`"))
+            })?;
+        if let Some(thread_id) = existing.thread_id.as_ref()
+            && self
+                .thread_get(ipc::ThreadGetRequest {
+                    thread_id: thread_id.clone(),
+                })
+                .await
+                .is_ok()
+        {
+            return Ok(existing);
+        }
+
+        let thread = self
+            .thread_start(ipc::ThreadStartRequest {
+                cwd,
+                model,
+                ephemeral: false,
+            })
+            .await?;
+        let session = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .worker_sessions
+                .get_mut(worker_session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown worker session `{worker_session_id}`"))
+                })?;
+            session.thread_id = Some(thread.thread.id);
+            session.runtime_status = WorkerSessionRuntimeStatus::Idle;
+            session.attachability = WorkerSessionAttachability::Unknown;
+            session.updated_at = now;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(session)
+    }
+
+    async fn wait_for_turn_terminal(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> OrcasResult<ipc::TurnStateView> {
+        for _ in 0..1500 {
+            if let Some(turn) = self.resolve_turn_state(thread_id, turn_id).await?
+                && (turn.terminal
+                    || matches!(
+                        turn.lifecycle,
+                        ipc::TurnLifecycleState::Completed
+                            | ipc::TurnLifecycleState::Failed
+                            | ipc::TurnLifecycleState::Interrupted
+                            | ipc::TurnLifecycleState::Lost
+                            | ipc::TurnLifecycleState::Unknown
+                    ))
+            {
+                return Ok(turn);
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
+        Err(OrcasError::Transport(format!(
+            "timed out waiting for turn `{turn_id}` on thread `{thread_id}`"
+        )))
+    }
+
+    async fn raw_output_for_turn(&self, thread_id: &str, turn_id: &str) -> Option<String> {
+        if let Some(thread) = self.thread_from_state(thread_id).await
+            && let Some(raw_output) = Self::full_turn_output_from_view(&thread, turn_id)
+        {
+            return Some(raw_output);
+        }
+        if let Ok(response) = self
+            .thread_get(ipc::ThreadGetRequest {
+                thread_id: thread_id.to_string(),
+            })
+            .await
+            && let Some(raw_output) = Self::full_turn_output_from_view(&response.thread, turn_id)
+        {
+            return Some(raw_output);
+        }
+        self.turn_get(ipc::TurnGetRequest {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+        })
+        .await
+        .ok()
+        .and_then(|response| response.turn.and_then(|turn| turn.recent_output))
+    }
+
+    async fn persist_collaboration_state(&self) -> OrcasResult<()> {
+        let collaboration = self.state.read().await.collaboration.clone();
+        let mut stored = self.store.load().await.unwrap_or_default();
+        stored.collaboration = collaboration;
+        self.store.save(&stored).await
+    }
+
     async fn snapshot(&self) -> OrcasResult<ipc::StateSnapshot> {
         let daemon = self.daemon_status().await?;
         let state = self.state.read().await;
@@ -793,6 +1723,240 @@ impl OrcasDaemonService {
             active_thread,
             recent_events: self.recent_events.lock().await.iter().cloned().collect(),
         })
+    }
+
+    fn new_object_id(prefix: &str) -> String {
+        format!("{prefix}-{}", Uuid::new_v4().simple())
+    }
+
+    fn ensure_worker_and_session_records(
+        collaboration: &mut CollaborationState,
+        worker_id: &str,
+        worker_kind: String,
+    ) -> String {
+        collaboration
+            .workers
+            .entry(worker_id.to_string())
+            .or_insert_with(|| Worker {
+                id: worker_id.to_string(),
+                kind: worker_kind,
+                status: WorkerStatus::Idle,
+                current_assignment_id: None,
+            });
+
+        if let Some(session_id) = collaboration
+            .worker_sessions
+            .values()
+            .find(|session| session.worker_id == worker_id)
+            .map(|session| session.id.clone())
+        {
+            return session_id;
+        }
+
+        let session = WorkerSession {
+            id: Self::new_object_id("session"),
+            worker_id: worker_id.to_string(),
+            backend_type: "codex_thread".to_string(),
+            thread_id: None,
+            active_turn_id: None,
+            runtime_status: WorkerSessionRuntimeStatus::Idle,
+            attachability: WorkerSessionAttachability::Unknown,
+            updated_at: Utc::now(),
+        };
+        let session_id = session.id.clone();
+        collaboration
+            .worker_sessions
+            .insert(session.id.clone(), session);
+        session_id
+    }
+
+    fn build_worker_prompt(instructions: &str) -> String {
+        format!(
+            "You are an Orcas worker executing one bounded assignment.\n\
+Stop when the assignment is complete, blocked, failed, or uncertain enough to require supervisor review.\n\
+At the end, emit exactly one report block in this format and do not wrap it in markdown fences:\n\
+ORCAS_REPORT_BEGIN\n\
+{{\n\
+  \"disposition\": \"completed|partial|blocked|failed|interrupted\",\n\
+  \"summary\": \"one short summary\",\n\
+  \"findings\": [\"...\"],\n\
+  \"blockers\": [\"...\"],\n\
+  \"questions\": [\"...\"],\n\
+  \"recommended_next_actions\": [\"...\"],\n\
+  \"confidence\": \"low|medium|high\"\n\
+}}\n\
+ORCAS_REPORT_END\n\
+\n\
+Assignment instructions:\n\
+{instructions}"
+        )
+    }
+
+    fn parse_worker_report(raw_output: &str) -> ParsedWorkerReport {
+        let fallback = || {
+            ParsedWorkerReport {
+            disposition: ReportDisposition::Unknown,
+            summary: "Worker output retained for supervisor review because the structured report was incomplete or ambiguous.".to_string(),
+            findings: Vec::new(),
+            blockers: Vec::new(),
+            questions: Vec::new(),
+            recommended_next_actions: Vec::new(),
+            confidence: ReportConfidence::Unknown,
+            parse_status: ReportParseStatus::NeedsSupervisorReview,
+        }
+        };
+
+        let Some((prefix, after_begin)) = raw_output.split_once("ORCAS_REPORT_BEGIN") else {
+            return fallback();
+        };
+        let Some((json_payload, suffix)) = after_begin.split_once("ORCAS_REPORT_END") else {
+            return fallback();
+        };
+        if after_begin.contains("ORCAS_REPORT_BEGIN") || suffix.contains("ORCAS_REPORT_END") {
+            return fallback();
+        }
+
+        let Ok(payload) = serde_json::from_str::<WorkerReportPayload>(json_payload.trim()) else {
+            return fallback();
+        };
+
+        let disposition = Self::parse_report_disposition(&payload.disposition);
+        let confidence = Self::parse_report_confidence(&payload.confidence);
+        let has_review_noise = !prefix.trim().is_empty() || !suffix.trim().is_empty();
+        let parse_status = if has_review_noise
+            || payload.summary.trim().is_empty()
+            || disposition == ReportDisposition::Unknown
+            || confidence == ReportConfidence::Unknown
+        {
+            ReportParseStatus::NeedsSupervisorReview
+        } else {
+            ReportParseStatus::Parsed
+        };
+
+        ParsedWorkerReport {
+            disposition,
+            summary: if payload.summary.trim().is_empty() {
+                "Worker output retained for supervisor review because the structured report summary was empty.".to_string()
+            } else {
+                payload.summary
+            },
+            findings: payload.findings,
+            blockers: payload.blockers,
+            questions: payload.questions,
+            recommended_next_actions: payload.recommended_next_actions,
+            confidence,
+            parse_status,
+        }
+    }
+
+    fn parse_report_disposition(value: &str) -> ReportDisposition {
+        match value {
+            "completed" => ReportDisposition::Completed,
+            "partial" => ReportDisposition::Partial,
+            "blocked" => ReportDisposition::Blocked,
+            "failed" => ReportDisposition::Failed,
+            "interrupted" => ReportDisposition::Interrupted,
+            _ => ReportDisposition::Unknown,
+        }
+    }
+
+    fn parse_report_confidence(value: &str) -> ReportConfidence {
+        match value {
+            "low" => ReportConfidence::Low,
+            "medium" => ReportConfidence::Medium,
+            "high" => ReportConfidence::High,
+            _ => ReportConfidence::Unknown,
+        }
+    }
+
+    fn full_turn_output_from_view(thread: &ipc::ThreadView, turn_id: &str) -> Option<String> {
+        let turn = thread.turns.iter().find(|turn| turn.id == turn_id)?;
+        let raw_output = turn
+            .items
+            .iter()
+            .filter_map(|item| item.text.as_deref())
+            .collect::<String>();
+        (!raw_output.is_empty()).then_some(raw_output)
+    }
+
+    fn dependencies_satisfied(collaboration: &CollaborationState, dependencies: &[String]) -> bool {
+        dependencies.iter().all(|dependency_id| {
+            collaboration
+                .work_units
+                .get(dependency_id)
+                .map(|work_unit| work_unit.status == WorkUnitStatus::Completed)
+                .unwrap_or(false)
+        })
+    }
+
+    fn refresh_blocked_work_units(collaboration: &mut CollaborationState) {
+        let work_unit_ids = collaboration.work_units.keys().cloned().collect::<Vec<_>>();
+        for work_unit_id in work_unit_ids {
+            let Some(snapshot) = collaboration.work_units.get(&work_unit_id).cloned() else {
+                continue;
+            };
+            if matches!(
+                snapshot.status,
+                WorkUnitStatus::Blocked | WorkUnitStatus::Ready | WorkUnitStatus::Accepted
+            ) {
+                let next_status =
+                    if Self::dependencies_satisfied(collaboration, &snapshot.dependencies) {
+                        if snapshot.status == WorkUnitStatus::Accepted {
+                            WorkUnitStatus::Accepted
+                        } else {
+                            WorkUnitStatus::Ready
+                        }
+                    } else {
+                        WorkUnitStatus::Blocked
+                    };
+                if let Some(work_unit) = collaboration.work_units.get_mut(&work_unit_id) {
+                    work_unit.status = next_status;
+                    work_unit.updated_at = Utc::now();
+                }
+            }
+        }
+    }
+
+    fn refresh_workstream_statuses(collaboration: &mut CollaborationState) {
+        let workstream_ids = collaboration
+            .workstreams
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for workstream_id in workstream_ids {
+            let units = collaboration
+                .work_units
+                .values()
+                .filter(|work_unit| work_unit.workstream_id == workstream_id)
+                .collect::<Vec<_>>();
+            let status = if !units.is_empty()
+                && units
+                    .iter()
+                    .all(|work_unit| work_unit.status == WorkUnitStatus::Completed)
+            {
+                WorkstreamStatus::Completed
+            } else if !units.is_empty()
+                && units.iter().all(|work_unit| {
+                    matches!(
+                        work_unit.status,
+                        WorkUnitStatus::Blocked
+                            | WorkUnitStatus::NeedsHuman
+                            | WorkUnitStatus::Completed
+                    )
+                })
+                && units
+                    .iter()
+                    .any(|work_unit| work_unit.status != WorkUnitStatus::Completed)
+            {
+                WorkstreamStatus::Blocked
+            } else {
+                WorkstreamStatus::Active
+            };
+            if let Some(workstream) = collaboration.workstreams.get_mut(&workstream_id) {
+                workstream.status = status;
+                workstream.updated_at = Utc::now();
+            }
+        }
     }
 
     async fn connect_upstream(&self) -> OrcasResult<()> {
@@ -1925,12 +3089,23 @@ impl Drop for ClientGuard {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     use chrono::Utc;
+    use tokio::sync::{Mutex, Notify, RwLock, broadcast};
+    use uuid::Uuid;
 
     use super::OrcasDaemonService;
     use super::{DaemonState, TurnKey};
-    use orcas_core::ipc;
+    use orcas_codex::{
+        CodexClient, LocalCodexDaemonManager, RejectingApprovalRouter, WebSocketTransport,
+    };
+    use orcas_core::{
+        AppConfig, AppPaths, AssignmentStatus, DecisionType, JsonSessionStore, OrcasSessionStore,
+        Report, ReportConfidence, ReportDisposition, ReportParseStatus, WorkUnitStatus,
+        WorkerStatus, WorkstreamStatus, ipc,
+    };
 
     fn sample_thread(id: &str, scope: &str, updated_at: i64) -> ipc::ThreadView {
         ipc::ThreadView {
@@ -1950,6 +3125,57 @@ mod tests {
             },
             turns: Vec::new(),
         }
+    }
+
+    async fn test_service() -> Arc<OrcasDaemonService> {
+        let base = std::env::temp_dir().join(format!("orcas-collab-test-{}", Uuid::new_v4()));
+        let paths = AppPaths {
+            config_dir: base.join("config"),
+            config_file: base.join("config/config.toml"),
+            data_dir: base.join("data"),
+            state_file: base.join("data/state.json"),
+            logs_dir: base.join("logs"),
+            runtime_dir: base.join("runtime"),
+            socket_file: base.join("runtime/orcasd.sock"),
+            daemon_metadata_file: base.join("runtime/orcasd.json"),
+            daemon_log_file: base.join("logs/orcasd.log"),
+        };
+        paths.ensure().await.expect("paths");
+        let config = AppConfig::default();
+        let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
+        let codex_daemon =
+            LocalCodexDaemonManager::new(config.codex.clone(), &paths, config.defaults.cwd.clone());
+        let codex_client = CodexClient::new(
+            Arc::new(WebSocketTransport::new(config.codex.listen_url.clone())),
+            config.codex.reconnect.clone(),
+            Arc::new(RejectingApprovalRouter),
+        );
+        let (event_tx, _) = broadcast::channel(32);
+        let service = Arc::new(OrcasDaemonService {
+            paths,
+            config,
+            runtime: ipc::DaemonRuntimeMetadata {
+                pid: std::process::id(),
+                started_at: Utc::now(),
+                version: "test".to_string(),
+                build_fingerprint: "test".to_string(),
+                binary_path: "test".to_string(),
+                socket_path: "/tmp/test.sock".to_string(),
+                metadata_path: "/tmp/test.json".to_string(),
+                git_commit: None,
+            },
+            store,
+            codex_daemon,
+            codex_client,
+            state: RwLock::new(DaemonState::default()),
+            recent_events: Mutex::new(std::collections::VecDeque::new()),
+            connect_gate: Mutex::new(()),
+            event_tx,
+            client_count: AtomicUsize::new(0),
+            shutdown: Notify::new(),
+        });
+        service.initialize_state().await.expect("initialize state");
+        service
     }
 
     #[test]
@@ -2085,5 +3311,290 @@ mod tests {
         assert_eq!(unknown_state.lifecycle, ipc::TurnLifecycleState::Unknown);
         assert!(!unknown_state.attachable);
         assert!(!unknown_state.live_stream);
+    }
+
+    #[test]
+    fn parse_worker_report_accepts_clean_contract() {
+        let raw = r#"ORCAS_REPORT_BEGIN
+{
+  "disposition": "completed",
+  "summary": "finished the bounded task",
+  "findings": ["root cause isolated"],
+  "blockers": [],
+  "questions": [],
+  "recommended_next_actions": ["apply supervisor decision"],
+  "confidence": "high"
+}
+ORCAS_REPORT_END"#;
+
+        let parsed = OrcasDaemonService::parse_worker_report(raw);
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        assert_eq!(parsed.confidence, ReportConfidence::High);
+        assert_eq!(parsed.parse_status, ReportParseStatus::Parsed);
+        assert_eq!(parsed.findings, vec!["root cause isolated".to_string()]);
+    }
+
+    #[test]
+    fn parse_worker_report_flags_ambiguous_output_for_review() {
+        let raw = r#"here is the report
+ORCAS_REPORT_BEGIN
+{
+  "disposition": "completed",
+  "summary": "finished the bounded task",
+  "findings": [],
+  "blockers": [],
+  "questions": [],
+  "recommended_next_actions": [],
+  "confidence": "high"
+}
+ORCAS_REPORT_END"#;
+
+        let parsed = OrcasDaemonService::parse_worker_report(raw);
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        assert_eq!(
+            parsed.parse_status,
+            ReportParseStatus::NeedsSupervisorReview
+        );
+    }
+
+    #[tokio::test]
+    async fn collaboration_objects_persist_to_store() {
+        let service = test_service().await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Investigate reconnect".to_string(),
+                objective: "Find the regression".to_string(),
+                priority: Some("high".to_string()),
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let _work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id.clone(),
+                title: "Isolate root cause".to_string(),
+                task_statement: "Find the failure point".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("work unit");
+
+        let stored = service.store.load().await.expect("stored state");
+        assert_eq!(stored.collaboration.workstreams.len(), 1);
+        assert_eq!(stored.collaboration.work_units.len(), 1);
+        assert_eq!(
+            stored.collaboration.workstreams[&workstream.id].status,
+            WorkstreamStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_assignment_binds_worker_to_worker_session() {
+        let service = test_service().await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Reconnect".to_string(),
+                objective: "Fix regression".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id,
+                title: "Inspect streaming".to_string(),
+                task_statement: "Inspect the current streaming path".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+
+        let (assignment_id, worker_id, worker_session_id) = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.clone(),
+                worker_id: "worker-a".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Inspect the reconnect path".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("assignment");
+
+        let state = service.state.read().await;
+        let assignment = &state.collaboration.assignments[&assignment_id];
+        assert_eq!(assignment.worker_id, worker_id);
+        assert_eq!(assignment.worker_session_id, worker_session_id);
+        assert_eq!(assignment.status, AssignmentStatus::Created);
+        assert_eq!(
+            state.collaboration.workers[&worker_id].status,
+            WorkerStatus::Idle
+        );
+        assert_eq!(
+            state.collaboration.worker_sessions[&worker_session_id].worker_id,
+            worker_id
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_creates_new_assignment_and_reuses_worker_session() {
+        let service = test_service().await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Reconnect".to_string(),
+                objective: "Fix regression".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id,
+                title: "Inspect streaming".to_string(),
+                task_statement: "Inspect the current streaming path".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+        let (assignment_id, worker_id, worker_session_id) = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.clone(),
+                worker_id: "worker-a".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Inspect the reconnect path".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("assignment");
+        let report = {
+            let now = Utc::now();
+            let mut state = service.state.write().await;
+            state
+                .collaboration
+                .assignments
+                .get_mut(&assignment_id)
+                .unwrap()
+                .status = AssignmentStatus::AwaitingDecision;
+            state
+                .collaboration
+                .work_units
+                .get_mut(&work_unit.id)
+                .unwrap()
+                .status = WorkUnitStatus::AwaitingDecision;
+            let report = Report {
+                id: "report-1".to_string(),
+                work_unit_id: work_unit.id.clone(),
+                assignment_id: assignment_id.clone(),
+                worker_id: worker_id.clone(),
+                disposition: ReportDisposition::Completed,
+                summary: "done".to_string(),
+                findings: vec!["finding".to_string()],
+                blockers: Vec::new(),
+                questions: Vec::new(),
+                recommended_next_actions: vec!["continue".to_string()],
+                confidence: ReportConfidence::High,
+                raw_output: "raw".to_string(),
+                parse_status: ReportParseStatus::Parsed,
+                created_at: now,
+            };
+            state
+                .collaboration
+                .reports
+                .insert(report.id.clone(), report.clone());
+            state
+                .collaboration
+                .work_units
+                .get_mut(&work_unit.id)
+                .unwrap()
+                .latest_report_id = Some(report.id.clone());
+            report
+        };
+        service
+            .persist_collaboration_state()
+            .await
+            .expect("persist");
+
+        let response = service
+            .decision_apply(ipc::DecisionApplyRequest {
+                work_unit_id: work_unit.id.clone(),
+                report_id: Some(report.id),
+                decision_type: DecisionType::Continue,
+                rationale: "Need one more bounded pass".to_string(),
+                instructions: Some("Inspect the recovery branch".to_string()),
+                worker_id: None,
+                worker_kind: None,
+            })
+            .await
+            .expect("decision");
+
+        let next_assignment = response.next_assignment.expect("next assignment");
+        assert_ne!(next_assignment.id, assignment_id);
+        assert_eq!(next_assignment.worker_session_id, worker_session_id);
+        assert_eq!(next_assignment.status, AssignmentStatus::Created);
+
+        let state = service.state.read().await;
+        assert_eq!(
+            state.collaboration.assignments[&assignment_id].status,
+            AssignmentStatus::Closed
+        );
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id]
+                .current_assignment_id
+                .as_deref(),
+            Some(next_assignment.id.as_str())
+        );
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id].status,
+            WorkUnitStatus::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_complete_updates_work_unit_and_workstream() {
+        let service = test_service().await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Reconnect".to_string(),
+                objective: "Fix regression".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id.clone(),
+                title: "Inspect streaming".to_string(),
+                task_statement: "Inspect the current streaming path".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+
+        let response = service
+            .decision_apply(ipc::DecisionApplyRequest {
+                work_unit_id: work_unit.id.clone(),
+                report_id: None,
+                decision_type: DecisionType::MarkComplete,
+                rationale: "Accepted as complete".to_string(),
+                instructions: None,
+                worker_id: None,
+                worker_kind: None,
+            })
+            .await
+            .expect("decision");
+
+        assert_eq!(response.work_unit.status, WorkUnitStatus::Completed);
+        let state = service.state.read().await;
+        assert_eq!(
+            state.collaboration.workstreams[&workstream.id].status,
+            WorkstreamStatus::Completed
+        );
     }
 }

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::CollaborationState;
 use crate::config::AppConfig;
 use crate::error::OrcasResult;
 use crate::paths::AppPaths;
@@ -9,6 +10,8 @@ use crate::session::{ThreadMetadata, ThreadRegistry};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StoredState {
     pub registry: ThreadRegistry,
+    #[serde(default)]
+    pub collaboration: CollaborationState,
 }
 
 #[async_trait]

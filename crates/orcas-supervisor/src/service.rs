@@ -5,7 +5,10 @@ use std::time::Duration;
 use anyhow::{Error, Result};
 use tokio::time::sleep;
 
-use orcas_core::{AppConfig, AppPaths, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest};
+use orcas_core::{
+    AppConfig, AppPaths, DecisionType, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
+    ipc,
+};
 use orcas_daemon::{
     OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides,
     apply_runtime_overrides,
@@ -279,6 +282,261 @@ impl SupervisorService {
             println!("turn: not found");
         }
 
+        Ok(())
+    }
+
+    pub async fn workstream_create(
+        &self,
+        title: String,
+        objective: String,
+        priority: Option<String>,
+    ) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .workstream_create(&ipc::WorkstreamCreateRequest {
+                title,
+                objective,
+                priority,
+            })
+            .await?;
+        println!("workstream_id: {}", response.workstream.id);
+        println!("status: {:?}", response.workstream.status);
+        Ok(())
+    }
+
+    pub async fn workstream_list(&self) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client.workstream_list().await?;
+        for workstream in response.workstreams {
+            println!(
+                "{}\t{:?}\t{}\t{}",
+                workstream.id, workstream.status, workstream.priority, workstream.title
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn workstream_get(&self, workstream_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .workstream_get(&ipc::WorkstreamGetRequest {
+                workstream_id: workstream_id.to_string(),
+            })
+            .await?;
+        println!("workstream_id: {}", response.workstream.id);
+        println!("title: {}", response.workstream.title);
+        println!("objective: {}", response.workstream.objective);
+        println!("status: {:?}", response.workstream.status);
+        println!("priority: {}", response.workstream.priority);
+        println!("work_units: {}", response.work_units.len());
+        for work_unit in response.work_units {
+            println!(
+                "work_unit\t{}\t{:?}\tdeps={}\t{}",
+                work_unit.id,
+                work_unit.status,
+                work_unit.dependencies.len(),
+                work_unit.title
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn workunit_create(
+        &self,
+        workstream_id: &str,
+        title: String,
+        task_statement: String,
+        dependencies: Vec<String>,
+    ) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .workunit_create(&ipc::WorkunitCreateRequest {
+                workstream_id: workstream_id.to_string(),
+                title,
+                task_statement,
+                dependencies,
+            })
+            .await?;
+        println!("work_unit_id: {}", response.work_unit.id);
+        println!("status: {:?}", response.work_unit.status);
+        Ok(())
+    }
+
+    pub async fn workunit_list(&self, workstream_id: Option<&str>) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .workunit_list(&ipc::WorkunitListRequest {
+                workstream_id: workstream_id.map(ToOwned::to_owned),
+            })
+            .await?;
+        for work_unit in response.work_units {
+            println!(
+                "{}\t{:?}\tdeps={}\treport={}\t{}",
+                work_unit.id,
+                work_unit.status,
+                work_unit.dependencies.len(),
+                work_unit.latest_report_id.unwrap_or_default(),
+                work_unit.title
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn workunit_get(&self, work_unit_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .workunit_get(&ipc::WorkunitGetRequest {
+                work_unit_id: work_unit_id.to_string(),
+            })
+            .await?;
+        println!("work_unit_id: {}", response.work_unit.id);
+        println!("workstream_id: {}", response.work_unit.workstream_id);
+        println!("title: {}", response.work_unit.title);
+        println!("task_statement: {}", response.work_unit.task_statement);
+        println!("status: {:?}", response.work_unit.status);
+        println!(
+            "dependencies: {}",
+            if response.work_unit.dependencies.is_empty() {
+                String::new()
+            } else {
+                response.work_unit.dependencies.join(",")
+            }
+        );
+        if let Some(assignment_id) = response.work_unit.current_assignment_id.as_ref() {
+            println!("current_assignment_id: {assignment_id}");
+        }
+        if let Some(report_id) = response.work_unit.latest_report_id.as_ref() {
+            println!("latest_report_id: {report_id}");
+        }
+        println!("assignments: {}", response.assignments.len());
+        println!("reports: {}", response.reports.len());
+        println!("decisions: {}", response.decisions.len());
+        Ok(())
+    }
+
+    pub async fn assignment_start(
+        &self,
+        work_unit_id: &str,
+        worker_id: &str,
+        instructions: Option<String>,
+        worker_kind: Option<String>,
+        cwd: Option<PathBuf>,
+        model: Option<String>,
+    ) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .assignment_start(&ipc::AssignmentStartRequest {
+                work_unit_id: work_unit_id.to_string(),
+                worker_id: worker_id.to_string(),
+                worker_kind,
+                instructions,
+                model,
+                cwd: cwd.map(|path| path.display().to_string()),
+            })
+            .await?;
+        println!("assignment_id: {}", response.assignment.id);
+        println!("assignment_status: {:?}", response.assignment.status);
+        println!("worker_id: {}", response.worker.id);
+        println!("worker_session_id: {}", response.worker_session.id);
+        if let Some(thread_id) = response.worker_session.thread_id.as_ref() {
+            println!("thread_id: {thread_id}");
+        }
+        println!("report_id: {}", response.report.id);
+        println!("report_parse_status: {:?}", response.report.parse_status);
+        println!("report_disposition: {:?}", response.report.disposition);
+        println!("report_summary: {}", response.report.summary);
+        Ok(())
+    }
+
+    pub async fn assignment_get(&self, assignment_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .assignment_get(&ipc::AssignmentGetRequest {
+                assignment_id: assignment_id.to_string(),
+            })
+            .await?;
+        println!("assignment_id: {}", response.assignment.id);
+        println!("work_unit_id: {}", response.assignment.work_unit_id);
+        println!("worker_id: {}", response.worker.id);
+        println!("status: {:?}", response.assignment.status);
+        println!("attempt: {}", response.assignment.attempt_number);
+        println!("worker_session_id: {}", response.worker_session.id);
+        if let Some(report) = response.report.as_ref() {
+            println!("report_id: {}", report.id);
+            println!("report_parse_status: {:?}", report.parse_status);
+        }
+        Ok(())
+    }
+
+    pub async fn report_get(&self, report_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .report_get(&ipc::ReportGetRequest {
+                report_id: report_id.to_string(),
+            })
+            .await?;
+        println!("report_id: {}", response.report.id);
+        println!("work_unit_id: {}", response.report.work_unit_id);
+        println!("assignment_id: {}", response.report.assignment_id);
+        println!("disposition: {:?}", response.report.disposition);
+        println!("parse_status: {:?}", response.report.parse_status);
+        println!("confidence: {:?}", response.report.confidence);
+        println!("summary: {}", response.report.summary);
+        println!("findings: {}", response.report.findings.len());
+        println!("blockers: {}", response.report.blockers.len());
+        println!("questions: {}", response.report.questions.len());
+        println!(
+            "recommended_next_actions: {}",
+            response.report.recommended_next_actions.len()
+        );
+        Ok(())
+    }
+
+    pub async fn report_list_for_workunit(&self, work_unit_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .report_list_for_workunit(&ipc::ReportListForWorkunitRequest {
+                work_unit_id: work_unit_id.to_string(),
+            })
+            .await?;
+        for report in response.reports {
+            println!(
+                "{}\t{:?}\t{:?}\t{}",
+                report.id, report.disposition, report.parse_status, report.summary
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn decision_apply(
+        &self,
+        work_unit_id: &str,
+        report_id: Option<String>,
+        decision_type: DecisionType,
+        rationale: String,
+        instructions: Option<String>,
+        worker_id: Option<String>,
+        worker_kind: Option<String>,
+    ) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .decision_apply(&ipc::DecisionApplyRequest {
+                work_unit_id: work_unit_id.to_string(),
+                report_id,
+                decision_type,
+                rationale,
+                instructions,
+                worker_id,
+                worker_kind,
+            })
+            .await?;
+        println!("decision_id: {}", response.decision.id);
+        println!("decision_type: {:?}", response.decision.decision_type);
+        println!("work_unit_status: {:?}", response.work_unit.status);
+        if let Some(next_assignment) = response.next_assignment.as_ref() {
+            println!("next_assignment_id: {}", next_assignment.id);
+            println!("next_assignment_status: {:?}", next_assignment.status);
+        }
         Ok(())
     }
 

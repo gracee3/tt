@@ -17,6 +17,7 @@ Current shape:
 - `orcasd` now supports graceful shutdown over IPC
 - `orcas-tui` is now driven by a canonical reducer/runtime with headless tests
 - `orcas-tui` now reconnects automatically with snapshot-first rebootstrap after daemon replacement
+- Orcas now has a first collaboration slice with persistent workstreams, work units, assignments, reports, decisions, and one Codex-backed worker-session loop
 
 This pass establishes the broker/service boundary. It is not the full product yet.
 
@@ -54,6 +55,8 @@ Implemented now:
 - supervisor turn inspection commands for active turn/state visibility
 - supervisor prompt and quickstart flows now use a session-aware streaming helper with bounded reconnect and snapshot-first recovery
 - daemon-owned active-turn registry with explicit `turn/get`, `turn/attach`, and `turns/list_active` Orcas IPC methods
+- daemon-owned collaboration state for workstreams, work units, assignments, workers, worker sessions, reports, and decisions
+- CLI-first supervisor workflow commands for creating workstreams/work units, starting assignments, inspecting reports, and applying decisions
 - TUI reducer/runtime/view-model split routed through the daemon with automatic reconnect/resubscribe and turn-level status consumption
 - headless TUI test harness with fake backend
 - lightweight JSON/TOML config and thread metadata persistence, including recent output snippets
@@ -207,12 +210,28 @@ Orcas IPC currently exposes:
 - `turn/attach`
 - `turn/start`
 - `turn/interrupt`
+- `workstream/create`
+- `workstream/list`
+- `workstream/get`
+- `workunit/create`
+- `workunit/list`
+- `workunit/get`
+- `assignment/start`
+- `assignment/get`
+- `report/get`
+- `report/list_for_workunit`
+- `decision/apply`
 - `events/subscribe`
 
 Supervisor operator/debug surfaces now include:
 
 - `orcas supervisor turns list-active`
 - `orcas supervisor turns get --thread <THREAD_ID> --turn <TURN_ID>`
+- `orcas supervisor workstreams ...`
+- `orcas supervisor workunits ...`
+- `orcas supervisor assignments ...`
+- `orcas supervisor reports ...`
+- `orcas supervisor decisions apply ...`
 
 IPC event notifications are now Orcas-owned daemon events rather than raw upstream Codex events. The current frontend-facing event slice includes:
 
