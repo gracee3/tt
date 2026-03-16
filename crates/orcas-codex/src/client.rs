@@ -177,6 +177,10 @@ impl CodexClient {
         self.threads.lock().await.values().cloned().collect()
     }
 
+    pub async fn snapshot_thread(&self, thread_id: &str) -> Option<types::Thread> {
+        self.threads.lock().await.get(thread_id).cloned()
+    }
+
     async fn request<T>(&self, method: &str, params: &impl Serialize) -> OrcasResult<T>
     where
         T: DeserializeOwned,

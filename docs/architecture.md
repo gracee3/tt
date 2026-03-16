@@ -52,6 +52,7 @@ Shared local orchestration service:
 - one local IPC server over Unix domain socket
 - local client connection handling
 - event fanout
+- live Orcas-owned state/query snapshots
 - recent-event snapshotting
 - daemon status reporting
 - shared IPC client/process manager used by frontends
@@ -69,14 +70,16 @@ Thin operational CLI client:
 
 ## `orcas-tui`
 
-Minimal proof-of-boundary frontend:
+Testable frontend split:
 
-- attaches to `orcasd`
-- shows daemon connection status
-- shows thread summaries
-- shows event log
+- backend trait with real daemon IPC adapter and fake test adapter
+- reducer-owned `AppState`
+- explicit `Action` and `Effect` loop
+- `UiEvent` translation layer between daemon events and reducer updates
+- selectors/view-models for render and tests
+- ratatui render layer as a thin projection over state
 
-It is intentionally shallow in this pass.
+The goal is not UI breadth yet. The goal is one canonical state machine that runs both interactively and headlessly.
 
 ## Runtime Topology
 
@@ -123,25 +126,34 @@ The upstream connection can be backed by:
 - an already-running Codex app-server
 - a Codex app-server spawned by Orcas if configured
 
-## Event Model
+## Event And Query Model
 
-Codex notifications are translated into Orcas-owned `EventEnvelope` values.
+Codex notifications are still received and normalized at the daemon edge, but frontends now consume Orcas-owned state/query and event types instead of raw upstream envelopes.
 
-Current emitted events include:
+`orcasd` now keeps:
 
-- connection state changes
-- thread started/status changed
-- turn started/completed
-- item started/completed
-- agent message deltas
-- warning events
+- a live in-memory thread/session model
+- a broadcast bus for live daemon events
+- a recent-event ring buffer
+- a snapshot/query surface for frontend bootstrap
 
-`orcasd` keeps:
+The current frontend bootstrap path is:
 
-- a broadcast bus for live subscribers
-- a small in-memory recent-event ring buffer for snapshot-on-subscribe
+1. `state/get`
+2. optional follow-up `thread/get`
+3. `events/subscribe`
 
-This gives new clients a small initial picture without replaying the full world.
+This avoids forcing every client to reconstruct frontend state from raw streaming events and broad upstream thread lists.
+
+Current daemon event types include:
+
+- upstream status changes
+- session/active turn changes
+- thread summary updates
+- turn updates
+- item updates
+- streamed output deltas
+- warnings
 
 ## Persistence Model
 
@@ -159,23 +171,33 @@ Stored now:
 
 This stays behind `OrcasSessionStore` so a future SQLite backend can replace it.
 
+## TUI Testing Model
+
+The TUI now has one canonical app core:
+
+- real daemon-backed runtime for interactive use
+- fake backend-backed runtime for tests
+- no duplicate test-only state model
+- no primary reliance on screen scraping
+
+Most TUI tests assert on state and view-model projections. Render validation is intentionally secondary.
+
 ## Current Rough Edges
 
 - `threads/list` still mirrors the broad upstream thread set
-- no richer Orcas-side query model yet
+- daemon snapshot focus is intentionally small and not yet tuned for all frontend workflows
 - no dedicated approval UX
 - no auth or multi-user model
 - no browser bridge yet
 - daemon process management currently assumes a Unix-like environment with `setsid`
+- end-to-end turn completion still depends on upstream Codex availability
 
 ## Expansion Path
 
-The intended next layer is not more raw protocol.
+The intended next layer is to deepen the Orcas-owned session model rather than widen raw protocol mirroring, for example:
 
-The intended next layer is richer Orcas-owned service state inside `orcasd`, for example:
-
-- thread registry views scoped to Orcas
-- recent turn history
-- resumable active-session state
+- tighter Orcas-scoped thread views
+- durable recent-output caches
+- richer active session and resume flows
 - approval workflow surfaces
 - browser/backend attachment using the same IPC contract shape

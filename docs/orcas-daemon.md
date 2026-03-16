@@ -9,6 +9,8 @@ It owns:
 - the live Codex WebSocket connection
 - local client fanout
 - daemon/runtime status
+- live thread/session state
+- snapshot/query responses for frontends
 - recent event buffering
 - thread metadata persistence hooks
 
@@ -68,6 +70,23 @@ If a client is too slow:
 - the daemon drops notifications for that client instead of blocking the service
 
 This keeps one bad frontend from stalling the whole local broker.
+
+## Snapshot And Query Layer
+
+`orcasd` now exposes a frontend bootstrap surface:
+
+- `state/get`
+- `session/get_active`
+- `thread/get`
+- `turns/recent`
+
+The intended client flow is:
+
+1. fetch one Orcas-owned snapshot
+2. optionally fetch a focused thread view
+3. subscribe to live daemon events
+
+This keeps frontend state initialization deterministic and avoids rebuilding UI state from raw upstream events alone.
 
 ## Current Status Model
 

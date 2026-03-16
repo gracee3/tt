@@ -14,15 +14,15 @@ use orcas_core::jsonrpc::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, RequestId,
 };
-use orcas_core::{AppPaths, EventEnvelope, OrcasError, OrcasResult};
+use orcas_core::{AppPaths, OrcasError, OrcasResult};
 
 type PendingResponse = oneshot::Sender<OrcasResult<Value>>;
-pub type EventSubscription = broadcast::Receiver<EventEnvelope>;
+pub type EventSubscription = broadcast::Receiver<ipc::DaemonEventEnvelope>;
 
 pub struct OrcasIpcClient {
     pending: Mutex<HashMap<RequestId, PendingResponse>>,
     outbound: mpsc::Sender<String>,
-    event_tx: broadcast::Sender<EventEnvelope>,
+    event_tx: broadcast::Sender<ipc::DaemonEventEnvelope>,
     next_request_id: AtomicI64,
 }
 
@@ -56,6 +56,19 @@ impl OrcasIpcClient {
         .await
     }
 
+    pub async fn state_get(&self) -> OrcasResult<ipc::StateGetResponse> {
+        self.request(ipc::methods::STATE_GET, &ipc::StateGetRequest::default())
+            .await
+    }
+
+    pub async fn session_get_active(&self) -> OrcasResult<ipc::SessionGetActiveResponse> {
+        self.request(
+            ipc::methods::SESSION_GET_ACTIVE,
+            &ipc::SessionGetActiveRequest::default(),
+        )
+        .await
+    }
+
     pub async fn models_list(&self) -> OrcasResult<ipc::ModelsListResponse> {
         self.request(ipc::methods::MODELS_LIST, &ipc::Empty::default())
             .await
@@ -65,6 +78,14 @@ impl OrcasIpcClient {
         self.request(
             ipc::methods::THREADS_LIST,
             &ipc::ThreadsListRequest::default(),
+        )
+        .await
+    }
+
+    pub async fn threads_list_scoped(&self) -> OrcasResult<ipc::ThreadsListResponse> {
+        self.request(
+            ipc::methods::THREADS_LIST_SCOPED,
+            &ipc::ThreadsListScopedRequest::default(),
         )
         .await
     }
@@ -83,11 +104,25 @@ impl OrcasIpcClient {
         self.request(ipc::methods::THREAD_READ, params).await
     }
 
+    pub async fn thread_get(
+        &self,
+        params: &ipc::ThreadGetRequest,
+    ) -> OrcasResult<ipc::ThreadGetResponse> {
+        self.request(ipc::methods::THREAD_GET, params).await
+    }
+
     pub async fn thread_resume(
         &self,
         params: &ipc::ThreadResumeRequest,
     ) -> OrcasResult<ipc::ThreadResumeResponse> {
         self.request(ipc::methods::THREAD_RESUME, params).await
+    }
+
+    pub async fn turns_recent(
+        &self,
+        params: &ipc::TurnsRecentRequest,
+    ) -> OrcasResult<ipc::TurnsRecentResponse> {
+        self.request(ipc::methods::TURNS_RECENT, params).await
     }
 
     pub async fn turn_start(
@@ -105,7 +140,7 @@ impl OrcasIpcClient {
     pub async fn subscribe_events(
         &self,
         include_snapshot: bool,
-    ) -> OrcasResult<(EventSubscription, Option<ipc::DaemonSnapshot>)> {
+    ) -> OrcasResult<(EventSubscription, Option<ipc::StateSnapshot>)> {
         let events = self.subscribe();
         let response: ipc::EventsSubscribeResponse = self
             .request(

@@ -14,11 +14,16 @@ Current methods:
 
 - `daemon/status`
 - `daemon/connect`
+- `state/get`
+- `session/get_active`
 - `models/list`
 - `threads/list`
+- `threads/list_scoped`
 - `thread/start`
 - `thread/read`
+- `thread/get`
 - `thread/resume`
+- `turns/recent`
 - `turn/start`
 - `turn/interrupt`
 - `events/subscribe`
@@ -31,25 +36,44 @@ Current method:
 
 Notification payload:
 
-- one Orcas `EventEnvelope`
+- one Orcas-owned daemon event envelope
+
+Current event kinds:
+
+- upstream status changed
+- session changed
+- thread updated
+- turn updated
+- item updated
+- output delta
+- warning
 
 ## Snapshots
 
-`events/subscribe` can request an initial snapshot.
+Frontends should now bootstrap with `state/get`, then switch to `events/subscribe` for live updates. `events/subscribe` can still return an initial snapshot when requested.
 
 Current snapshot content:
 
 - daemon status
+- active session state
 - known thread summaries
+- one active/focused thread view when available
 - recent event ring buffer
 
-That gives new clients a small initial picture before live notifications begin.
+Additional query helpers now include:
+
+- `thread/get`
+- `turns/recent`
+- `session/get_active`
+
+That gives new clients a deterministic bootstrap path before live notifications begin.
 
 ## Design Rules
 
 - do not expose raw Codex wire payloads unless there is a strong reason
 - keep method names stable and narrow
 - prefer Orcas-owned summaries/views over mirroring the full upstream schema
+- let frontends query daemon-owned live state rather than reconstructing everything from stream noise
 - add new methods incrementally as Orcas service needs become clear
 
 ## Backpressure Behavior

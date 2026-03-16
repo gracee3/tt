@@ -7,6 +7,8 @@ Current shape:
 - `orcasd` owns one long-lived upstream Codex WebSocket connection
 - local frontends attach to `orcasd` over a Unix domain socket
 - Orcas keeps its own narrow IPC and protocol layers instead of depending on Codex workspace crates
+- `orcasd` now exposes a live snapshot/query layer for frontend bootstrap
+- `orcas-tui` is now driven by a canonical reducer/runtime with headless tests
 
 This pass establishes the broker/service boundary. It is not the full product yet.
 
@@ -36,8 +38,10 @@ Implemented now:
 - Orcas-owned UDS IPC contract
 - one persistent Codex WebSocket client inside the daemon
 - event subscription and fanout to multiple local clients
+- Orcas-owned live state snapshot/query surface for frontends
 - supervisor CLI routed through the daemon
-- TUI placeholder routed through the daemon
+- TUI reducer/runtime/view-model split routed through the daemon
+- headless TUI test harness with fake backend
 - lightweight JSON/TOML config and thread metadata persistence
 
 Not implemented yet:
@@ -54,7 +58,7 @@ Not implemented yet:
 - `crates/orcas-codex`: Codex WebSocket client, daemon launch, typed app-server slice
 - `crates/orcas-daemon`: `orcasd`, UDS server, event fanout, shared IPC client/process manager
 - `crates/orcas-supervisor`: `orcas` CLI that talks to `orcasd`
-- `crates/orcas-tui`: placeholder TUI that talks to `orcasd`
+- `crates/orcas-tui`: real TUI app core, runtime, render layer, and headless tests
 - `docs/architecture.md`: crate boundaries and lifecycle model
 - `docs/orcas-daemon.md`: daemon behavior and runtime notes
 - `docs/ipc-protocol.md`: Orcas IPC method/event surface
@@ -170,14 +174,29 @@ Orcas IPC currently exposes:
 
 - `daemon/status`
 - `daemon/connect`
+- `state/get`
+- `session/get_active`
 - `models/list`
 - `threads/list`
+- `threads/list_scoped`
 - `thread/start`
 - `thread/read`
+- `thread/get`
 - `thread/resume`
+- `turns/recent`
 - `turn/start`
 - `turn/interrupt`
 - `events/subscribe`
+
+IPC event notifications are now Orcas-owned daemon events rather than raw upstream Codex events. The current frontend-facing event slice includes:
+
+- upstream status changes
+- session/active turn changes
+- thread summary updates
+- turn updates
+- item updates
+- streamed output deltas
+- warnings
 
 ## Known Limitations
 
@@ -186,23 +205,27 @@ Orcas IPC currently exposes:
 - one configured Codex backend only
 - approvals are still rejected by default
 - `threads list` still reflects the raw upstream thread set, which can be broader than Orcas-created threads
-- TUI is intentionally minimal and read-mostly in this pass
+- TUI is intentionally minimal; the architecture and tests matter more than UI breadth in this pass
 - Orcas IPC is intentionally narrow and may evolve
+- `orcasd` reuses an existing `target/debug/orcasd` binary when present; after daemon changes, rebuild that binary before spawning if you are not using `cargo run -p orcas-daemon`
 
 ## Validation Completed In This Pass
 
 Validated locally against `/home/emmy/git/codex/codex-rs/target/debug/codex`:
 
+- `cargo fmt --check`
 - `cargo check`
 - `cargo test`
 - `orcas supervisor daemon start`
 - `orcas supervisor models list`
-- `orcas supervisor quickstart`
-- TUI attached to the same live daemon
-- supervisor-driven turn events observed from the TUI
+- `orcas supervisor threads list`
+- direct `state/get` over the UDS socket
+- TUI attached to the same live daemon and exited cleanly
 - killing the TUI did not kill `orcasd`
 - supervisor commands continued working after the TUI disconnected
 
+Note: the previous quickstart path is currently blocked by the local Codex upstream returning `426 Upgrade Required` from its remote responses websocket. The Orcas daemon/TUI path validates cleanly, but end-to-end turn completion still depends on upstream Codex availability.
+
 ## Next Step
 
-Build a richer Orcas-owned state/query layer inside `orcasd` so clients can query live thread state, recent turns, and resumable session metadata without repeatedly round-tripping raw upstream lists.
+Broaden the daemon’s Orcas-owned live model from read/query into richer mutation and session workflows, especially better thread scoping, resumable active sessions, and durable per-thread recent output caches.

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use orcas_core::{
-    AppConfig, AppPaths, OrcasEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
-    TurnStartRequest,
+    AppConfig, AppPaths, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
+    TurnStartRequest, ipc,
 };
 use orcas_daemon::{
     EventSubscription, OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient,
@@ -241,7 +241,7 @@ impl SupervisorService {
         loop {
             match events.recv().await {
                 Ok(envelope) => match envelope.event {
-                    OrcasEvent::AgentMessageDelta {
+                    ipc::DaemonEvent::OutputDelta {
                         thread_id: event_thread_id,
                         turn_id: event_turn_id,
                         delta,
@@ -251,19 +251,21 @@ impl SupervisorService {
                         io::stdout().flush().ok();
                         buffer.push_str(&delta);
                     }
-                    OrcasEvent::TurnCompleted {
+                    ipc::DaemonEvent::TurnUpdated {
                         thread_id: event_thread_id,
-                        turn_id: event_turn_id,
-                        status,
-                    } if event_thread_id == thread_id && event_turn_id == turn_id => {
-                        println!("\n[turn completed: {status}]");
+                        turn,
+                    } if event_thread_id == thread_id
+                        && turn.id == turn_id
+                        && matches!(
+                            turn.status.as_str(),
+                            "completed" | "failed" | "cancelled" | "interrupted"
+                        ) =>
+                    {
+                        println!("\n[turn completed: {}]", turn.status);
                         return Ok(buffer);
                     }
-                    OrcasEvent::Warning { message } => {
+                    ipc::DaemonEvent::Warning { message } => {
                         eprintln!("warning: {message}");
-                    }
-                    OrcasEvent::ServerRequest { method } => {
-                        eprintln!("server request pending: {method}");
                     }
                     _ => {}
                 },
