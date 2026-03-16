@@ -133,6 +133,28 @@ impl OrcasIpcClient {
         self.request(ipc::methods::TURNS_RECENT, params).await
     }
 
+    pub async fn turns_list_active(&self) -> OrcasResult<ipc::TurnsListActiveResponse> {
+        self.request(
+            ipc::methods::TURNS_LIST_ACTIVE,
+            &ipc::TurnsListActiveRequest::default(),
+        )
+        .await
+    }
+
+    pub async fn turn_get(
+        &self,
+        params: &ipc::TurnGetRequest,
+    ) -> OrcasResult<ipc::TurnGetResponse> {
+        self.request(ipc::methods::TURN_GET, params).await
+    }
+
+    pub async fn turn_attach(
+        &self,
+        params: &ipc::TurnAttachRequest,
+    ) -> OrcasResult<ipc::TurnAttachResponse> {
+        self.request(ipc::methods::TURN_ATTACH, params).await
+    }
+
     pub async fn turn_start(
         &self,
         params: &ipc::TurnStartRequest,

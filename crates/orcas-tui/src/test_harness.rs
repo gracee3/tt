@@ -48,6 +48,14 @@ impl AppHarness {
         self.backend.set_thread(thread).await;
     }
 
+    pub async fn set_turn(&self, turn: ipc::TurnAttachResponse) {
+        self.backend.set_turn(turn).await;
+    }
+
+    pub async fn set_active_turns(&self, turns: Vec<ipc::TurnStateView>) {
+        self.backend.set_active_turns(turns).await;
+    }
+
     pub async fn replace_snapshot(&self, snapshot: ipc::StateSnapshot) {
         self.backend.replace_snapshot(snapshot).await;
     }

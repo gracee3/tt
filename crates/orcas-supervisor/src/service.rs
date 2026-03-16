@@ -217,6 +217,71 @@ impl SupervisorService {
         Ok(())
     }
 
+    pub async fn turns_list_active(&self) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client.turns_list_active().await?;
+        if response.turns.is_empty() {
+            println!("no active attachable turns");
+            return Ok(());
+        }
+
+        for turn in response.turns {
+            println!(
+                "{}\t{}\t{}\tattachable={}\tlive_stream={}\t{}\t{}",
+                turn.thread_id,
+                turn.turn_id,
+                format!("{:?}", turn.lifecycle).to_ascii_lowercase(),
+                turn.attachable,
+                turn.live_stream,
+                turn.recent_output.unwrap_or_default(),
+                turn.recent_event.unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn turn_get(&self, thread_id: &str, turn_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .turn_attach(&orcas_core::ipc::TurnAttachRequest {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+            })
+            .await?;
+
+        println!("thread_id: {thread_id}");
+        println!("turn_id: {turn_id}");
+        println!("attached: {}", response.attached);
+        if let Some(reason) = response.reason.as_ref() {
+            println!("attach_reason: {reason}");
+        }
+
+        if let Some(turn) = response.turn {
+            println!(
+                "lifecycle: {}",
+                format!("{:?}", turn.lifecycle).to_ascii_lowercase()
+            );
+            println!("status: {}", turn.status);
+            println!("attachable: {}", turn.attachable);
+            println!("live_stream: {}", turn.live_stream);
+            println!("terminal: {}", turn.terminal);
+            println!("updated_at: {}", turn.updated_at);
+            if let Some(output) = turn.recent_output.as_ref() {
+                println!("recent_output: {output}");
+            }
+            if let Some(event) = turn.recent_event.as_ref() {
+                println!("recent_event: {event}");
+            }
+            if let Some(error) = turn.error_message.as_ref() {
+                println!("error_message: {error}");
+            }
+        } else {
+            println!("turn: not found");
+        }
+
+        Ok(())
+    }
+
     pub async fn thread_start(
         &self,
         cwd: Option<PathBuf>,

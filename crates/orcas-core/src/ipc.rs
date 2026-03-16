@@ -17,7 +17,10 @@ pub mod methods {
     pub const THREAD_READ: &str = "thread/read";
     pub const THREAD_GET: &str = "thread/get";
     pub const THREAD_RESUME: &str = "thread/resume";
+    pub const TURNS_LIST_ACTIVE: &str = "turns/list_active";
     pub const TURNS_RECENT: &str = "turns/recent";
+    pub const TURN_GET: &str = "turn/get";
+    pub const TURN_ATTACH: &str = "turn/attach";
     pub const TURN_START: &str = "turn/start";
     pub const TURN_INTERRUPT: &str = "turn/interrupt";
     pub const EVENTS_SUBSCRIBE: &str = "events/subscribe";
@@ -239,6 +242,40 @@ pub struct TurnView {
     pub items: Vec<ItemView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnLifecycleState {
+    Active,
+    Completed,
+    Failed,
+    Interrupted,
+    Lost,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnStateView {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub lifecycle: TurnLifecycleState,
+    pub status: String,
+    pub attachable: bool,
+    pub live_stream: bool,
+    pub terminal: bool,
+    pub recent_output: Option<String>,
+    pub recent_event: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TurnsListActiveRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnsListActiveResponse {
+    pub turns: Vec<TurnStateView>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemView {
     pub id: String,
@@ -302,6 +339,30 @@ pub struct TurnsRecentRequest {
 pub struct TurnsRecentResponse {
     pub thread_id: String,
     pub turns: Vec<TurnView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnGetRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnGetResponse {
+    pub turn: Option<TurnStateView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnAttachRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnAttachResponse {
+    pub turn: Option<TurnStateView>,
+    pub attached: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -69,6 +69,7 @@ Thin operational CLI client:
 - sends narrow IPC requests
 - keeps one-shot admin commands simple and short-lived
 - uses a small session-aware streaming helper for prompt/turn flows
+- exposes a small turn inspection surface for operator/debug visibility
 - streams turn output from Orcas IPC events with bounded reconnect
 - no longer owns a direct Codex client
 
@@ -82,6 +83,7 @@ Testable frontend split:
 - `UiEvent` translation layer between daemon events and reducer updates
 - selectors/view-models for render and tests
 - ratatui render layer as a thin projection over state
+- turn lifecycle/attachability projections sourced from Orcas turn state where available
 
 The goal is not UI breadth yet. The goal is one canonical state machine that runs both interactively and headlessly.
 
@@ -137,6 +139,7 @@ Codex notifications are still received and normalized at the daemon edge, but fr
 `orcasd` now keeps:
 
 - a live in-memory thread/session model
+- a daemon-owned active-turn registry
 - a broadcast bus for live daemon events
 - a recent-event ring buffer
 - recent per-thread output/event snippets
@@ -158,12 +161,25 @@ The reconnect path now follows the same rule:
 
 Missed state is recovered from the snapshot, not inferred from event gaps alone.
 
+Turn recovery now has a narrower Orcas-owned contract too:
+
+- `turns/list_active` exposes active attachable turns known to the daemon
+- `turn/get` returns Orcas turn lifecycle state and cached output/status when available
+- `turn/attach` answers whether the current daemon instance can still prove live attachment for that turn
+
+This is intentionally conservative. Live attachment is daemon-instance scoped, not a claim that upstream Codex execution survives daemon replacement automatically.
+
+That same contract is now consumed in the main local surfaces:
+
+- supervisor can inspect active turns and specific turn state directly
+- TUI status/detail projections prefer Orcas turn lifecycle state over thread-level `turn_in_flight` hints when explicit turn data exists
+
 Supervisor streaming commands follow the same snapshot-first rule, but with stricter user-facing semantics:
 
 - if the daemon disappears mid-stream, the supervisor reconnects with bounded backoff
-- once reconnected, it re-anchors on `state/get` plus `thread/get`
-- if the target turn still exists or is still marked active, the supervisor re-subscribes
-- if the target turn is only recoverable as terminal snapshot state, the supervisor reports that explicitly and prints the recovered suffix
+- once reconnected, it re-anchors on `state/get` plus `turn/attach`
+- if the target turn is still attachable, the supervisor re-subscribes
+- if the target turn is only recoverable as terminal or cached turn state, the supervisor reports that explicitly and prints the recovered suffix when available
 - if continuity cannot be proven, the command exits as interrupted instead of implying uninterrupted upstream execution
 
 Current daemon event types include:
@@ -208,7 +224,7 @@ Most TUI tests assert on state and view-model projections. Render validation is 
 
 - `threads/list` is still broader than the scoped frontend snapshot
 - one-shot supervisor retry logic is intentionally shallow and command-scoped
-- supervisor streaming recovery is local-session aware, not upstream-turn durable
+- supervisor streaming recovery is turn-aware at the Orcas layer, but not upstream-turn durable across daemon replacement
 - no dedicated approval UX
 - no auth or multi-user model
 - no browser bridge yet

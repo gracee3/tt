@@ -57,6 +57,10 @@ enum SupervisorCommand {
         #[command(subcommand)]
         command: ThreadsCommand,
     },
+    Turns {
+        #[command(subcommand)]
+        command: TurnsCommand,
+    },
     Prompt(PromptArgs),
     Quickstart(QuickstartArgs),
 }
@@ -80,6 +84,12 @@ enum ThreadsCommand {
     Read(ThreadRefArgs),
     Start(ThreadStartArgs),
     Resume(ThreadResumeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum TurnsCommand {
+    ListActive,
+    Get(TurnRefArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -106,6 +116,14 @@ struct ThreadResumeArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct TurnRefArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    turn: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -169,6 +187,10 @@ async fn main() -> Result<()> {
                         .thread_resume(&args.thread, args.cwd, args.model)
                         .await?;
                 }
+            },
+            SupervisorCommand::Turns { command } => match command {
+                TurnsCommand::ListActive => service.turns_list_active().await?,
+                TurnsCommand::Get(args) => service.turn_get(&args.thread, &args.turn).await?,
             },
             SupervisorCommand::Prompt(args) => {
                 let _ = service.prompt(&args.thread, &args.text).await?;

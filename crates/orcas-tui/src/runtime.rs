@@ -151,6 +151,29 @@ impl<B: TuiBackend> AppRuntime<B> {
                 self.event_rx = None;
                 self.schedule_reconnect();
             }
+            Effect::LoadActiveTurns => {
+                match self.backend.execute(BackendCommand::GetActiveTurns).await {
+                    Ok(BackendCommandResult::ActiveTurns(turns)) => {
+                        self.dispatch(Action::Event(UiEvent::ActiveTurnsLoaded(turns)));
+                    }
+                    Ok(other) => {
+                        self.dispatch(Action::Event(UiEvent::Error(format!(
+                            "unexpected active-turn response: {other:?}"
+                        ))));
+                    }
+                    Err(error) => {
+                        if Self::is_disconnect_error(&error) {
+                            self.dispatch(Action::Event(UiEvent::ConnectionLost(format!(
+                                "active turn load failed: {error}"
+                            ))));
+                        } else {
+                            self.dispatch(Action::Event(UiEvent::Error(format!(
+                                "active turn load failed: {error}"
+                            ))));
+                        }
+                    }
+                }
+            }
             Effect::LoadThread { thread_id } => {
                 match self
                     .backend
@@ -175,6 +198,36 @@ impl<B: TuiBackend> AppRuntime<B> {
                         } else {
                             self.dispatch(Action::Event(UiEvent::Error(format!(
                                 "thread load failed for {thread_id}: {error}"
+                            ))));
+                        }
+                    }
+                }
+            }
+            Effect::LoadTurnState { thread_id, turn_id } => {
+                match self
+                    .backend
+                    .execute(BackendCommand::GetTurn {
+                        thread_id: thread_id.clone(),
+                        turn_id: turn_id.clone(),
+                    })
+                    .await
+                {
+                    Ok(BackendCommandResult::Turn(turn)) => {
+                        self.dispatch(Action::Event(UiEvent::TurnStateLoaded(turn)));
+                    }
+                    Ok(other) => {
+                        self.dispatch(Action::Event(UiEvent::Error(format!(
+                            "unexpected turn response: {other:?}"
+                        ))));
+                    }
+                    Err(error) => {
+                        if Self::is_disconnect_error(&error) {
+                            self.dispatch(Action::Event(UiEvent::ConnectionLost(format!(
+                                "turn load failed for {thread_id}/{turn_id}: {error}"
+                            ))));
+                        } else {
+                            self.dispatch(Action::Event(UiEvent::Error(format!(
+                                "turn load failed for {thread_id}/{turn_id}: {error}"
                             ))));
                         }
                     }

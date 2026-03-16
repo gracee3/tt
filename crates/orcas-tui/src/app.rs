@@ -20,6 +20,7 @@ pub struct AppState {
     pub session: ipc::SessionState,
     pub threads: Vec<ipc::ThreadSummary>,
     pub thread_details: HashMap<String, ipc::ThreadView>,
+    pub turn_states: HashMap<String, ipc::TurnStateView>,
     pub selected_thread_id: Option<String>,
     pub recent_events: VecDeque<ipc::EventSummary>,
     pub prompt_input: String,
@@ -72,6 +73,8 @@ pub enum UiEvent {
     },
     ConnectionLost(String),
     ThreadLoaded(ipc::ThreadView),
+    ActiveTurnsLoaded(Vec<ipc::TurnStateView>),
+    TurnStateLoaded(ipc::TurnAttachResponse),
     PromptStarted {
         thread_id: String,
         turn_id: String,
@@ -137,7 +140,9 @@ pub enum Effect {
     RefreshSnapshot,
     SubscribeEvents,
     ScheduleReconnect,
+    LoadActiveTurns,
     LoadThread { thread_id: String },
+    LoadTurnState { thread_id: String, turn_id: String },
     SubmitPrompt { thread_id: String, text: String },
 }
 
@@ -221,14 +226,24 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.session = snapshot.session;
             state.threads = snapshot.threads;
             state.thread_details.clear();
+            state.turn_states.clear();
             state.recent_events = snapshot.recent_events.into_iter().collect();
             state.selected_thread_id = None;
-            state.prompt_in_flight = !state.session.active_turns.is_empty();
+            state.prompt_in_flight = false;
             if let Some(thread) = snapshot.active_thread {
+                let turn_ids = thread
+                    .turns
+                    .iter()
+                    .map(|turn| turn.id.clone())
+                    .collect::<Vec<_>>();
                 state.selected_thread_id = Some(thread.summary.id.clone());
                 state
                     .thread_details
-                    .insert(thread.summary.id.clone(), thread);
+                    .insert(thread.summary.id.clone(), thread.clone());
+                effects.extend(turn_ids.into_iter().map(|turn_id| Effect::LoadTurnState {
+                    thread_id: thread.summary.id.clone(),
+                    turn_id,
+                }));
             }
             if state.selected_thread_id.is_none() {
                 state.selected_thread_id = state
@@ -242,6 +257,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             {
                 effects.push(Effect::LoadThread { thread_id });
             }
+            effects.push(Effect::LoadActiveTurns);
             state.banner = None;
         }
         UiEvent::ReconnectScheduled { attempt, delay_ms } => {
@@ -269,20 +285,43 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         }
         UiEvent::ThreadLoaded(thread) => {
             let thread_id = thread.summary.id.clone();
+            let turn_ids = thread
+                .turns
+                .iter()
+                .map(|turn| turn.id.clone())
+                .collect::<Vec<_>>();
             upsert_thread_summary(&mut state.threads, thread.summary.clone());
             state.thread_details.insert(thread_id.clone(), thread);
             if state.selected_thread_id.is_none() {
-                state.selected_thread_id = Some(thread_id);
+                state.selected_thread_id = Some(thread_id.clone());
             }
+            effects.extend(turn_ids.into_iter().map(|turn_id| Effect::LoadTurnState {
+                thread_id: thread_id.clone(),
+                turn_id,
+            }));
             state.banner = None;
         }
-        UiEvent::PromptStarted { thread_id, .. } => {
+        UiEvent::ActiveTurnsLoaded(turns) => {
+            state.turn_states.retain(|_, turn| !turn.attachable);
+            for turn in turns {
+                upsert_turn_state(state, turn);
+            }
+            refresh_prompt_in_flight(state);
+        }
+        UiEvent::TurnStateLoaded(response) => {
+            if let Some(turn) = response.turn {
+                upsert_turn_state(state, turn);
+            }
+            refresh_prompt_in_flight(state);
+        }
+        UiEvent::PromptStarted { thread_id, turn_id } => {
+            state.selected_thread_id = Some(thread_id.clone());
             state.prompt_in_flight = true;
-            state.selected_thread_id = Some(thread_id);
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
                 message: "Prompt submitted.".to_string(),
             });
+            effects.push(Effect::LoadTurnState { thread_id, turn_id });
         }
         UiEvent::UpstreamChanged(upstream) => {
             if let Some(daemon) = state.daemon.as_mut() {
@@ -295,6 +334,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         UiEvent::SessionChanged(session) => {
             let active_thread_id = session.active_thread_id.clone();
             state.session = session;
+            effects.push(Effect::LoadActiveTurns);
             if let Some(thread_id) = active_thread_id {
                 if state.selected_thread_id.is_none() {
                     state.selected_thread_id = Some(thread_id.clone());
@@ -323,10 +363,17 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             ensure_thread_detail(state, &thread_id);
             if let Some(detail) = state.thread_details.get_mut(&thread_id) {
                 upsert_turn(detail, turn.clone());
-                if is_terminal_status(&turn.status) {
-                    state.prompt_in_flight = false;
-                }
             }
+            if matches!(
+                turn.status.as_str(),
+                "completed" | "failed" | "cancelled" | "interrupted" | "lost"
+            ) {
+                state.prompt_in_flight = false;
+            }
+            effects.push(Effect::LoadTurnState {
+                thread_id,
+                turn_id: turn.id,
+            });
         }
         UiEvent::ItemUpdated {
             thread_id,
@@ -434,6 +481,28 @@ fn ensure_thread_detail(state: &mut AppState, thread_id: &str) {
     );
 }
 
+fn upsert_turn_state(state: &mut AppState, turn: ipc::TurnStateView) {
+    state
+        .turn_states
+        .insert(turn_state_key(&turn.thread_id, &turn.turn_id), turn);
+}
+
+fn turn_state_key(thread_id: &str, turn_id: &str) -> String {
+    format!("{thread_id}/{turn_id}")
+}
+
+fn refresh_prompt_in_flight(state: &mut AppState) {
+    let explicit_active = state
+        .turn_states
+        .values()
+        .any(|turn| turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active));
+    state.prompt_in_flight = if explicit_active {
+        true
+    } else {
+        !state.session.active_turns.is_empty()
+    };
+}
+
 fn ensure_turn<'a>(thread: &'a mut ipc::ThreadView, turn_id: &str) -> &'a mut ipc::TurnView {
     if let Some(index) = thread.turns.iter().position(|turn| turn.id == turn_id) {
         return &mut thread.turns[index];
@@ -534,6 +603,25 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
             Some(thread.summary.id.clone()),
             None,
         ),
+        UiEvent::ActiveTurnsLoaded(turns) => (
+            "turns",
+            format!("loaded {} active turns", turns.len()),
+            turns.first().map(|turn| turn.thread_id.clone()),
+            turns.first().map(|turn| turn.turn_id.clone()),
+        ),
+        UiEvent::TurnStateLoaded(response) => (
+            "turn_state",
+            if response.attached {
+                "turn attachment confirmed".to_string()
+            } else {
+                response
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "turn state refreshed".to_string())
+            },
+            response.turn.as_ref().map(|turn| turn.thread_id.clone()),
+            response.turn.as_ref().map(|turn| turn.turn_id.clone()),
+        ),
         UiEvent::PromptStarted { thread_id, turn_id } => (
             "prompt",
             format!("submitted turn {turn_id}"),
@@ -589,8 +677,4 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
         thread_id,
         turn_id,
     })
-}
-
-fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
 }

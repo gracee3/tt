@@ -97,7 +97,12 @@ pub trait SupervisorStreamingBackend: Send + Sync {
         request: &TurnStartRequest,
     ) -> Result<ipc::TurnStartResponse>;
     async fn state_get(&self, client: Self::Client) -> Result<ipc::StateSnapshot>;
-    async fn thread_get(&self, client: Self::Client, thread_id: &str) -> Result<ipc::ThreadView>;
+    async fn turn_attach(
+        &self,
+        client: Self::Client,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<ipc::TurnAttachResponse>;
 }
 
 #[derive(Debug, Clone)]
@@ -171,13 +176,18 @@ impl SupervisorStreamingBackend for OrcasSupervisorStreamingBackend {
         Ok(client.state_get().await?.snapshot)
     }
 
-    async fn thread_get(&self, client: Self::Client, thread_id: &str) -> Result<ipc::ThreadView> {
+    async fn turn_attach(
+        &self,
+        client: Self::Client,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<ipc::TurnAttachResponse> {
         Ok(client
-            .thread_get(&ipc::ThreadGetRequest {
+            .turn_attach(&ipc::TurnAttachRequest {
                 thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
             })
-            .await?
-            .thread)
+            .await?)
     }
 }
 
@@ -378,12 +388,12 @@ where
                 Ok(client) => {
                     reporter.status("[reconnected to daemon; reloading snapshot]");
                     let snapshot = self.backend.state_get(client.clone()).await?;
-                    let thread = self
+                    let attachment = self
                         .backend
-                        .thread_get(client.clone(), thread_id)
+                        .turn_attach(client.clone(), thread_id, turn_id)
                         .await
                         .ok();
-                    let recovery = analyze_recovery(&snapshot, thread.as_ref(), thread_id, turn_id);
+                    let recovery = analyze_recovery(&snapshot, attachment.as_ref(), turn_id);
 
                     match recovery.phase {
                         StreamPhase::Recovered => {
@@ -445,22 +455,50 @@ enum RecoveryDecision<S> {
 
 fn analyze_recovery(
     snapshot: &ipc::StateSnapshot,
-    thread: Option<&ipc::ThreadView>,
-    thread_id: &str,
+    attachment: Option<&ipc::TurnAttachResponse>,
     turn_id: &str,
 ) -> StreamRecovery {
-    let thread_summary = snapshot
-        .threads
-        .iter()
-        .find(|thread| thread.id == thread_id);
-    let recovered_output = thread
-        .and_then(|thread| turn_output(thread, turn_id))
-        .or_else(|| thread_summary.and_then(|summary| summary.recent_output.clone()));
+    let recovered_output = attachment
+        .and_then(|attachment| {
+            attachment
+                .turn
+                .as_ref()
+                .and_then(|turn| turn.recent_output.clone())
+        })
+        .or_else(|| {
+            snapshot
+                .threads
+                .iter()
+                .find(|thread| {
+                    attachment
+                        .and_then(|attach| attach.turn.as_ref())
+                        .map(|turn| thread.id == turn.thread_id)
+                        .unwrap_or(false)
+                })
+                .and_then(|thread| thread.recent_output.clone())
+        });
 
-    if let Some(thread) = thread
-        && let Some(turn) = thread.turns.iter().find(|turn| turn.id == turn_id)
+    if let Some(attachment) = attachment
+        && let Some(turn) = attachment.turn.as_ref()
     {
-        if is_terminal_status(&turn.status) {
+        if attachment.attached
+            && turn.attachable
+            && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active)
+        {
+            return StreamRecovery {
+                phase: StreamPhase::Recovered,
+                status: None,
+                recovered_output,
+                message: format!("[recovered live turn attachment for {turn_id}; resubscribing]"),
+            };
+        }
+
+        if matches!(
+            turn.lifecycle,
+            ipc::TurnLifecycleState::Completed
+                | ipc::TurnLifecycleState::Failed
+                | ipc::TurnLifecycleState::Interrupted
+        ) {
             return StreamRecovery {
                 phase: StreamPhase::Recovered,
                 status: Some(turn.status.clone()),
@@ -473,24 +511,16 @@ fn analyze_recovery(
         }
 
         return StreamRecovery {
-            phase: StreamPhase::Recovered,
+            phase: StreamPhase::Interrupted,
             status: None,
             recovered_output,
-            message: format!("[recovered live stream state for turn {turn_id}; resubscribing]"),
-        };
-    }
-
-    if snapshot
-        .session
-        .active_turns
-        .iter()
-        .any(|active| active.thread_id == thread_id && active.turn_id == turn_id)
-    {
-        return StreamRecovery {
-            phase: StreamPhase::Recovered,
-            status: None,
-            recovered_output,
-            message: format!("[recovered active session view for turn {turn_id}; resubscribing]"),
+            message: attachment.reason.as_ref().map_or_else(
+                || {
+                    "[stream interrupted during daemon replacement; upstream continuation could not be confirmed]"
+                        .to_string()
+                },
+                |reason| format!("[stream interrupted after daemon replacement; {reason}]"),
+            ),
         };
     }
 
@@ -502,18 +532,6 @@ fn analyze_recovery(
             "[stream interrupted during daemon replacement; upstream continuation could not be confirmed]"
                 .to_string(),
     }
-}
-
-fn turn_output(thread: &ipc::ThreadView, turn_id: &str) -> Option<String> {
-    let text = thread
-        .turns
-        .iter()
-        .find(|turn| turn.id == turn_id)?
-        .items
-        .iter()
-        .filter_map(|item| item.text.as_deref())
-        .collect::<String>();
-    (!text.is_empty()).then_some(text)
 }
 
 fn output_suffix(full_output: &str, printed_output: &str) -> Option<String> {
@@ -572,7 +590,7 @@ mod tests {
         connect_results: VecDeque<Result<FakeClient>>,
         streams: VecDeque<VecDeque<Result<StreamEvent>>>,
         snapshots: VecDeque<ipc::StateSnapshot>,
-        thread_views: VecDeque<Result<ipc::ThreadView>>,
+        attachments: VecDeque<Result<ipc::TurnAttachResponse>>,
         start_turn_response: Option<ipc::TurnStartResponse>,
         reconnect_flags: Vec<bool>,
     }
@@ -632,17 +650,18 @@ mod tests {
                 .ok_or_else(|| anyhow!("missing snapshot"))
         }
 
-        async fn thread_get(
+        async fn turn_attach(
             &self,
             _client: Self::Client,
             _thread_id: &str,
-        ) -> Result<ipc::ThreadView> {
+            _turn_id: &str,
+        ) -> Result<ipc::TurnAttachResponse> {
             self.state
                 .lock()
                 .await
-                .thread_views
+                .attachments
                 .pop_front()
-                .unwrap_or_else(|| Err(anyhow!("missing thread view")))
+                .unwrap_or_else(|| Err(anyhow!("missing turn attachment")))
         }
     }
 
@@ -703,24 +722,24 @@ mod tests {
         }
     }
 
-    fn sample_thread(status: &str, text: &str) -> ipc::ThreadView {
-        ipc::ThreadView {
-            summary: sample_snapshot(false, Some(text)).threads[0].clone(),
-            turns: vec![ipc::TurnView {
-                id: "turn-1".to_string(),
-                status: status.to_string(),
-                error_message: None,
-                items: if text.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![ipc::ItemView {
-                        id: "item-1".to_string(),
-                        item_type: "agent_message".to_string(),
-                        status: Some(status.to_string()),
-                        text: Some(text.to_string()),
-                    }]
-                },
-            }],
+    fn sample_turn_state(
+        lifecycle: ipc::TurnLifecycleState,
+        status: &str,
+        attachable: bool,
+        text: &str,
+    ) -> ipc::TurnStateView {
+        ipc::TurnStateView {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            lifecycle,
+            status: status.to_string(),
+            attachable,
+            live_stream: attachable,
+            terminal: !matches!(lifecycle, ipc::TurnLifecycleState::Active),
+            recent_output: (!text.is_empty()).then(|| text.to_string()),
+            recent_event: Some(format!("turn {status}")),
+            updated_at: Utc::now(),
+            error_message: None,
         }
     }
 
@@ -765,7 +784,16 @@ mod tests {
                 ]),
             ]);
             state.snapshots = VecDeque::from(vec![sample_snapshot(true, Some("hello "))]);
-            state.thread_views = VecDeque::from(vec![Ok(sample_thread("in_progress", "hello "))]);
+            state.attachments = VecDeque::from(vec![Ok(ipc::TurnAttachResponse {
+                turn: Some(sample_turn_state(
+                    ipc::TurnLifecycleState::Active,
+                    "in_progress",
+                    true,
+                    "hello ",
+                )),
+                attached: true,
+                reason: None,
+            })]);
             state.start_turn_response = Some(ipc::TurnStartResponse {
                 turn_id: "turn-1".to_string(),
                 thread_id: "thread-1".to_string(),
@@ -862,7 +890,19 @@ mod tests {
             state.streams =
                 VecDeque::from(vec![VecDeque::from(vec![Err(anyhow!("socket closed"))])]);
             state.snapshots = VecDeque::from(vec![sample_snapshot(false, Some("partial output"))]);
-            state.thread_views = VecDeque::from(vec![Err(anyhow!("thread missing"))]);
+            state.attachments = VecDeque::from(vec![Ok(ipc::TurnAttachResponse {
+                turn: Some(sample_turn_state(
+                    ipc::TurnLifecycleState::Lost,
+                    "lost",
+                    false,
+                    "partial output",
+                )),
+                attached: false,
+                reason: Some(
+                    "turn continuity was lost when Orcas lost daemon/upstream ownership"
+                        .to_string(),
+                ),
+            })]);
             state.start_turn_response = Some(ipc::TurnStartResponse {
                 turn_id: "turn-1".to_string(),
                 thread_id: "thread-1".to_string(),
@@ -918,8 +958,18 @@ mod tests {
                 Err(anyhow!("socket closed")),
             ])]);
             state.snapshots = VecDeque::from(vec![sample_snapshot(false, Some("hello world"))]);
-            state.thread_views =
-                VecDeque::from(vec![Ok(sample_thread("completed", "hello world"))]);
+            state.attachments = VecDeque::from(vec![Ok(ipc::TurnAttachResponse {
+                turn: Some(sample_turn_state(
+                    ipc::TurnLifecycleState::Completed,
+                    "completed",
+                    false,
+                    "hello world",
+                )),
+                attached: false,
+                reason: Some(
+                    "turn already completed; only terminal state is queryable".to_string(),
+                ),
+            })]);
             state.start_turn_response = Some(ipc::TurnStartResponse {
                 turn_id: "turn-1".to_string(),
                 thread_id: "thread-1".to_string(),

@@ -39,6 +39,28 @@ fn sample_thread_view(id: &str, preview: &str, output: &str) -> ipc::ThreadView 
     }
 }
 
+fn sample_turn_state(
+    thread_id: &str,
+    turn_id: &str,
+    lifecycle: ipc::TurnLifecycleState,
+    status: &str,
+    attachable: bool,
+) -> ipc::TurnStateView {
+    ipc::TurnStateView {
+        thread_id: thread_id.to_string(),
+        turn_id: turn_id.to_string(),
+        lifecycle,
+        status: status.to_string(),
+        attachable,
+        live_stream: attachable,
+        terminal: !matches!(lifecycle, ipc::TurnLifecycleState::Active),
+        recent_output: Some("turn output".to_string()),
+        recent_event: Some(format!("turn {status}")),
+        updated_at: Utc::now(),
+        error_message: None,
+    }
+}
+
 fn sample_snapshot() -> ipc::StateSnapshot {
     ipc::StateSnapshot {
         daemon: ipc::DaemonStatusResponse {
@@ -117,10 +139,45 @@ async fn event_stream_updates_connection_state() {
 }
 
 #[tokio::test]
+async fn active_turn_state_drives_prompt_in_flight_and_thread_badge() {
+    let mut snapshot = sample_snapshot();
+    snapshot.session.active_turns = vec![ipc::ActiveTurn {
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-7".to_string(),
+        status: "in_progress".to_string(),
+        updated_at: Utc::now(),
+    }];
+
+    let harness = AppHarness::new(snapshot).await.unwrap();
+    let prompt = harness.prompt_box_vm();
+    let threads = harness.thread_list_vm();
+
+    assert!(prompt.in_flight);
+    assert_eq!(threads.rows[0].status, "active");
+    assert_eq!(
+        threads.rows[0].turn_badge.as_deref(),
+        Some("active attachable")
+    );
+}
+
+#[tokio::test]
 async fn thread_selection_loads_detail() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
     harness
         .set_thread(sample_thread_view("thread-2", "later", "second output"))
+        .await;
+    harness
+        .set_turn(ipc::TurnAttachResponse {
+            turn: Some(sample_turn_state(
+                "thread-2",
+                "turn-1",
+                ipc::TurnLifecycleState::Completed,
+                "completed",
+                false,
+            )),
+            attached: false,
+            reason: Some("turn already completed; only terminal state is queryable".to_string()),
+        })
         .await;
     harness.dispatch(UserAction::SelectNextThread).await;
 
@@ -128,6 +185,12 @@ async fn thread_selection_loads_detail() {
     let detail = harness.thread_detail_vm();
     assert!(threads.rows[1].selected);
     assert!(detail.title.contains("thread-2"));
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("turn_state: completed"))
+    );
     assert!(
         detail
             .lines
@@ -195,7 +258,7 @@ async fn completed_turn_clears_in_progress_marker() {
             ipc::DaemonEvent::TurnUpdated {
                 thread_id: "thread-1".to_string(),
                 turn: ipc::TurnView {
-                    id: "turn-9".to_string(),
+                    id: "turn-1".to_string(),
                     status: "completed".to_string(),
                     error_message: None,
                     items: Vec::new(),

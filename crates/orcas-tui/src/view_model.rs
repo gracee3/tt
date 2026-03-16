@@ -15,6 +15,7 @@ pub struct ConnectionStatusViewModel {
 pub struct ThreadRowViewModel {
     pub id: String,
     pub status: String,
+    pub turn_badge: Option<String>,
     pub preview: String,
     pub selected: bool,
 }
@@ -72,7 +73,8 @@ pub fn thread_list(state: &AppState) -> ThreadListViewModel {
             .iter()
             .map(|thread| ThreadRowViewModel {
                 id: thread.id.clone(),
-                status: thread.status.clone(),
+                status: thread_status_label(state, thread),
+                turn_badge: thread_turn_badge(state, &thread.id),
                 preview: thread.preview.replace('\n', " "),
                 selected: state.selected_thread_id.as_deref() == Some(thread.id.as_str()),
             })
@@ -131,6 +133,20 @@ pub fn thread_detail(state: &AppState) -> ThreadDetailViewModel {
     let mut lines = Vec::new();
     lines.push(format!("status: {}", thread.summary.status));
     lines.push(format!("cwd: {}", thread.summary.cwd));
+    if let Some(turn_state) = latest_turn_state_for_thread(state, thread_id) {
+        lines.push(format!(
+            "turn_state: {}  attachable={}  live_stream={}",
+            lifecycle_label(&turn_state.lifecycle),
+            turn_state.attachable,
+            turn_state.live_stream
+        ));
+        if let Some(event) = turn_state.recent_event.as_ref() {
+            lines.push(format!("turn_event: {event}"));
+        }
+        if let Some(output) = turn_state.recent_output.as_ref() {
+            lines.push(format!("turn_output: {output}"));
+        }
+    }
     lines.push(format!(
         "preview: {}",
         thread.summary.preview.replace('\n', " ")
@@ -153,5 +169,43 @@ pub fn thread_detail(state: &AppState) -> ThreadDetailViewModel {
     ThreadDetailViewModel {
         title: format!("Thread {}", thread.summary.id),
         lines,
+    }
+}
+
+fn thread_status_label(state: &AppState, thread: &orcas_core::ipc::ThreadSummary) -> String {
+    latest_turn_state_for_thread(state, &thread.id)
+        .map(|turn| lifecycle_label(&turn.lifecycle).to_string())
+        .unwrap_or_else(|| thread.status.clone())
+}
+
+fn thread_turn_badge(state: &AppState, thread_id: &str) -> Option<String> {
+    latest_turn_state_for_thread(state, thread_id).map(|turn| {
+        if turn.attachable && turn.live_stream {
+            format!("{} attachable", lifecycle_label(&turn.lifecycle))
+        } else {
+            lifecycle_label(&turn.lifecycle).to_string()
+        }
+    })
+}
+
+fn latest_turn_state_for_thread<'a>(
+    state: &'a AppState,
+    thread_id: &str,
+) -> Option<&'a orcas_core::ipc::TurnStateView> {
+    state
+        .turn_states
+        .values()
+        .filter(|turn| turn.thread_id == thread_id)
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+}
+
+fn lifecycle_label(lifecycle: &orcas_core::ipc::TurnLifecycleState) -> &'static str {
+    match lifecycle {
+        orcas_core::ipc::TurnLifecycleState::Active => "active",
+        orcas_core::ipc::TurnLifecycleState::Completed => "completed",
+        orcas_core::ipc::TurnLifecycleState::Failed => "failed",
+        orcas_core::ipc::TurnLifecycleState::Interrupted => "interrupted",
+        orcas_core::ipc::TurnLifecycleState::Lost => "lost",
+        orcas_core::ipc::TurnLifecycleState::Unknown => "unknown",
     }
 }

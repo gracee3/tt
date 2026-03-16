@@ -5,6 +5,8 @@ Tracking Codex `v0.115.0`. Reference upstream: <https://github.com/openai/codex>
 
 Orcas is a local Rust orchestration scaffold for Codex `app-server`.
 
+Current milestone status: foundation complete and intentionally narrow. The current repo state is meant to be a stable pause point before broader product work changes direction.
+
 Current shape:
 
 - `orcasd` owns one long-lived upstream Codex WebSocket connection
@@ -49,8 +51,10 @@ Implemented now:
 - graceful daemon stop over IPC
 - runtime metadata file next to the socket for PID/build inspection
 - supervisor CLI routed through the daemon
+- supervisor turn inspection commands for active turn/state visibility
 - supervisor prompt and quickstart flows now use a session-aware streaming helper with bounded reconnect and snapshot-first recovery
-- TUI reducer/runtime/view-model split routed through the daemon with automatic reconnect/resubscribe
+- daemon-owned active-turn registry with explicit `turn/get`, `turn/attach`, and `turns/list_active` Orcas IPC methods
+- TUI reducer/runtime/view-model split routed through the daemon with automatic reconnect/resubscribe and turn-level status consumption
 - headless TUI test harness with fake backend
 - lightweight JSON/TOML config and thread metadata persistence, including recent output snippets
 
@@ -196,11 +200,19 @@ Orcas IPC currently exposes:
 - `thread/start`
 - `thread/read`
 - `thread/get`
+- `turns/list_active`
 - `thread/resume`
 - `turns/recent`
+- `turn/get`
+- `turn/attach`
 - `turn/start`
 - `turn/interrupt`
 - `events/subscribe`
+
+Supervisor operator/debug surfaces now include:
+
+- `orcas supervisor turns list-active`
+- `orcas supervisor turns get --thread <THREAD_ID> --turn <TURN_ID>`
 
 IPC event notifications are now Orcas-owned daemon events rather than raw upstream Codex events. The current frontend-facing event slice includes:
 
@@ -211,6 +223,12 @@ IPC event notifications are now Orcas-owned daemon events rather than raw upstre
 - item updates
 - streamed output deltas
 - warnings
+
+Turn attachment semantics are intentionally conservative:
+
+- live attachment is daemon-instance scoped
+- `turn/attach` succeeds only when the current `orcasd` instance can still prove that the turn is live and attachable
+- after daemon replacement, Orcas may still return terminal or cached turn state via `turn/get` or `turn/attach`, but it does not claim uninterrupted upstream execution unless continuity is still provable
 
 ## Known Limitations
 
@@ -223,6 +241,7 @@ IPC event notifications are now Orcas-owned daemon events rather than raw upstre
 - Orcas IPC is intentionally narrow and may evolve
 - supervisor one-shot commands still use short-lived retry behavior rather than long-lived session management
 - supervisor streaming continuity is intentionally honest: Orcas can recover the local session view after daemon replacement, but it does not claim uninterrupted upstream Codex execution if the live turn was cut
+- live turn attachment is currently daemon-instance scoped rather than durable across daemon replacement
 
 ## Validation Completed In This Pass
 
@@ -232,6 +251,9 @@ Validated locally against `/home/emmy/git/codex/codex-rs/target/debug/codex`:
 - `cargo check`
 - `cargo test`
 - focused supervisor streaming-helper tests for reconnect, resubscribe, and honest interruption reporting
+- daemon turn-registry and attachment-semantics tests
+- supervisor turn inspection commands
+- TUI turn-level status projection and active-turn tests
 - `orcas supervisor daemon start`
 - `orcas supervisor daemon status`
 - `orcas supervisor daemon restart`
@@ -253,4 +275,4 @@ Note: the previous quickstart path is currently blocked by the local Codex upstr
 
 ## Next Step
 
-Broaden the Orcas-owned control plane beyond current recovery hardening into richer daemon-side session workflows: tighter thread scoping, stronger active-turn continuity signals, and more explicit supervisor/TUI resume surfaces.
+The foundation milestone is in a good stopping state. The next step should be a deliberate product-direction pivot rather than more incremental cleanup on this scaffold.

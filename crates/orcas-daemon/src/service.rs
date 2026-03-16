@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,6 +41,7 @@ struct DaemonState {
     upstream: ConnectionState,
     session: ipc::SessionState,
     threads: HashMap<String, ipc::ThreadView>,
+    turns: HashMap<TurnKey, ipc::TurnStateView>,
     recent_thread_id: Option<String>,
 }
 
@@ -53,8 +55,37 @@ impl Default for DaemonState {
             },
             session: ipc::SessionState::default(),
             threads: HashMap::new(),
+            turns: HashMap::new(),
             recent_thread_id: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq)]
+struct TurnKey {
+    thread_id: String,
+    turn_id: String,
+}
+
+impl TurnKey {
+    fn new(thread_id: &str, turn_id: &str) -> Self {
+        Self {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+        }
+    }
+}
+
+impl PartialEq for TurnKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id && self.turn_id == other.turn_id
+    }
+}
+
+impl Hash for TurnKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.thread_id.hash(state);
+        self.turn_id.hash(state);
     }
 }
 
@@ -339,9 +370,21 @@ impl OrcasDaemonService {
                 let params: ipc::ThreadResumeRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.thread_resume(params).await?)?
             }
+            ipc::methods::TURNS_LIST_ACTIVE => {
+                let _: ipc::TurnsListActiveRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.turns_list_active().await?)?
+            }
             ipc::methods::TURNS_RECENT => {
                 let params: ipc::TurnsRecentRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.turns_recent(params).await?)?
+            }
+            ipc::methods::TURN_GET => {
+                let params: ipc::TurnGetRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.turn_get(params).await?)?
+            }
+            ipc::methods::TURN_ATTACH => {
+                let params: ipc::TurnAttachRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.turn_attach(params).await?)?
             }
             ipc::methods::TURN_START => {
                 let params: ipc::TurnStartRequest = Self::decode_params(request.params.clone())?;
@@ -568,6 +611,27 @@ impl OrcasDaemonService {
         })
     }
 
+    async fn turns_list_active(&self) -> OrcasResult<ipc::TurnsListActiveResponse> {
+        let mut turns = self
+            .state
+            .read()
+            .await
+            .turns
+            .values()
+            .filter(|turn| {
+                turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        turns.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.turn_id.cmp(&right.turn_id))
+        });
+        Ok(ipc::TurnsListActiveResponse { turns })
+    }
+
     async fn turns_recent(
         &self,
         params: ipc::TurnsRecentRequest,
@@ -590,6 +654,40 @@ impl OrcasDaemonService {
         Ok(ipc::TurnsRecentResponse {
             thread_id: params.thread_id,
             turns,
+        })
+    }
+
+    async fn turn_get(&self, params: ipc::TurnGetRequest) -> OrcasResult<ipc::TurnGetResponse> {
+        Ok(ipc::TurnGetResponse {
+            turn: self
+                .resolve_turn_state(&params.thread_id, &params.turn_id)
+                .await?,
+        })
+    }
+
+    async fn turn_attach(
+        &self,
+        params: ipc::TurnAttachRequest,
+    ) -> OrcasResult<ipc::TurnAttachResponse> {
+        let turn = self
+            .resolve_turn_state(&params.thread_id, &params.turn_id)
+            .await?;
+        let (attached, reason) = match turn.as_ref() {
+            Some(turn)
+                if turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active) =>
+            {
+                (true, None)
+            }
+            Some(turn) => (false, Some(Self::turn_attach_failure_reason(turn))),
+            None => (
+                false,
+                Some("turn was not found in the current Orcas daemon state".to_string()),
+            ),
+        };
+        Ok(ipc::TurnAttachResponse {
+            turn,
+            attached,
+            reason,
         })
     }
 
@@ -796,6 +894,45 @@ impl OrcasDaemonService {
         self.state.read().await.threads.get(thread_id).cloned()
     }
 
+    async fn turn_from_registry(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Option<ipc::TurnStateView> {
+        self.state
+            .read()
+            .await
+            .turns
+            .get(&TurnKey::new(thread_id, turn_id))
+            .cloned()
+    }
+
+    async fn resolve_turn_state(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> OrcasResult<Option<ipc::TurnStateView>> {
+        if let Some(turn) = self.turn_from_registry(thread_id, turn_id).await {
+            return Ok(Some(turn));
+        }
+
+        if let Some(thread) = self.thread_from_state(thread_id).await
+            && let Some(turn) = Self::turn_state_from_thread_view(&thread, turn_id)
+        {
+            return Ok(Some(turn));
+        }
+
+        match self
+            .thread_get(ipc::ThreadGetRequest {
+                thread_id: thread_id.to_string(),
+            })
+            .await
+        {
+            Ok(response) => Ok(Self::turn_state_from_thread_view(&response.thread, turn_id)),
+            Err(_) => Ok(None),
+        }
+    }
+
     async fn known_thread_summaries(&self) -> Vec<ipc::ThreadSummary> {
         let state = self.state.read().await;
         Self::sorted_thread_summaries(&state.threads)
@@ -820,7 +957,7 @@ impl OrcasDaemonService {
     async fn record_turn_started(&self, thread_id: &str, turn_id: &str, status: &str) {
         let (session, turn, thread) = {
             let mut state = self.state.write().await;
-            let (turn, thread_summary) = {
+            let (turn, thread_summary, turn_state) = {
                 let thread = Self::ensure_thread_entry(&mut state, thread_id);
                 Self::touch_thread(thread);
                 thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "orcas_managed");
@@ -835,9 +972,29 @@ impl OrcasDaemonService {
                     },
                 );
                 Self::refresh_thread_summary(thread);
-                (turn, thread.summary.clone())
+                let recent_output =
+                    Self::turn_output(&turn).or_else(|| thread.summary.recent_output.clone());
+                let recent_event = Some(format!("turn {status}"));
+                (
+                    turn.clone(),
+                    thread.summary.clone(),
+                    ipc::TurnStateView {
+                        thread_id: thread_id.to_string(),
+                        turn_id: turn_id.to_string(),
+                        lifecycle: ipc::TurnLifecycleState::Active,
+                        status: status.to_string(),
+                        attachable: true,
+                        live_stream: true,
+                        terminal: false,
+                        recent_output,
+                        recent_event,
+                        updated_at: Utc::now(),
+                        error_message: turn.error_message.clone(),
+                    },
+                )
             };
-            Self::upsert_active_turn(&mut state.session, thread_id, turn_id, status);
+            Self::upsert_turn_state(&mut state, turn_state);
+            Self::refresh_session_from_turns(&mut state);
             state.session.active_thread_id = Some(thread_id.to_string());
             state.recent_thread_id = Some(thread_id.to_string());
             (state.session.clone(), turn, thread_summary)
@@ -862,8 +1019,9 @@ impl OrcasDaemonService {
                     let mut state = self.state.write().await;
                     state.upstream = upstream.clone();
                     if upstream.status != "connected" {
-                        state.session.active_turns.clear();
+                        Self::mark_turns_lost(&mut state);
                     }
+                    Self::refresh_session_from_turns(&mut state);
                     state.session.clone()
                 };
                 self.emit(ipc::DaemonEvent::UpstreamStatusChanged { upstream })
@@ -941,7 +1099,7 @@ impl OrcasDaemonService {
             } => {
                 let (session, turn, thread) = {
                     let mut state = self.state.write().await;
-                    let (turn, thread_summary) = {
+                    let (turn, thread_summary, turn_state) = {
                         let thread = Self::ensure_thread_entry(&mut state, &thread_id);
                         Self::touch_thread(thread);
                         thread.summary.recent_event = Some(format!("turn {status}"));
@@ -955,9 +1113,29 @@ impl OrcasDaemonService {
                             },
                         );
                         Self::refresh_thread_summary(thread);
-                        (turn, thread.summary.clone())
+                        let recent_output = Self::turn_output(&turn)
+                            .or_else(|| thread.summary.recent_output.clone());
+                        let recent_event = Some(format!("turn {status}"));
+                        (
+                            turn.clone(),
+                            thread.summary.clone(),
+                            ipc::TurnStateView {
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                lifecycle: Self::turn_lifecycle_from_status(&status),
+                                status: status.clone(),
+                                attachable: false,
+                                live_stream: false,
+                                terminal: true,
+                                recent_output,
+                                recent_event,
+                                updated_at: Utc::now(),
+                                error_message: turn.error_message.clone(),
+                            },
+                        )
                     };
-                    Self::remove_active_turn(&mut state.session, &thread_id, &turn_id);
+                    Self::upsert_turn_state(&mut state, turn_state);
+                    Self::refresh_session_from_turns(&mut state);
                     if state.session.active_turns.is_empty() {
                         state.session.active_thread_id = Some(thread_id.clone());
                     }
@@ -1074,13 +1252,14 @@ impl OrcasDaemonService {
         let thread = Self::ensure_thread_entry(&mut state, thread_id);
         Self::touch_thread(thread);
         thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "live_observed");
+        let saw_delta = delta.is_some();
         let item = {
             let turn = Self::ensure_turn_entry(thread, turn_id);
             let item = Self::ensure_item_entry(turn, item_id, item_type);
             if let Some(item_status) = status {
                 item.status = Some(item_status.to_string());
             }
-            if let Some(text_delta) = delta {
+            if let Some(text_delta) = delta.as_ref() {
                 item.text
                     .get_or_insert_with(String::new)
                     .push_str(&text_delta);
@@ -1092,6 +1271,39 @@ impl OrcasDaemonService {
             None => format!("{item_type} updated"),
         });
         Self::refresh_thread_summary(thread);
+        let (turn_status, live_output, recent_event, error_message) = {
+            let current_turn = thread.turns.iter().find(|turn| turn.id == turn_id);
+            (
+                current_turn
+                    .map(|turn| turn.status.clone())
+                    .unwrap_or_else(|| "in_progress".to_string()),
+                current_turn
+                    .and_then(Self::turn_output)
+                    .or_else(|| thread.summary.recent_output.clone()),
+                thread.summary.recent_event.clone(),
+                current_turn.and_then(|turn| turn.error_message.clone()),
+            )
+        };
+        let lifecycle = Self::turn_lifecycle_from_status(&turn_status);
+        let attachable = !Self::is_final_turn_lifecycle(lifecycle);
+        let live_stream = saw_delta || status.is_some();
+        Self::upsert_turn_state(
+            &mut state,
+            ipc::TurnStateView {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+                lifecycle,
+                status: turn_status.clone(),
+                attachable,
+                live_stream,
+                terminal: Self::is_terminal_status(&turn_status),
+                recent_output: live_output,
+                recent_event,
+                updated_at: Utc::now(),
+                error_message,
+            },
+        );
+        Self::refresh_session_from_turns(&mut state);
         item
     }
 
@@ -1365,6 +1577,15 @@ impl OrcasDaemonService {
         }
     }
 
+    fn turn_output(turn: &ipc::TurnView) -> Option<String> {
+        let text = turn
+            .items
+            .iter()
+            .filter_map(|item| item.text.as_deref())
+            .collect::<String>();
+        (!text.is_empty()).then_some(Self::truncate_snippet(&text))
+    }
+
     fn truncate_snippet(text: &str) -> String {
         let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut snippet = single_line.chars().take(160).collect::<String>();
@@ -1382,8 +1603,26 @@ impl OrcasDaemonService {
         }
     }
 
+    fn turn_lifecycle_from_status(status: &str) -> ipc::TurnLifecycleState {
+        match status {
+            "completed" => ipc::TurnLifecycleState::Completed,
+            "failed" => ipc::TurnLifecycleState::Failed,
+            "cancelled" | "interrupted" => ipc::TurnLifecycleState::Interrupted,
+            "lost" => ipc::TurnLifecycleState::Lost,
+            "unknown" => ipc::TurnLifecycleState::Unknown,
+            _ => ipc::TurnLifecycleState::Active,
+        }
+    }
+
+    fn is_final_turn_lifecycle(lifecycle: ipc::TurnLifecycleState) -> bool {
+        !matches!(lifecycle, ipc::TurnLifecycleState::Active)
+    }
+
     fn is_terminal_status(status: &str) -> bool {
-        matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
+        matches!(
+            status,
+            "completed" | "failed" | "cancelled" | "interrupted" | "lost" | "unknown"
+        )
     }
 
     fn upsert_turn(thread: &mut ipc::ThreadView, turn: ipc::TurnView) -> ipc::TurnView {
@@ -1463,33 +1702,122 @@ impl OrcasDaemonService {
         &mut turn.items[index]
     }
 
-    fn upsert_active_turn(
-        session: &mut ipc::SessionState,
-        thread_id: &str,
-        turn_id: &str,
-        status: &str,
-    ) {
-        if let Some(active) = session
-            .active_turns
-            .iter_mut()
-            .find(|active| active.thread_id == thread_id && active.turn_id == turn_id)
-        {
-            active.status = status.to_string();
-            active.updated_at = Utc::now();
-            return;
-        }
-        session.active_turns.push(ipc::ActiveTurn {
-            thread_id: thread_id.to_string(),
-            turn_id: turn_id.to_string(),
-            status: status.to_string(),
-            updated_at: Utc::now(),
-        });
+    fn upsert_turn_state(state: &mut DaemonState, turn: ipc::TurnStateView) {
+        state
+            .turns
+            .insert(TurnKey::new(&turn.thread_id, &turn.turn_id), turn);
     }
 
-    fn remove_active_turn(session: &mut ipc::SessionState, thread_id: &str, turn_id: &str) {
-        session
-            .active_turns
-            .retain(|active| !(active.thread_id == thread_id && active.turn_id == turn_id));
+    fn refresh_session_from_turns(state: &mut DaemonState) {
+        let mut active_turns = state
+            .turns
+            .values()
+            .filter(|turn| {
+                turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active)
+            })
+            .map(|turn| ipc::ActiveTurn {
+                thread_id: turn.thread_id.clone(),
+                turn_id: turn.turn_id.clone(),
+                status: turn.status.clone(),
+                updated_at: turn.updated_at,
+            })
+            .collect::<Vec<_>>();
+        active_turns.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.turn_id.cmp(&right.turn_id))
+        });
+        state.session.active_turns = active_turns;
+    }
+
+    fn mark_turns_lost(state: &mut DaemonState) {
+        let lost_message = "daemon lost turn continuity".to_string();
+        for turn in state.turns.values_mut() {
+            if turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active) {
+                turn.lifecycle = ipc::TurnLifecycleState::Lost;
+                turn.status = "lost".to_string();
+                turn.attachable = false;
+                turn.live_stream = false;
+                turn.terminal = true;
+                turn.recent_event = Some(lost_message.clone());
+                turn.updated_at = Utc::now();
+            }
+        }
+
+        for thread in state.threads.values_mut() {
+            for turn in &mut thread.turns {
+                if turn.status == "submitted"
+                    || turn.status == "started"
+                    || turn.status == "in_progress"
+                {
+                    turn.status = "lost".to_string();
+                    if turn.error_message.is_none() {
+                        turn.error_message = Some(lost_message.clone());
+                    }
+                }
+            }
+            if thread.summary.turn_in_flight {
+                thread.summary.recent_event = Some(lost_message.clone());
+                Self::refresh_thread_summary(thread);
+            }
+        }
+    }
+
+    fn turn_state_from_thread_view(
+        thread: &ipc::ThreadView,
+        turn_id: &str,
+    ) -> Option<ipc::TurnStateView> {
+        let turn = thread.turns.iter().find(|turn| turn.id == turn_id)?;
+        let lifecycle = if Self::is_terminal_status(&turn.status) {
+            Self::turn_lifecycle_from_status(&turn.status)
+        } else {
+            ipc::TurnLifecycleState::Unknown
+        };
+        Some(ipc::TurnStateView {
+            thread_id: thread.summary.id.clone(),
+            turn_id: turn.id.clone(),
+            lifecycle,
+            status: turn.status.clone(),
+            attachable: false,
+            live_stream: false,
+            terminal: Self::is_terminal_status(&turn.status),
+            recent_output: Self::turn_output(turn).or_else(|| thread.summary.recent_output.clone()),
+            recent_event: thread
+                .summary
+                .recent_event
+                .clone()
+                .or_else(|| Some(format!("turn {}", turn.status))),
+            updated_at: Utc
+                .timestamp_opt(thread.summary.updated_at, 0)
+                .single()
+                .unwrap_or_else(Utc::now),
+            error_message: turn.error_message.clone(),
+        })
+    }
+
+    fn turn_attach_failure_reason(turn: &ipc::TurnStateView) -> String {
+        match turn.lifecycle {
+            ipc::TurnLifecycleState::Completed => {
+                "turn already completed; only terminal state is queryable".to_string()
+            }
+            ipc::TurnLifecycleState::Failed => {
+                "turn already failed; only terminal state is queryable".to_string()
+            }
+            ipc::TurnLifecycleState::Interrupted => {
+                "turn was interrupted; live attachment is no longer available".to_string()
+            }
+            ipc::TurnLifecycleState::Lost => {
+                "turn continuity was lost when Orcas lost daemon/upstream ownership".to_string()
+            }
+            ipc::TurnLifecycleState::Unknown => {
+                "turn exists only as cached/query state; live attachment cannot be proven"
+                    .to_string()
+            }
+            ipc::TurnLifecycleState::Active => {
+                "turn is active but not attachable in this daemon instance".to_string()
+            }
+        }
     }
 
     fn overrides_from_env() -> OrcasRuntimeOverrides {
@@ -1598,7 +1926,10 @@ impl Drop for ClientGuard {
 mod tests {
     use std::collections::HashMap;
 
+    use chrono::Utc;
+
     use super::OrcasDaemonService;
+    use super::{DaemonState, TurnKey};
     use orcas_core::ipc;
 
     fn sample_thread(id: &str, scope: &str, updated_at: i64) -> ipc::ThreadView {
@@ -1661,5 +1992,98 @@ mod tests {
             thread.summary.recent_event.as_deref(),
             Some("turn in progress")
         );
+    }
+
+    #[test]
+    fn mark_turns_lost_clears_attachment_and_session() {
+        let mut state = DaemonState::default();
+        let mut thread = sample_thread("thread-1", "orcas_managed", 200);
+        thread.summary.turn_in_flight = true;
+        thread.turns.push(ipc::TurnView {
+            id: "turn-1".to_string(),
+            status: "in_progress".to_string(),
+            error_message: None,
+            items: vec![ipc::ItemView {
+                id: "item-1".to_string(),
+                item_type: "agent_message".to_string(),
+                status: Some("streaming".to_string()),
+                text: Some("partial output".to_string()),
+            }],
+        });
+        state.threads.insert("thread-1".to_string(), thread);
+        state.turns.insert(
+            TurnKey::new("thread-1", "turn-1"),
+            ipc::TurnStateView {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                lifecycle: ipc::TurnLifecycleState::Active,
+                status: "in_progress".to_string(),
+                attachable: true,
+                live_stream: true,
+                terminal: false,
+                recent_output: Some("partial output".to_string()),
+                recent_event: Some("turn in progress".to_string()),
+                updated_at: Utc::now(),
+                error_message: None,
+            },
+        );
+
+        OrcasDaemonService::refresh_session_from_turns(&mut state);
+        assert_eq!(state.session.active_turns.len(), 1);
+
+        OrcasDaemonService::mark_turns_lost(&mut state);
+        OrcasDaemonService::refresh_session_from_turns(&mut state);
+
+        let turn = state
+            .turns
+            .get(&TurnKey::new("thread-1", "turn-1"))
+            .expect("turn exists");
+        assert_eq!(turn.lifecycle, ipc::TurnLifecycleState::Lost);
+        assert!(!turn.attachable);
+        assert_eq!(turn.status, "lost");
+        assert!(state.session.active_turns.is_empty());
+        assert_eq!(state.threads["thread-1"].turns[0].status, "lost");
+    }
+
+    #[test]
+    fn turn_state_from_thread_view_distinguishes_terminal_and_unknown() {
+        let mut completed = sample_thread("thread-1", "orcas_managed", 200);
+        completed.turns.push(ipc::TurnView {
+            id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: vec![ipc::ItemView {
+                id: "item-1".to_string(),
+                item_type: "agent_message".to_string(),
+                status: Some("completed".to_string()),
+                text: Some("hello world".to_string()),
+            }],
+        });
+
+        let completed_state =
+            OrcasDaemonService::turn_state_from_thread_view(&completed, "turn-1").unwrap();
+        assert_eq!(
+            completed_state.lifecycle,
+            ipc::TurnLifecycleState::Completed
+        );
+        assert!(!completed_state.attachable);
+        assert_eq!(
+            completed_state.recent_output.as_deref(),
+            Some("hello world")
+        );
+
+        let mut unknown = sample_thread("thread-2", "orcas_managed", 210);
+        unknown.turns.push(ipc::TurnView {
+            id: "turn-2".to_string(),
+            status: "in_progress".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        });
+
+        let unknown_state =
+            OrcasDaemonService::turn_state_from_thread_view(&unknown, "turn-2").unwrap();
+        assert_eq!(unknown_state.lifecycle, ipc::TurnLifecycleState::Unknown);
+        assert!(!unknown_state.attachable);
+        assert!(!unknown_state.live_stream);
     }
 }

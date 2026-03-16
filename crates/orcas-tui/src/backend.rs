@@ -13,6 +13,8 @@ use orcas_daemon::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCommand {
     GetThread { thread_id: String },
+    GetTurn { thread_id: String, turn_id: String },
+    GetActiveTurns,
     SubmitPrompt { thread_id: String, text: String },
 }
 
@@ -20,6 +22,8 @@ pub enum BackendCommand {
 pub enum BackendCommandResult {
     Snapshot(ipc::StateSnapshot),
     Thread(ipc::ThreadView),
+    Turn(ipc::TurnAttachResponse),
+    ActiveTurns(Vec<ipc::TurnStateView>),
     PromptStarted { thread_id: String, turn_id: String },
 }
 
@@ -139,6 +143,14 @@ impl OrcasDaemonBackend {
                     .await?
                     .thread,
             )),
+            BackendCommand::GetTurn { thread_id, turn_id } => Ok(BackendCommandResult::Turn(
+                client
+                    .turn_attach(&ipc::TurnAttachRequest { thread_id, turn_id })
+                    .await?,
+            )),
+            BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
+                client.turns_list_active().await?.turns,
+            )),
             BackendCommand::SubmitPrompt { thread_id, text } => {
                 let response = client
                     .turn_start(&ipc::TurnStartRequest {
@@ -165,6 +177,8 @@ pub struct FakeBackend {
 struct FakeBackendState {
     snapshot: ipc::StateSnapshot,
     threads: HashMap<String, ipc::ThreadView>,
+    turns: HashMap<(String, String), ipc::TurnAttachResponse>,
+    active_turns: Vec<ipc::TurnStateView>,
     next_submit_id: usize,
     fail_snapshot: Option<String>,
     fail_subscribe: Option<String>,
@@ -183,10 +197,18 @@ impl FakeBackend {
             .into_iter()
             .map(|thread| (thread.summary.id.clone(), thread))
             .collect();
+        let active_turns = snapshot
+            .session
+            .active_turns
+            .iter()
+            .map(turn_state_from_active_turn)
+            .collect();
         Self {
             inner: Arc::new(Mutex::new(FakeBackendState {
                 snapshot,
                 threads,
+                turns: HashMap::new(),
+                active_turns,
                 next_submit_id: 1,
                 fail_snapshot: None,
                 fail_subscribe: None,
@@ -208,7 +230,29 @@ impl FakeBackend {
     }
 
     pub async fn replace_snapshot(&self, snapshot: ipc::StateSnapshot) {
-        self.inner.lock().await.snapshot = snapshot;
+        let active_turns = snapshot
+            .session
+            .active_turns
+            .iter()
+            .map(turn_state_from_active_turn)
+            .collect();
+        let mut guard = self.inner.lock().await;
+        guard.snapshot = snapshot;
+        guard.active_turns = active_turns;
+    }
+
+    pub async fn set_turn(&self, response: ipc::TurnAttachResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(turn) = response.turn.as_ref() {
+            guard.turns.insert(
+                (turn.thread_id.clone(), turn.turn_id.clone()),
+                response.clone(),
+            );
+        }
+    }
+
+    pub async fn set_active_turns(&self, turns: Vec<ipc::TurnStateView>) {
+        self.inner.lock().await.active_turns = turns;
     }
 
     pub async fn fail_snapshot_once(&self, message: impl Into<String>) {
@@ -224,13 +268,62 @@ impl FakeBackend {
     }
 
     pub async fn inject_event(&self, event: ipc::DaemonEventEnvelope) -> Result<()> {
-        let tx = self
-            .inner
-            .lock()
-            .await
-            .event_tx
-            .clone()
-            .ok_or_else(|| anyhow!("event subscription has not been established"))?;
+        let tx = {
+            let mut guard = self.inner.lock().await;
+            if let ipc::DaemonEvent::TurnUpdated { thread_id, turn } = &event.event {
+                let lifecycle = match turn.status.as_str() {
+                    "completed" => ipc::TurnLifecycleState::Completed,
+                    "failed" => ipc::TurnLifecycleState::Failed,
+                    "cancelled" | "interrupted" => ipc::TurnLifecycleState::Interrupted,
+                    "lost" => ipc::TurnLifecycleState::Lost,
+                    _ => ipc::TurnLifecycleState::Active,
+                };
+                let attachable = matches!(lifecycle, ipc::TurnLifecycleState::Active);
+                let state = ipc::TurnStateView {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn.id.clone(),
+                    lifecycle,
+                    status: turn.status.clone(),
+                    attachable,
+                    live_stream: attachable,
+                    terminal: !attachable,
+                    recent_output: turn
+                        .items
+                        .iter()
+                        .filter_map(|item| item.text.as_deref())
+                        .next_back()
+                        .map(ToOwned::to_owned),
+                    recent_event: Some(format!("turn {}", turn.status)),
+                    updated_at: chrono::Utc::now(),
+                    error_message: turn.error_message.clone(),
+                };
+                guard.turns.insert(
+                    (thread_id.clone(), turn.id.clone()),
+                    ipc::TurnAttachResponse {
+                        turn: Some(state.clone()),
+                        attached: attachable,
+                        reason: if attachable {
+                            None
+                        } else {
+                            Some(format!(
+                                "turn already {}; only terminal state is queryable",
+                                turn.status
+                            ))
+                        },
+                    },
+                );
+                guard.active_turns.retain(|active| {
+                    !(active.thread_id == *thread_id && active.turn_id == turn.id)
+                });
+                if attachable {
+                    guard.active_turns.push(state);
+                }
+            }
+            guard
+                .event_tx
+                .clone()
+                .ok_or_else(|| anyhow!("event subscription has not been established"))?
+        };
         tx.send(event).await?;
         Ok(())
     }
@@ -287,11 +380,65 @@ impl TuiBackend for FakeBackend {
                 .cloned()
                 .map(BackendCommandResult::Thread)
                 .ok_or_else(|| anyhow!("unknown thread `{thread_id}`")),
+            BackendCommand::GetTurn { thread_id, turn_id } => Ok(BackendCommandResult::Turn(
+                guard
+                    .turns
+                    .get(&(thread_id.clone(), turn_id.clone()))
+                    .cloned()
+                    .unwrap_or(ipc::TurnAttachResponse {
+                        turn: None,
+                        attached: false,
+                        reason: Some(
+                            "turn was not found in the current Orcas daemon state".to_string(),
+                        ),
+                    }),
+            )),
+            BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
+                guard.active_turns.clone(),
+            )),
             BackendCommand::SubmitPrompt { thread_id, .. } => {
                 let turn_id = format!("turn-{}", guard.next_submit_id);
                 guard.next_submit_id += 1;
+                let turn = ipc::TurnStateView {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    lifecycle: ipc::TurnLifecycleState::Active,
+                    status: "submitted".to_string(),
+                    attachable: true,
+                    live_stream: true,
+                    terminal: false,
+                    recent_output: None,
+                    recent_event: Some("turn submitted".to_string()),
+                    updated_at: chrono::Utc::now(),
+                    error_message: None,
+                };
+                guard.turns.insert(
+                    (thread_id.clone(), turn_id.clone()),
+                    ipc::TurnAttachResponse {
+                        turn: Some(turn.clone()),
+                        attached: true,
+                        reason: None,
+                    },
+                );
+                guard.active_turns.push(turn);
                 Ok(BackendCommandResult::PromptStarted { thread_id, turn_id })
             }
         }
+    }
+}
+
+fn turn_state_from_active_turn(turn: &ipc::ActiveTurn) -> ipc::TurnStateView {
+    ipc::TurnStateView {
+        thread_id: turn.thread_id.clone(),
+        turn_id: turn.turn_id.clone(),
+        lifecycle: ipc::TurnLifecycleState::Active,
+        status: turn.status.clone(),
+        attachable: true,
+        live_stream: true,
+        terminal: false,
+        recent_output: None,
+        recent_event: Some(format!("turn {}", turn.status)),
+        updated_at: turn.updated_at,
+        error_message: None,
     }
 }

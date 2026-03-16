@@ -82,9 +82,14 @@ fn render_threads(state: &AppState) -> Paragraph<'static> {
             .take(12)
             .map(|row| {
                 let prefix = if row.selected { ">" } else { " " };
+                let badge = row
+                    .turn_badge
+                    .as_ref()
+                    .map(|badge| format!(" {{{badge}}}"))
+                    .unwrap_or_default();
                 Line::from(format!(
-                    "{prefix} {} [{}] {}",
-                    row.id, row.status, row.preview
+                    "{prefix} {} [{}{}] {}",
+                    row.id, row.status, badge, row.preview
                 ))
             })
             .collect()

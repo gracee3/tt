@@ -10,6 +10,7 @@ It owns:
 - local client fanout
 - daemon/runtime status
 - live thread/session state
+- active turn registry and attachment decisions
 - snapshot/query responses for frontends
 - recent event buffering
 - thread metadata persistence hooks
@@ -110,6 +111,9 @@ This keeps one bad frontend from stalling the whole local broker.
 - `state/get`
 - `session/get_active`
 - `thread/get`
+- `turns/list_active`
+- `turn/get`
+- `turn/attach`
 - `turns/recent`
 
 The intended client flow is:
@@ -119,6 +123,45 @@ The intended client flow is:
 3. subscribe to live daemon events
 
 This keeps frontend state initialization deterministic and avoids rebuilding UI state from raw upstream events alone.
+
+## Active Turn Model
+
+Active turns are now a first-class Orcas daemon concept rather than just a thread-summary hint.
+
+Each tracked turn carries Orcas-owned state such as:
+
+- `thread_id`
+- `turn_id`
+- normalized lifecycle state
+- `attachable`
+- `live_stream`
+- recent output snippet when available
+- recent event summary when available
+- last update timestamp
+- terminal/error information when known
+
+Current lifecycle states are:
+
+- `active`
+- `completed`
+- `failed`
+- `interrupted`
+- `lost`
+- `unknown`
+
+Attachment semantics are intentionally conservative:
+
+- live attachment is daemon-instance scoped
+- `turn/attach` succeeds only when the current `orcasd` instance still owns provable live turn state
+- after daemon replacement, Orcas may still return terminal or cached turn state, but `attachable` remains false unless the daemon can prove continuity
+- `lost` means Orcas previously owned the turn but lost continuity
+- `unknown` means Orcas can query or cache the turn, but cannot prove live attachment in the current daemon instance
+
+Current consumer surfaces for this model:
+
+- supervisor turn inspection commands for operator/debug visibility
+- supervisor streaming recovery after reconnect
+- TUI status/detail projections and in-flight indicators
 
 ## Current Status Model
 
@@ -158,8 +201,8 @@ For streaming supervisor commands, the recovery model is:
 1. detect daemon disconnect
 2. reconnect to the Orcas IPC socket with bounded backoff
 3. fetch `state/get`
-4. fetch `thread/get` for the active thread when available
-5. decide whether the stream can honestly resume, whether only terminal snapshot state can be recovered, or whether the stream must be reported as interrupted
+4. call `turn/attach` for the in-flight turn
+5. decide whether the stream can honestly resume, whether only terminal/cached turn state can be recovered, or whether the stream must be reported as interrupted
 
 This is intentionally snapshot-first. Orcas does not claim uninterrupted upstream Codex execution after daemon replacement unless the refreshed Orcas state proves the turn is still live.
 
