@@ -3,33 +3,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use chrono::{TimeZone, Utc};
 
-use orcas_codex::types;
-use orcas_codex::{
-    CodexClient, CodexDaemonManager, DaemonLaunch, LocalCodexDaemonManager, WebSocketTransport,
-};
 use orcas_core::{
-    AppConfig, AppPaths, CodexConnectionMode, JsonSessionStore, OrcasEvent, OrcasSessionStore,
-    ThreadMetadata,
+    AppConfig, AppPaths, OrcasEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
+    TurnStartRequest,
+};
+use orcas_daemon::{
+    EventSubscription, OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient,
+    OrcasRuntimeOverrides, apply_runtime_overrides,
 };
 
-#[derive(Debug, Clone, Default)]
-pub struct RuntimeOverrides {
-    pub codex_bin: Option<PathBuf>,
-    pub listen_url: Option<String>,
-    pub cwd: Option<PathBuf>,
-    pub model: Option<String>,
-    pub connect_only: bool,
-    pub force_spawn: bool,
-}
+pub use orcas_daemon::OrcasRuntimeOverrides as RuntimeOverrides;
 
 pub struct SupervisorService {
     pub paths: AppPaths,
     pub config: AppConfig,
-    pub store: JsonSessionStore,
-    daemon: LocalCodexDaemonManager,
-    client: Arc<CodexClient>,
+    daemon: OrcasDaemonProcessManager,
+    overrides: OrcasRuntimeOverrides,
 }
 
 impl SupervisorService {
@@ -37,99 +27,87 @@ impl SupervisorService {
         let paths = AppPaths::discover()?;
         paths.ensure().await?;
         let mut config = AppConfig::write_default_if_missing(&paths).await?;
-        if let Some(codex_bin) = &overrides.codex_bin {
-            config.codex.binary_path = codex_bin.clone();
-        }
-        if let Some(listen_url) = &overrides.listen_url {
-            config.codex.listen_url = listen_url.clone();
-        }
-        if let Some(cwd) = &overrides.cwd {
-            config.defaults.cwd = Some(cwd.clone());
-        }
-        if let Some(model) = &overrides.model {
-            config.defaults.model = Some(model.clone());
-        }
-        if overrides.connect_only {
-            config.codex.connection_mode = CodexConnectionMode::ConnectOnly;
-        }
-        let store = JsonSessionStore::new(paths.clone(), config.clone());
-        let daemon =
-            LocalCodexDaemonManager::new(config.codex.clone(), &paths, config.defaults.cwd.clone());
-        let client = CodexClient::new(
-            Arc::new(WebSocketTransport::new(config.codex.listen_url.clone())),
-            config.codex.reconnect.clone(),
-            Arc::new(orcas_codex::RejectingApprovalRouter),
-        );
+        apply_runtime_overrides(&mut config, overrides);
+        let daemon = OrcasDaemonProcessManager::new(paths.clone(), overrides.clone());
 
         Ok(Self {
             paths,
             config,
-            store,
             daemon,
-            client,
+            overrides: overrides.clone(),
         })
     }
 
     pub async fn doctor(&self) -> Result<()> {
-        let status = self.daemon.status().await?;
+        let daemon_status = self.daemon.status().await?;
         println!("config: {}", self.paths.config_file.display());
         println!("state: {}", self.paths.state_file.display());
-        println!("codex_bin: {}", status.binary_path.display());
-        println!("endpoint: {}", status.endpoint);
-        println!("reachable: {}", status.reachable);
-        println!("log_file: {}", status.log_path.display());
+        println!("socket: {}", daemon_status.socket_path.display());
+        println!("daemon_running: {}", daemon_status.running);
+        println!("daemon_log: {}", daemon_status.log_path.display());
+        println!("codex_bin: {}", self.config.codex.binary_path.display());
+        println!("codex_endpoint: {}", self.config.codex.listen_url);
+        println!("connection_mode: {:?}", self.config.codex.connection_mode);
         Ok(())
     }
 
     pub async fn daemon_status(&self) -> Result<()> {
-        let status = self.daemon.status().await?;
-        println!("endpoint: {}", status.endpoint);
-        println!("reachable: {}", status.reachable);
-        println!("binary: {}", status.binary_path.display());
-        println!("log_file: {}", status.log_path.display());
+        let socket_status = self.daemon.status().await?;
+        println!("socket: {}", socket_status.socket_path.display());
+        println!("running: {}", socket_status.running);
+        println!("log_file: {}", socket_status.log_path.display());
+        if socket_status.running {
+            let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
+            let status = client.daemon_status().await?;
+            println!("codex_endpoint: {}", status.codex_endpoint);
+            println!("codex_binary: {}", status.codex_binary_path);
+            println!("upstream_status: {}", status.upstream.status);
+            if let Some(detail) = status.upstream.detail {
+                println!("upstream_detail: {detail}");
+            }
+            println!("client_count: {}", status.client_count);
+            println!("known_threads: {}", status.known_threads);
+        }
         Ok(())
     }
 
     pub async fn daemon_start(&self, force: bool) -> Result<()> {
-        let launch = if force {
-            DaemonLaunch::Always
+        let launch = if force || self.overrides.force_spawn {
+            OrcasDaemonLaunch::Always
         } else {
-            DaemonLaunch::IfNeeded
+            OrcasDaemonLaunch::IfNeeded
         };
-        let status = self.daemon.ensure_running(launch).await?;
-        println!("endpoint: {}", status.endpoint);
-        println!("reachable: {}", status.reachable);
-        println!("log_file: {}", status.log_path.display());
+        let socket_status = self.daemon.ensure_running(launch).await?;
+        let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
+        let status = client.daemon_connect().await?.status;
+        println!("socket: {}", socket_status.socket_path.display());
+        println!("running: {}", socket_status.running);
+        println!("log_file: {}", socket_status.log_path.display());
+        println!("upstream_status: {}", status.upstream.status);
+        println!("codex_endpoint: {}", status.codex_endpoint);
         Ok(())
     }
 
     pub async fn models_list(&self) -> Result<()> {
-        self.ensure_ready().await?;
-        let response = self
-            .client
-            .model_list(types::ModelListParams::default())
-            .await?;
+        let client = self.ready_client().await?;
+        let response = client.models_list().await?;
         for model in response.data {
             println!(
                 "{}\t{}\thidden={}\tdefault={}",
-                model.model, model.display_name, model.hidden, model.is_default
+                model.id, model.display_name, model.hidden, model.is_default
             );
         }
         Ok(())
     }
 
     pub async fn threads_list(&self) -> Result<()> {
-        self.ensure_ready().await?;
-        let response = self
-            .client
-            .thread_list(types::ThreadListParams::default())
-            .await?;
-        self.persist_threads(&response.data, None).await?;
+        let client = self.ready_client().await?;
+        let response = client.threads_list().await?;
         for thread in response.data {
             println!(
                 "{}\t{}\t{}\t{}",
                 thread.id,
-                thread.status.label(),
+                thread.status,
                 thread.model_provider,
                 thread.preview.replace('\n', " ")
             );
@@ -138,19 +116,17 @@ impl SupervisorService {
     }
 
     pub async fn thread_read(&self, thread_id: &str) -> Result<()> {
-        self.ensure_ready().await?;
-        let response = self
-            .client
-            .thread_read(types::ThreadReadParams {
+        let client = self.ready_client().await?;
+        let response = client
+            .thread_read(&ThreadReadRequest {
                 thread_id: thread_id.to_string(),
                 include_turns: true,
             })
             .await?;
-        self.persist_thread(&response.thread, None).await?;
-        println!("thread: {}", response.thread.id);
-        println!("status: {}", response.thread.status.label());
-        println!("cwd: {}", response.thread.cwd);
-        println!("preview: {}", response.thread.preview);
+        println!("thread: {}", response.thread.summary.id);
+        println!("status: {}", response.thread.summary.status);
+        println!("cwd: {}", response.thread.summary.cwd);
+        println!("preview: {}", response.thread.summary.preview);
         println!("turns: {}", response.thread.turns.len());
         Ok(())
     }
@@ -161,17 +137,15 @@ impl SupervisorService {
         model: Option<String>,
         ephemeral: bool,
     ) -> Result<String> {
-        self.ensure_ready().await?;
-        let params = types::ThreadStartParams {
-            cwd: cwd
-                .or_else(|| self.config.defaults.cwd.clone())
-                .map(|path| path.display().to_string()),
-            model: model.or_else(|| self.config.defaults.model.clone()),
-            ephemeral: Some(ephemeral),
-            ..types::ThreadStartParams::default()
-        };
-        let response = self.client.thread_start(params).await?;
-        self.persist_thread(&response.thread, Some(response.model))
+        let client = self.ready_client().await?;
+        let response = client
+            .thread_start(&ThreadStartRequest {
+                cwd: cwd
+                    .or_else(|| self.config.defaults.cwd.clone())
+                    .map(|path| path.display().to_string()),
+                model: model.or_else(|| self.config.defaults.model.clone()),
+                ephemeral,
+            })
             .await?;
         println!("thread_id: {}", response.thread.id);
         Ok(response.thread.id)
@@ -183,33 +157,35 @@ impl SupervisorService {
         cwd: Option<PathBuf>,
         model: Option<String>,
     ) -> Result<String> {
-        self.ensure_ready().await?;
-        let response = self
-            .client
-            .thread_resume(types::ThreadResumeParams {
+        let client = self.ready_client().await?;
+        let response = client
+            .thread_resume(&ThreadResumeRequest {
                 thread_id: thread_id.to_string(),
                 cwd: cwd
                     .or_else(|| self.config.defaults.cwd.clone())
                     .map(|path| path.display().to_string()),
                 model: model.or_else(|| self.config.defaults.model.clone()),
-                approval_policy: Some(types::AskForApproval::default()),
-                approvals_reviewer: None,
-                sandbox: None,
-                config: None,
-                base_instructions: None,
-                developer_instructions: None,
-                persist_extended_history: true,
             })
-            .await?;
-        self.persist_thread(&response.thread, Some(response.model))
             .await?;
         println!("thread_id: {}", response.thread.id);
         Ok(response.thread.id)
     }
 
     pub async fn prompt(&self, thread_id: &str, text: &str) -> Result<String> {
-        self.ensure_ready().await?;
-        self.send_turn(thread_id, text, true).await
+        let client = self.ready_client().await?;
+        client
+            .thread_resume(&ThreadResumeRequest {
+                thread_id: thread_id.to_string(),
+                cwd: self
+                    .config
+                    .defaults
+                    .cwd
+                    .clone()
+                    .map(|path| path.display().to_string()),
+                model: self.config.defaults.model.clone(),
+            })
+            .await?;
+        self.send_turn(client, thread_id, text).await
     }
 
     pub async fn quickstart(
@@ -218,89 +194,48 @@ impl SupervisorService {
         model: Option<String>,
         text: &str,
     ) -> Result<()> {
-        let thread_id = self.thread_start(cwd, model, false).await?;
-        let final_text = self.send_turn(&thread_id, text, false).await?;
-        println!("\nthread_id: {thread_id}");
+        let client = self.ready_client().await?;
+        let thread = client
+            .thread_start(&ThreadStartRequest {
+                cwd: cwd
+                    .or_else(|| self.config.defaults.cwd.clone())
+                    .map(|path| path.display().to_string()),
+                model: model.or_else(|| self.config.defaults.model.clone()),
+                ephemeral: false,
+            })
+            .await?;
+        let final_text = self
+            .send_turn(Arc::clone(&client), &thread.thread.id, text)
+            .await?;
+        println!("\nthread_id: {}", thread.thread.id);
         println!("final_text_len: {}", final_text.len());
         Ok(())
     }
 
-    async fn send_turn(&self, thread_id: &str, text: &str, resume_thread: bool) -> Result<String> {
-        if resume_thread {
-            let resumed = self
-                .client
-                .thread_resume(types::ThreadResumeParams {
-                    thread_id: thread_id.to_string(),
-                    cwd: self
-                        .config
-                        .defaults
-                        .cwd
-                        .clone()
-                        .map(|path| path.display().to_string()),
-                    model: self.config.defaults.model.clone(),
-                    approval_policy: Some(types::AskForApproval::default()),
-                    approvals_reviewer: None,
-                    sandbox: None,
-                    config: None,
-                    base_instructions: None,
-                    developer_instructions: None,
-                    persist_extended_history: true,
-                })
-                .await?;
-            self.persist_thread(&resumed.thread, Some(resumed.model))
-                .await?;
-        }
-
-        let mut events = self.client.subscribe();
-        let response = self
-            .client
-            .turn_start(types::TurnStartParams {
+    async fn send_turn(
+        &self,
+        client: Arc<OrcasIpcClient>,
+        thread_id: &str,
+        text: &str,
+    ) -> Result<String> {
+        let (mut events, _) = client.subscribe_events(false).await?;
+        let response = client
+            .turn_start(&TurnStartRequest {
                 thread_id: thread_id.to_string(),
-                input: vec![types::UserInput::Text {
-                    text: text.to_string(),
-                    text_elements: Vec::new(),
-                }],
+                text: text.to_string(),
                 cwd: None,
-                approval_policy: Some(types::AskForApproval::default()),
-                approvals_reviewer: None,
-                sandbox_policy: None,
                 model: None,
             })
             .await?;
-        self.stream_turn(thread_id, &response.turn.id, &mut events)
+        self.stream_turn(thread_id, &response.turn_id, &mut events)
             .await
-    }
-
-    async fn ensure_ready(&self) -> Result<()> {
-        let launch = if self.config.codex.connection_mode == CodexConnectionMode::ConnectOnly {
-            DaemonLaunch::Never
-        } else {
-            DaemonLaunch::IfNeeded
-        };
-        self.daemon.ensure_running(launch).await?;
-        self.client.connect().await?;
-        let _ = self
-            .client
-            .initialize(types::InitializeParams {
-                client_info: types::ClientInfo {
-                    name: "orcas-supervisor".to_string(),
-                    title: Some("Orcas Supervisor".to_string()),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                },
-                capabilities: Some(types::InitializeCapabilities {
-                    experimental_api: true,
-                    opt_out_notification_methods: None,
-                }),
-            })
-            .await?;
-        Ok(())
     }
 
     async fn stream_turn(
         &self,
         thread_id: &str,
         turn_id: &str,
-        events: &mut tokio::sync::broadcast::Receiver<orcas_core::EventEnvelope>,
+        events: &mut EventSubscription,
     ) -> Result<String> {
         let mut buffer = String::new();
         loop {
@@ -336,51 +271,31 @@ impl SupervisorService {
                     eprintln!("warning: event stream lagged, skipped {skipped} events");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    anyhow::bail!("event stream closed before turn completed")
+                    anyhow::bail!("event stream closed before turn completed");
                 }
             }
         }
     }
 
-    async fn persist_threads(
-        &self,
-        threads: &[types::Thread],
-        model: Option<String>,
-    ) -> Result<()> {
-        for thread in threads {
-            self.persist_thread(thread, model.clone()).await?;
-        }
-        Ok(())
+    async fn ready_client(&self) -> Result<Arc<OrcasIpcClient>> {
+        let client = self
+            .connect_client(if self.overrides.force_spawn {
+                OrcasDaemonLaunch::Always
+            } else {
+                OrcasDaemonLaunch::IfNeeded
+            })
+            .await?;
+        client
+            .daemon_connect()
+            .await
+            .context("connect Orcas daemon to Codex")?;
+        Ok(client)
     }
 
-    async fn persist_thread(&self, thread: &types::Thread, model: Option<String>) -> Result<()> {
-        let created_at = Utc
-            .timestamp_opt(thread.created_at, 0)
-            .single()
-            .unwrap_or_else(Utc::now);
-        let updated_at = Utc
-            .timestamp_opt(thread.updated_at, 0)
-            .single()
-            .unwrap_or(created_at);
-        self.store
-            .upsert_thread(ThreadMetadata {
-                id: thread.id.clone(),
-                name: thread.name.clone(),
-                preview: thread.preview.clone(),
-                model,
-                model_provider: Some(thread.model_provider.clone()),
-                cwd: if thread.cwd.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(&thread.cwd))
-                },
-                endpoint: Some(self.config.codex.listen_url.clone()),
-                created_at,
-                updated_at,
-                status: thread.status.label().to_string(),
-            })
+    async fn connect_client(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
+        self.daemon.ensure_running(launch).await?;
+        OrcasIpcClient::connect(&self.paths)
             .await
-            .context("persist thread metadata")?;
-        Ok(())
+            .context("connect to Orcas daemon")
     }
 }

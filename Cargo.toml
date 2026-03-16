@@ -2,6 +2,7 @@
 members = [
     "crates/orcas-core",
     "crates/orcas-codex",
+    "crates/orcas-daemon",
     "crates/orcas-supervisor",
     "crates/orcas-tui",
 ]

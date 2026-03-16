@@ -12,8 +12,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
+orcas-daemon = { path = "../orcas-daemon" }
 orcas-core = { path = "../orcas-core" }
 ratatui.workspace = true
+tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

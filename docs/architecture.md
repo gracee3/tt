@@ -2,94 +2,180 @@
 
 ## Goal
 
-Orcas is structured to survive Codex upgrades by isolating app-server specifics behind Orcas-owned boundaries.
+Orcas is structured so Codex protocol churn is isolated behind Orcas-owned boundaries.
+
+The key split is:
+
+- upstream lifecycle: Codex app-server over WebSocket
+- local lifecycle: `orcasd` plus one or more Orcas clients over Unix domain socket IPC
+
+Frontends do not own the upstream connection anymore.
 
 ## Crate Boundaries
 
-### `orcas-core`
+## `orcas-core`
 
-Owns stable local concepts that should not depend on Codex transport details:
+Stable Orcas concepts:
 
-- app config and runtime defaults
-- Orcas error/result types
+- app config
 - runtime paths
-- thread/session metadata persisted by Orcas
-- cross-crate event envelope types
-- JSON session store abstraction and implementation
+- error/result types
+- shared event envelope types
+- session/thread metadata
+- lightweight JSON session store
+- Orcas IPC request/response/event types
+- Orcas JSON-RPC helpers
 
-### `orcas-codex`
+`orcas-core` should stay free of Codex transport specifics.
 
-Owns the unstable edge where Orcas talks to Codex:
+## `orcas-codex`
 
-- daemon launch/status management
-- `CodexTransport` abstraction
-- WebSocket transport implementation
-- JSON-RPC request/response/notification types
-- request ID generation
-- event pump
-- reconnect/backoff loop
-- narrow typed protocol structs for the first app-server slice
-- approval-routing surface for server -> client requests
+Unstable integration edge with Codex:
 
-### `orcas-supervisor`
+- `CodexTransport`
+- WebSocket transport
+- request ID management
+- reconnect/backoff
+- app-server JSON-RPC types
+- narrow typed method wrappers
+- Codex app-server spawn/status management
+- approval routing hook
 
-Owns the first executable and operator flow:
+This is the only place that should absorb most Codex protocol churn.
 
-- `SupervisorService`
-- CLI shape
-- proof-of-life commands
-- local persistence updates after thread actions
-- simple event streaming for turn output
+## `orcas-daemon`
 
-### `orcas-tui`
+Shared local orchestration service:
 
-Owns only a placeholder frontend shell in this pass.
+- `orcasd` binary
+- one persistent upstream Codex connection
+- one local IPC server over Unix domain socket
+- local client connection handling
+- event fanout
+- recent-event snapshotting
+- daemon status reporting
+- shared IPC client/process manager used by frontends
 
-The crate exists now so future UI work can depend on stable Orcas interfaces instead of building directly on supervisor code.
+`orcasd` is now the single owner of live upstream Codex state.
 
-## Runtime Model
+## `orcas-supervisor`
 
-1. Supervisor loads Orcas config and paths.
-2. Supervisor resolves whether to connect or spawn Codex.
-3. `LocalCodexDaemonManager` ensures the WebSocket endpoint exists.
-4. `CodexClient` owns a long-lived connection loop.
-5. Requests go through Orcas JSON-RPC types, not ad hoc JSON scattered through the CLI.
-6. Notifications are mapped into Orcas event envelopes and broadcast to subscribers.
-7. Supervisor persists thread metadata to Orcas state after thread-affecting operations.
+Thin operational CLI client:
+
+- starts or reuses `orcasd`
+- sends narrow IPC requests
+- streams turn output from Orcas IPC events
+- no longer owns a direct Codex client
+
+## `orcas-tui`
+
+Minimal proof-of-boundary frontend:
+
+- attaches to `orcasd`
+- shows daemon connection status
+- shows thread summaries
+- shows event log
+
+It is intentionally shallow in this pass.
+
+## Runtime Topology
+
+```text
+supervisor CLI ----\
+                    \
+TUI -----------------+--> orcasd --(WebSocket JSON-RPC)--> codex app-server
+                    /
+future browser ----/
+```
+
+Important lifecycle rule:
+
+- frontend disconnects must not tear down the upstream Codex connection
+
+## Local IPC Model
+
+Transport:
+
+- Unix domain socket
+- newline-delimited JSON messages
+- JSON-RPC 2.0 style request/response/notification framing
+
+Design choices:
+
+- local-only by default
+- no raw Codex wire exposure as the public Orcas contract
+- bounded per-client outgoing queues
+- slow client notifications are dropped instead of blocking the daemon
+
+The current Orcas IPC surface is intentionally narrow. See `docs/ipc-protocol.md`.
+
+## Upstream Connection Model
+
+Inside `orcasd`:
+
+- one `CodexClient`
+- one reconnecting WebSocket transport
+- one initialize handshake path
+- one thread cache owned by the daemon
+
+The upstream connection can be backed by:
+
+- an already-running Codex app-server
+- a Codex app-server spawned by Orcas if configured
 
 ## Event Model
 
-`CodexClient` emits Orcas-owned `EventEnvelope` values that currently cover:
+Codex notifications are translated into Orcas-owned `EventEnvelope` values.
+
+Current emitted events include:
 
 - connection state changes
 - thread started/status changed
 - turn started/completed
 - item started/completed
-- agent message delta
-- server request surfaced to the approval router
+- agent message deltas
 - warning events
 
-This keeps higher layers decoupled from raw app-server notification payloads.
+`orcasd` keeps:
+
+- a broadcast bus for live subscribers
+- a small in-memory recent-event ring buffer for snapshot-on-subscribe
+
+This gives new clients a small initial picture without replaying the full world.
 
 ## Persistence Model
 
-Current persistence is intentionally lightweight:
+Persistence is intentionally lightweight:
 
 - config: TOML
 - state: JSON
-- logs: plain text file from spawned Codex app-server
+- logs: plain text
 
-`JsonSessionStore` is behind the `OrcasSessionStore` trait so a future SQLite-backed store can replace it without changing the CLI or transport layer.
+Stored now:
 
-## Future Expansion Path
+- configured Codex endpoint/binary via config
+- known Orcas thread metadata in `state.json`
+- runtime socket and daemon logs under XDG paths
 
-This scaffold is meant to support:
+This stays behind `OrcasSessionStore` so a future SQLite backend can replace it.
 
-- a separately managed Orcas supervisor process
-- a richer TUI using the same event/state model
-- a browser bridge/backend
-- multi-client event fanout
-- approval workflows
-- richer thread lifecycle features such as review, rollback, and fork
+## Current Rough Edges
 
-The intended next architectural move is an Orcas-side service that owns connection state once and fans out events to multiple clients.
+- `threads/list` still mirrors the broad upstream thread set
+- no richer Orcas-side query model yet
+- no dedicated approval UX
+- no auth or multi-user model
+- no browser bridge yet
+- daemon process management currently assumes a Unix-like environment with `setsid`
+
+## Expansion Path
+
+The intended next layer is not more raw protocol.
+
+The intended next layer is richer Orcas-owned service state inside `orcasd`, for example:
+
+- thread registry views scoped to Orcas
+- recent turn history
+- resumable active-session state
+- approval workflow surfaces
+- browser/backend attachment using the same IPC contract shape

@@ -887,14 +887,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "orcas-supervisor"
+name = "orcas-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "clap",
  "orcas-codex",
  "orcas-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "orcas-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "orcas-core",
+ "orcas-daemon",
  "tokio",
  "tracing-subscriber",
 ]
@@ -906,7 +920,9 @@ dependencies = [
  "anyhow",
  "crossterm",
  "orcas-core",
+ "orcas-daemon",
  "ratatui",
+ "tokio",
  "tracing-subscriber",
 ]
 
