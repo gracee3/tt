@@ -11,6 +11,7 @@ pub struct AppPaths {
     pub logs_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub socket_file: PathBuf,
+    pub daemon_metadata_file: PathBuf,
     pub daemon_log_file: PathBuf,
 }
 
@@ -27,6 +28,7 @@ impl AppPaths {
             .join("orcas");
         let logs_dir = data_dir.join("logs");
         let socket_file = runtime_dir.join("orcasd.sock");
+        let daemon_metadata_file = runtime_dir.join("orcasd.json");
         let daemon_log_file = logs_dir.join("orcasd.log");
         Ok(Self {
             config_file: config_dir.join("config.toml"),
@@ -36,6 +38,7 @@ impl AppPaths {
             logs_dir,
             runtime_dir,
             socket_file,
+            daemon_metadata_file,
             daemon_log_file,
         })
     }

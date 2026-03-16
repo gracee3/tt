@@ -54,6 +54,7 @@ Shared local orchestration service:
 - event fanout
 - live Orcas-owned state/query snapshots
 - recent-event snapshotting
+- daemon runtime metadata and build fingerprint reporting
 - daemon status reporting
 - shared IPC client/process manager used by frontends
 
@@ -135,6 +136,7 @@ Codex notifications are still received and normalized at the daemon edge, but fr
 - a live in-memory thread/session model
 - a broadcast bus for live daemon events
 - a recent-event ring buffer
+- recent per-thread output/event snippets
 - a snapshot/query surface for frontend bootstrap
 
 The current frontend bootstrap path is:
@@ -167,6 +169,7 @@ Stored now:
 
 - configured Codex endpoint/binary via config
 - known Orcas thread metadata in `state.json`
+- runtime daemon metadata next to the UDS socket
 - runtime socket and daemon logs under XDG paths
 
 This stays behind `OrcasSessionStore` so a future SQLite backend can replace it.
@@ -184,8 +187,8 @@ Most TUI tests assert on state and view-model projections. Render validation is 
 
 ## Current Rough Edges
 
-- `threads/list` still mirrors the broad upstream thread set
-- daemon snapshot focus is intentionally small and not yet tuned for all frontend workflows
+- `threads/list` is still broader than the scoped frontend snapshot
+- TUI reconnect after daemon restart is refresh-driven rather than fully automatic
 - no dedicated approval UX
 - no auth or multi-user model
 - no browser bridge yet
@@ -197,7 +200,7 @@ Most TUI tests assert on state and view-model projections. Render validation is 
 The intended next layer is to deepen the Orcas-owned session model rather than widen raw protocol mirroring, for example:
 
 - tighter Orcas-scoped thread views
-- durable recent-output caches
 - richer active session and resume flows
+- more automatic frontend reconnect/resubscribe behavior
 - approval workflow surfaces
 - browser/backend attachment using the same IPC contract shape

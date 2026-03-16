@@ -1,5 +1,8 @@
 # Orcas
 
+_Orchestrating Rust Codex App Server_  
+Tracking Codex `v0.115.0`. Reference upstream: <https://github.com/openai/codex>
+
 Orcas is a local Rust orchestration scaffold for Codex `app-server`.
 
 Current shape:
@@ -8,6 +11,7 @@ Current shape:
 - local frontends attach to `orcasd` over a Unix domain socket
 - Orcas keeps its own narrow IPC and protocol layers instead of depending on Codex workspace crates
 - `orcasd` now exposes a live snapshot/query layer for frontend bootstrap
+- `orcasd` now writes runtime metadata next to the socket and reports build fingerprints for lifecycle debugging
 - `orcas-tui` is now driven by a canonical reducer/runtime with headless tests
 
 This pass establishes the broker/service boundary. It is not the full product yet.
@@ -39,10 +43,12 @@ Implemented now:
 - one persistent Codex WebSocket client inside the daemon
 - event subscription and fanout to multiple local clients
 - Orcas-owned live state snapshot/query surface for frontends
+- version-aware daemon status and explicit restart support
+- runtime metadata file next to the socket for PID/build inspection
 - supervisor CLI routed through the daemon
 - TUI reducer/runtime/view-model split routed through the daemon
 - headless TUI test harness with fake backend
-- lightweight JSON/TOML config and thread metadata persistence
+- lightweight JSON/TOML config and thread metadata persistence, including recent output snippets
 
 Not implemented yet:
 
@@ -93,6 +99,7 @@ cargo test
 - daemon log: `~/.local/share/orcas/logs/orcasd.log`
 - Codex app-server log: `~/.local/share/orcas/logs/codex-app-server.log`
 - runtime socket: `${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.sock`
+- daemon runtime metadata: `${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.json`
 
 ## Proof Of Life
 
@@ -109,6 +116,7 @@ Start or reuse the Orcas daemon:
 cargo run -p orcas-supervisor -- supervisor doctor
 cargo run -p orcas-supervisor -- supervisor daemon start
 cargo run -p orcas-supervisor -- supervisor daemon status
+cargo run -p orcas-supervisor -- supervisor daemon restart
 ```
 
 List models through `orcasd`:
@@ -204,10 +212,10 @@ IPC event notifications are now Orcas-owned daemon events rather than raw upstre
 - WebSocket-only upstream Codex transport for now
 - one configured Codex backend only
 - approvals are still rejected by default
-- `threads list` still reflects the raw upstream thread set, which can be broader than Orcas-created threads
+- `threads/list` is still broad, although `threads/list_scoped` and `state/get` now prefer Orcas-relevant threads
 - TUI is intentionally minimal; the architecture and tests matter more than UI breadth in this pass
 - Orcas IPC is intentionally narrow and may evolve
-- `orcasd` reuses an existing `target/debug/orcasd` binary when present; after daemon changes, rebuild that binary before spawning if you are not using `cargo run -p orcas-daemon`
+- TUI reconnect is refresh-driven after daemon restarts; it surfaces disconnect state cleanly but does not yet do a full automatic resubscribe loop in the background
 
 ## Validation Completed In This Pass
 
@@ -217,10 +225,14 @@ Validated locally against `/home/emmy/git/codex/codex-rs/target/debug/codex`:
 - `cargo check`
 - `cargo test`
 - `orcas supervisor daemon start`
+- `orcas supervisor daemon status`
+- `orcas supervisor daemon restart`
 - `orcas supervisor models list`
 - `orcas supervisor threads list`
 - direct `state/get` over the UDS socket
 - TUI attached to the same live daemon and exited cleanly
+- restarting a legacy daemon without runtime metadata and replacing it with the current build
+- killing the daemon to leave a stale socket/metadata pair, then recovering with `supervisor daemon start`
 - killing the TUI did not kill `orcasd`
 - supervisor commands continued working after the TUI disconnected
 
@@ -228,4 +240,4 @@ Note: the previous quickstart path is currently blocked by the local Codex upstr
 
 ## Next Step
 
-Broaden the daemon’s Orcas-owned live model from read/query into richer mutation and session workflows, especially better thread scoping, resumable active sessions, and durable per-thread recent output caches.
+Broaden the Orcas-owned control plane beyond lifecycle hardening into richer daemon-side session workflows: tighter thread scoping, better active-turn recovery, and more explicit frontend reconnect/resubscribe behavior.

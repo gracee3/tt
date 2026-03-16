@@ -43,6 +43,7 @@ impl SupervisorService {
         println!("config: {}", self.paths.config_file.display());
         println!("state: {}", self.paths.state_file.display());
         println!("socket: {}", daemon_status.socket_path.display());
+        println!("metadata: {}", daemon_status.metadata_path.display());
         println!("daemon_running: {}", daemon_status.running);
         println!("daemon_log: {}", daemon_status.log_path.display());
         println!("codex_bin: {}", self.config.codex.binary_path.display());
@@ -54,15 +55,42 @@ impl SupervisorService {
     pub async fn daemon_status(&self) -> Result<()> {
         let socket_status = self.daemon.status().await?;
         println!("socket: {}", socket_status.socket_path.display());
+        println!("metadata: {}", socket_status.metadata_path.display());
         println!("running: {}", socket_status.running);
+        println!("socket_exists: {}", socket_status.socket_exists);
+        println!("socket_responsive: {}", socket_status.socket_responsive);
+        println!("pid_running: {}", socket_status.pid_running);
+        if let Some(pid) = socket_status.socket_owner_pid {
+            println!("socket_owner_pid: {pid}");
+        }
+        println!("stale_socket: {}", socket_status.stale_socket);
+        println!("stale_metadata: {}", socket_status.stale_metadata);
         println!("log_file: {}", socket_status.log_path.display());
-        if socket_status.running {
-            let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
-            let status = client.daemon_status().await?;
+        if let Some(expected) = socket_status.expected_binary.as_ref() {
+            println!("expected_binary: {}", expected.binary_path);
+            println!("expected_version: {}", expected.version);
+            println!("expected_fingerprint: {}", expected.build_fingerprint);
+        }
+        if let Some(matches) = socket_status.binary_matches_expected {
+            println!("binary_matches_expected: {matches}");
+        }
+        if let Some(runtime) = socket_status.runtime_metadata.as_ref() {
+            println!("daemon_pid: {}", runtime.pid);
+            println!("daemon_started_at: {}", runtime.started_at);
+            println!("daemon_version: {}", runtime.version);
+            println!("daemon_fingerprint: {}", runtime.build_fingerprint);
+            println!("daemon_binary: {}", runtime.binary_path);
+            if let Some(git_commit) = runtime.git_commit.as_ref() {
+                println!("daemon_git_commit: {git_commit}");
+            }
+        } else if socket_status.running {
+            println!("daemon_runtime: legacy daemon without runtime metadata");
+        }
+        if let Some(status) = socket_status.daemon_status.as_ref() {
             println!("codex_endpoint: {}", status.codex_endpoint);
             println!("codex_binary: {}", status.codex_binary_path);
             println!("upstream_status: {}", status.upstream.status);
-            if let Some(detail) = status.upstream.detail {
+            if let Some(detail) = status.upstream.detail.as_ref() {
                 println!("upstream_detail: {detail}");
             }
             println!("client_count: {}", status.client_count);
@@ -81,10 +109,32 @@ impl SupervisorService {
         let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
         let status = client.daemon_connect().await?.status;
         println!("socket: {}", socket_status.socket_path.display());
+        println!("metadata: {}", socket_status.metadata_path.display());
         println!("running: {}", socket_status.running);
         println!("log_file: {}", socket_status.log_path.display());
         println!("upstream_status: {}", status.upstream.status);
         println!("codex_endpoint: {}", status.codex_endpoint);
+        println!("daemon_pid: {}", status.runtime.pid);
+        println!("daemon_version: {}", status.runtime.version);
+        println!("daemon_fingerprint: {}", status.runtime.build_fingerprint);
+        println!("daemon_binary: {}", status.runtime.binary_path);
+        Ok(())
+    }
+
+    pub async fn daemon_restart(&self) -> Result<()> {
+        let socket_status = self.daemon.restart().await?;
+        let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
+        let status = client.daemon_connect().await?.status;
+        println!("socket: {}", socket_status.socket_path.display());
+        println!("metadata: {}", socket_status.metadata_path.display());
+        println!("running: {}", socket_status.running);
+        println!("log_file: {}", socket_status.log_path.display());
+        println!("upstream_status: {}", status.upstream.status);
+        println!("codex_endpoint: {}", status.codex_endpoint);
+        println!("daemon_pid: {}", status.runtime.pid);
+        println!("daemon_version: {}", status.runtime.version);
+        println!("daemon_fingerprint: {}", status.runtime.build_fingerprint);
+        println!("daemon_binary: {}", status.runtime.binary_path);
         Ok(())
     }
 
@@ -102,14 +152,20 @@ impl SupervisorService {
 
     pub async fn threads_list(&self) -> Result<()> {
         let client = self.ready_client().await?;
-        let response = client.threads_list().await?;
+        let response = client.threads_list_scoped().await?;
         for thread in response.data {
             println!(
-                "{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\tin_flight={}\t{}\t{}",
                 thread.id,
                 thread.status,
                 thread.model_provider,
-                thread.preview.replace('\n', " ")
+                thread.scope,
+                thread.turn_in_flight,
+                thread
+                    .recent_output
+                    .clone()
+                    .unwrap_or_else(|| thread.preview.replace('\n', " ")),
+                thread.recent_event.unwrap_or_default()
             );
         }
         Ok(())
@@ -125,8 +181,16 @@ impl SupervisorService {
             .await?;
         println!("thread: {}", response.thread.summary.id);
         println!("status: {}", response.thread.summary.status);
+        println!("scope: {}", response.thread.summary.scope);
         println!("cwd: {}", response.thread.summary.cwd);
         println!("preview: {}", response.thread.summary.preview);
+        if let Some(snippet) = response.thread.summary.recent_output.as_ref() {
+            println!("recent_output: {snippet}");
+        }
+        if let Some(event) = response.thread.summary.recent_event.as_ref() {
+            println!("recent_event: {event}");
+        }
+        println!("turn_in_flight: {}", response.thread.summary.turn_in_flight);
         println!("turns: {}", response.thread.turns.len());
         Ok(())
     }

@@ -15,6 +15,10 @@ fn sample_thread_summary(id: &str, preview: &str, updated_at: i64) -> ipc::Threa
         status: "idle".to_string(),
         created_at: updated_at - 10,
         updated_at,
+        scope: "orcas_managed".to_string(),
+        recent_output: Some(preview.to_string()),
+        recent_event: Some("thread idle".to_string()),
+        turn_in_flight: false,
     }
 }
 
@@ -39,6 +43,7 @@ fn sample_snapshot() -> ipc::StateSnapshot {
     ipc::StateSnapshot {
         daemon: ipc::DaemonStatusResponse {
             socket_path: "/tmp/orcasd.sock".to_string(),
+            metadata_path: "/tmp/orcasd.json".to_string(),
             codex_endpoint: "ws://127.0.0.1:4500".to_string(),
             codex_binary_path: "/home/emmy/git/codex/codex-rs/target/debug/codex".to_string(),
             upstream: ConnectionState {
@@ -48,6 +53,16 @@ fn sample_snapshot() -> ipc::StateSnapshot {
             },
             client_count: 1,
             known_threads: 2,
+            runtime: ipc::DaemonRuntimeMetadata {
+                pid: 4242,
+                started_at: Utc::now(),
+                version: "0.1.0".to_string(),
+                build_fingerprint: "abc123".to_string(),
+                binary_path: "/tmp/orcasd".to_string(),
+                socket_path: "/tmp/orcasd.sock".to_string(),
+                metadata_path: "/tmp/orcasd.json".to_string(),
+                git_commit: None,
+            },
         },
         session: ipc::SessionState {
             active_thread_id: Some("thread-1".to_string()),

@@ -29,11 +29,32 @@ pub struct Empty {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonStatusResponse {
     pub socket_path: String,
+    pub metadata_path: String,
     pub codex_endpoint: String,
     pub codex_binary_path: String,
     pub upstream: ConnectionState,
     pub client_count: usize,
     pub known_threads: usize,
+    pub runtime: DaemonRuntimeMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonRuntimeMetadata {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+    pub version: String,
+    pub build_fingerprint: String,
+    pub binary_path: String,
+    pub socket_path: String,
+    pub metadata_path: String,
+    pub git_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonBinarySummary {
+    pub version: String,
+    pub build_fingerprint: String,
+    pub binary_path: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,6 +210,10 @@ pub struct ThreadSummary {
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub scope: String,
+    pub recent_output: Option<String>,
+    pub recent_event: Option<String>,
+    pub turn_in_flight: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -81,6 +81,9 @@ impl<B: TuiBackend> AppRuntime<B> {
             Effect::RefreshSnapshot => match self.backend.get_snapshot().await {
                 Ok(snapshot) => {
                     self.dispatch(Action::Event(UiEvent::SnapshotLoaded(snapshot)));
+                    if self.event_rx.is_none() {
+                        self.pending_effects.push_back(Effect::SubscribeEvents);
+                    }
                 }
                 Err(error) => {
                     self.dispatch(Action::Event(UiEvent::Error(format!(

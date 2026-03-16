@@ -28,7 +28,7 @@ use orcas_core::{
 
 use crate::process::{
     ENV_CODEX_BIN, ENV_CODEX_LISTEN_URL, ENV_CONNECTION_MODE, ENV_DEFAULT_CWD, ENV_DEFAULT_MODEL,
-    OrcasRuntimeOverrides, apply_runtime_overrides,
+    OrcasDaemonProcessManager, OrcasRuntimeOverrides, apply_runtime_overrides,
 };
 
 const RECENT_EVENT_LIMIT: usize = 200;
@@ -60,6 +60,7 @@ impl Default for DaemonState {
 pub struct OrcasDaemonService {
     paths: AppPaths,
     config: AppConfig,
+    runtime: ipc::DaemonRuntimeMetadata,
     store: Arc<JsonSessionStore>,
     codex_daemon: LocalCodexDaemonManager,
     codex_client: Arc<CodexClient>,
@@ -76,6 +77,8 @@ impl OrcasDaemonService {
         paths.ensure().await?;
         let mut config = AppConfig::write_default_if_missing(&paths).await?;
         apply_runtime_overrides(&mut config, &Self::overrides_from_env());
+        let runtime =
+            OrcasDaemonProcessManager::runtime_metadata_for_current_process(&paths).await?;
 
         let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
         let codex_daemon =
@@ -90,6 +93,7 @@ impl OrcasDaemonService {
         let service = Arc::new(Self {
             paths,
             config,
+            runtime,
             store,
             codex_daemon,
             codex_client,
@@ -108,7 +112,11 @@ impl OrcasDaemonService {
 
     pub async fn run(self: Arc<Self>) -> OrcasResult<()> {
         let listener = self.bind_listener().await?;
-        let _socket_guard = SocketGuard::new(self.paths.socket_file.clone());
+        OrcasDaemonProcessManager::write_runtime_metadata(&self.paths, &self.runtime).await?;
+        let _socket_guard = SocketGuard::new(
+            self.paths.socket_file.clone(),
+            self.paths.daemon_metadata_file.clone(),
+        );
 
         if let Err(error) = self.connect_upstream().await {
             warn!(%error, "initial Codex connect failed");
@@ -356,11 +364,13 @@ impl OrcasDaemonService {
         let upstream = self.state.read().await.upstream.clone();
         Ok(ipc::DaemonStatusResponse {
             socket_path: self.paths.socket_file.display().to_string(),
+            metadata_path: self.paths.daemon_metadata_file.display().to_string(),
             codex_endpoint: self.config.codex.listen_url.clone(),
             codex_binary_path: self.config.codex.binary_path.display().to_string(),
             upstream,
             client_count: self.client_count.load(Ordering::SeqCst),
             known_threads: self.known_thread_summaries().await.len(),
+            runtime: self.runtime.clone(),
         })
     }
 
@@ -409,13 +419,16 @@ impl OrcasDaemonService {
             .codex_client
             .thread_list(types::ThreadListParams::default())
             .await?;
-        self.sync_threads(&response.data, None).await?;
-        self.threads_list_scoped().await
+        self.sync_threads(&response.data, None, Some("upstream_discovered"))
+            .await?;
+        Ok(ipc::ThreadsListResponse {
+            data: self.known_thread_summaries().await,
+        })
     }
 
     async fn threads_list_scoped(&self) -> OrcasResult<ipc::ThreadsListResponse> {
         Ok(ipc::ThreadsListResponse {
-            data: self.known_thread_summaries().await,
+            data: self.scoped_known_thread_summaries().await,
         })
     }
 
@@ -441,7 +454,11 @@ impl OrcasDaemonService {
             })
             .await?;
         let view = self
-            .sync_thread(&response.thread, Some(response.model.clone()))
+            .sync_thread(
+                &response.thread,
+                Some(response.model.clone()),
+                Some("orcas_managed"),
+            )
             .await?;
         self.set_active_thread(&view.summary.id).await;
         Ok(ipc::ThreadStartResponse {
@@ -461,7 +478,9 @@ impl OrcasDaemonService {
                 include_turns: params.include_turns,
             })
             .await?;
-        let view = self.sync_thread(&response.thread, None).await?;
+        let view = self
+            .sync_thread(&response.thread, None, Some("live_observed"))
+            .await?;
         Ok(ipc::ThreadReadResponse { thread: view })
     }
 
@@ -483,7 +502,9 @@ impl OrcasDaemonService {
                 include_turns: true,
             })
             .await?;
-        let view = self.sync_thread(&response.thread, None).await?;
+        let view = self
+            .sync_thread(&response.thread, None, Some("live_observed"))
+            .await?;
         Ok(ipc::ThreadGetResponse { thread: view })
     }
 
@@ -514,7 +535,11 @@ impl OrcasDaemonService {
             })
             .await?;
         let view = self
-            .sync_thread(&response.thread, Some(response.model.clone()))
+            .sync_thread(
+                &response.thread,
+                Some(response.model.clone()),
+                Some("orcas_managed"),
+            )
             .await?;
         self.set_active_thread(&view.summary.id).await;
         Ok(ipc::ThreadResumeResponse {
@@ -637,7 +662,7 @@ impl OrcasDaemonService {
     async fn snapshot(&self) -> OrcasResult<ipc::StateSnapshot> {
         let daemon = self.daemon_status().await?;
         let state = self.state.read().await;
-        let threads = Self::sorted_thread_summaries(&state.threads);
+        let threads = Self::scoped_thread_summaries(&state.threads);
         let active_thread = Self::focus_thread_view(&state, &threads);
         let session = state.session.clone();
         drop(state);
@@ -679,7 +704,9 @@ impl OrcasDaemonService {
             .thread_list(types::ThreadListParams::default())
             .await
         {
-            let _ = self.sync_threads(&response.data, None).await;
+            let _ = self
+                .sync_threads(&response.data, None, Some("upstream_discovered"))
+                .await;
         }
         Ok(())
     }
@@ -688,9 +715,10 @@ impl OrcasDaemonService {
         &self,
         threads: &[types::Thread],
         model: Option<String>,
+        scope: Option<&str>,
     ) -> OrcasResult<()> {
         for thread in threads {
-            self.sync_thread(thread, model.clone()).await?;
+            self.sync_thread(thread, model.clone(), scope).await?;
         }
         Ok(())
     }
@@ -699,40 +727,46 @@ impl OrcasDaemonService {
         &self,
         thread: &types::Thread,
         model: Option<String>,
+        scope: Option<&str>,
     ) -> OrcasResult<ipc::ThreadView> {
-        self.persist_thread(thread, model).await?;
-        let view = Self::thread_view_from_codex(thread.clone());
+        let existing = self.thread_from_state(&thread.id).await;
+        let view = Self::thread_view_from_codex(thread.clone(), existing.as_ref(), scope);
+        self.persist_thread_view(&view, model).await?;
         let mut state = self.state.write().await;
         state.recent_thread_id = Some(view.summary.id.clone());
         state.threads.insert(view.summary.id.clone(), view.clone());
         Ok(view)
     }
 
-    async fn persist_thread(
+    async fn persist_thread_view(
         &self,
-        thread: &types::Thread,
+        thread: &ipc::ThreadView,
         model: Option<String>,
     ) -> OrcasResult<()> {
         let created_at = Utc
-            .timestamp_opt(thread.created_at, 0)
+            .timestamp_opt(thread.summary.created_at, 0)
             .single()
             .unwrap_or_else(Utc::now);
         let updated_at = Utc
-            .timestamp_opt(thread.updated_at, 0)
+            .timestamp_opt(thread.summary.updated_at, 0)
             .single()
             .unwrap_or(created_at);
         self.store
             .upsert_thread(ThreadMetadata {
-                id: thread.id.clone(),
-                name: thread.name.clone(),
-                preview: thread.preview.clone(),
+                id: thread.summary.id.clone(),
+                name: thread.summary.name.clone(),
+                preview: thread.summary.preview.clone(),
                 model,
-                model_provider: Some(thread.model_provider.clone()),
-                cwd: (!thread.cwd.is_empty()).then(|| PathBuf::from(&thread.cwd)),
+                model_provider: Some(thread.summary.model_provider.clone()),
+                cwd: (!thread.summary.cwd.is_empty()).then(|| PathBuf::from(&thread.summary.cwd)),
                 endpoint: Some(self.config.codex.listen_url.clone()),
                 created_at,
                 updated_at,
-                status: thread.status.label().to_string(),
+                status: thread.summary.status.clone(),
+                scope: thread.summary.scope.clone(),
+                recent_output: thread.summary.recent_output.clone(),
+                recent_event: thread.summary.recent_event.clone(),
+                turn_in_flight: thread.summary.turn_in_flight,
             })
             .await
     }
@@ -744,6 +778,11 @@ impl OrcasDaemonService {
     async fn known_thread_summaries(&self) -> Vec<ipc::ThreadSummary> {
         let state = self.state.read().await;
         Self::sorted_thread_summaries(&state.threads)
+    }
+
+    async fn scoped_known_thread_summaries(&self) -> Vec<ipc::ThreadSummary> {
+        let state = self.state.read().await;
+        Self::scoped_thread_summaries(&state.threads)
     }
 
     async fn set_active_thread(&self, thread_id: &str) {
@@ -763,6 +802,8 @@ impl OrcasDaemonService {
             let (turn, thread_summary) = {
                 let thread = Self::ensure_thread_entry(&mut state, thread_id);
                 Self::touch_thread(thread);
+                thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "orcas_managed");
+                thread.summary.recent_event = Some(format!("turn {status}"));
                 let turn = Self::upsert_turn(
                     thread,
                     ipc::TurnView {
@@ -772,6 +813,7 @@ impl OrcasDaemonService {
                         items: Vec::new(),
                     },
                 );
+                Self::refresh_thread_summary(thread);
                 (turn, thread.summary.clone())
             };
             Self::upsert_active_turn(&mut state.session, thread_id, turn_id, status);
@@ -779,6 +821,9 @@ impl OrcasDaemonService {
             state.recent_thread_id = Some(thread_id.to_string());
             (state.session.clone(), turn, thread_summary)
         };
+        if let Some(thread_view) = self.thread_from_state(thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view, None).await;
+        }
         self.emit(ipc::DaemonEvent::ThreadUpdated { thread }).await;
         self.emit(ipc::DaemonEvent::SessionChanged { session })
             .await;
@@ -810,8 +855,13 @@ impl OrcasDaemonService {
             OrcasEvent::ThreadStarted { thread_id, preview } => {
                 let maybe_thread = self.codex_client.snapshot_thread(&thread_id).await;
                 let summary = if let Some(thread) = maybe_thread {
-                    let _ = self.persist_thread(&thread, None).await;
-                    let view = Self::thread_view_from_codex(thread);
+                    let existing = self.thread_from_state(&thread_id).await;
+                    let view = Self::thread_view_from_codex(
+                        thread,
+                        existing.as_ref(),
+                        Some("live_observed"),
+                    );
+                    let _ = self.persist_thread_view(&view, None).await;
                     let mut state = self.state.write().await;
                     state.recent_thread_id = Some(view.summary.id.clone());
                     state.threads.insert(view.summary.id.clone(), view.clone());
@@ -822,12 +872,19 @@ impl OrcasDaemonService {
                         let thread = Self::ensure_thread_entry(&mut state, &thread_id);
                         thread.summary.preview = preview;
                         thread.summary.status = "started".to_string();
+                        thread.summary.scope =
+                            Self::prefer_scope(&thread.summary.scope, "live_observed");
+                        thread.summary.recent_event = Some("thread started".to_string());
                         Self::touch_thread(thread);
+                        Self::refresh_thread_summary(thread);
                         thread.summary.clone()
                     };
                     state.recent_thread_id = Some(thread_id.clone());
                     summary
                 };
+                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+                    let _ = self.persist_thread_view(thread_view, None).await;
+                }
                 self.emit(ipc::DaemonEvent::ThreadUpdated { thread: summary })
                     .await;
             }
@@ -837,12 +894,18 @@ impl OrcasDaemonService {
                     let summary = {
                         let thread = Self::ensure_thread_entry(&mut state, &thread_id);
                         thread.summary.status = status;
+                        thread.summary.recent_event =
+                            Some(format!("thread {}", thread.summary.status));
                         Self::touch_thread(thread);
+                        Self::refresh_thread_summary(thread);
                         thread.summary.clone()
                     };
                     state.recent_thread_id = Some(thread_id.clone());
                     summary
                 };
+                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+                    let _ = self.persist_thread_view(thread_view, None).await;
+                }
                 self.emit(ipc::DaemonEvent::ThreadUpdated { thread: summary })
                     .await;
             }
@@ -860,6 +923,7 @@ impl OrcasDaemonService {
                     let (turn, thread_summary) = {
                         let thread = Self::ensure_thread_entry(&mut state, &thread_id);
                         Self::touch_thread(thread);
+                        thread.summary.recent_event = Some(format!("turn {status}"));
                         let turn = Self::upsert_turn(
                             thread,
                             ipc::TurnView {
@@ -869,6 +933,7 @@ impl OrcasDaemonService {
                                 items: Vec::new(),
                             },
                         );
+                        Self::refresh_thread_summary(thread);
                         (turn, thread.summary.clone())
                     };
                     Self::remove_active_turn(&mut state.session, &thread_id, &turn_id);
@@ -878,6 +943,9 @@ impl OrcasDaemonService {
                     state.recent_thread_id = Some(thread_id.clone());
                     (state.session.clone(), turn, thread_summary)
                 };
+                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+                    let _ = self.persist_thread_view(thread_view, None).await;
+                }
                 self.emit(ipc::DaemonEvent::ThreadUpdated { thread }).await;
                 self.emit(ipc::DaemonEvent::SessionChanged { session })
                     .await;
@@ -900,6 +968,9 @@ impl OrcasDaemonService {
                         None,
                     )
                     .await;
+                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+                    let _ = self.persist_thread_view(thread_view, None).await;
+                }
                 self.emit(ipc::DaemonEvent::ItemUpdated {
                     thread_id,
                     turn_id,
@@ -923,6 +994,9 @@ impl OrcasDaemonService {
                         None,
                     )
                     .await;
+                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+                    let _ = self.persist_thread_view(thread_view, None).await;
+                }
                 self.emit(ipc::DaemonEvent::ItemUpdated {
                     thread_id,
                     turn_id,
@@ -978,17 +1052,26 @@ impl OrcasDaemonService {
         let mut state = self.state.write().await;
         let thread = Self::ensure_thread_entry(&mut state, thread_id);
         Self::touch_thread(thread);
-        let turn = Self::ensure_turn_entry(thread, turn_id);
-        let item = Self::ensure_item_entry(turn, item_id, item_type);
-        if let Some(item_status) = status {
-            item.status = Some(item_status.to_string());
-        }
-        if let Some(text_delta) = delta {
-            item.text
-                .get_or_insert_with(String::new)
-                .push_str(&text_delta);
-        }
-        item.clone()
+        thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "live_observed");
+        let item = {
+            let turn = Self::ensure_turn_entry(thread, turn_id);
+            let item = Self::ensure_item_entry(turn, item_id, item_type);
+            if let Some(item_status) = status {
+                item.status = Some(item_status.to_string());
+            }
+            if let Some(text_delta) = delta {
+                item.text
+                    .get_or_insert_with(String::new)
+                    .push_str(&text_delta);
+            }
+            item.clone()
+        };
+        thread.summary.recent_event = Some(match status {
+            Some(item_status) => format!("{item_type} {item_status}"),
+            None => format!("{item_type} updated"),
+        });
+        Self::refresh_thread_summary(thread);
+        item
     }
 
     async fn emit(&self, event: ipc::DaemonEvent) {
@@ -1082,6 +1165,22 @@ impl OrcasDaemonService {
         summaries
     }
 
+    fn scoped_thread_summaries(
+        threads: &HashMap<String, ipc::ThreadView>,
+    ) -> Vec<ipc::ThreadSummary> {
+        let summaries = Self::sorted_thread_summaries(threads);
+        let scoped = summaries
+            .iter()
+            .filter(|thread| thread.scope != "upstream_discovered" || thread.turn_in_flight)
+            .cloned()
+            .collect::<Vec<_>>();
+        if scoped.is_empty() {
+            summaries.into_iter().take(20).collect()
+        } else {
+            scoped
+        }
+    }
+
     fn focus_thread_view(
         state: &DaemonState,
         threads: &[ipc::ThreadSummary],
@@ -1117,6 +1216,10 @@ impl OrcasDaemonService {
                 status: "pending".to_string(),
                 created_at: now,
                 updated_at: now,
+                scope: "live_observed".to_string(),
+                recent_output: None,
+                recent_event: None,
+                turn_in_flight: false,
             },
             turns: Vec::new(),
         }
@@ -1137,28 +1240,59 @@ impl OrcasDaemonService {
                 status: metadata.status.clone(),
                 created_at: metadata.created_at.timestamp(),
                 updated_at: metadata.updated_at.timestamp(),
+                scope: if metadata.scope.is_empty() {
+                    "orcas_managed".to_string()
+                } else {
+                    metadata.scope.clone()
+                },
+                recent_output: metadata.recent_output.clone(),
+                recent_event: metadata.recent_event.clone(),
+                turn_in_flight: metadata.turn_in_flight,
             },
             turns: Vec::new(),
         }
     }
 
-    fn thread_view_from_codex(thread: types::Thread) -> ipc::ThreadView {
-        let summary = ipc::ThreadSummary {
-            id: thread.id,
-            preview: thread.preview,
-            name: thread.name,
-            model_provider: thread.model_provider,
-            cwd: thread.cwd,
-            status: thread.status.label().to_string(),
-            created_at: thread.created_at,
-            updated_at: thread.updated_at,
+    fn thread_view_from_codex(
+        thread: types::Thread,
+        existing: Option<&ipc::ThreadView>,
+        scope: Option<&str>,
+    ) -> ipc::ThreadView {
+        let mut view = ipc::ThreadView {
+            summary: ipc::ThreadSummary {
+                id: thread.id,
+                preview: thread.preview,
+                name: thread.name,
+                model_provider: thread.model_provider,
+                cwd: thread.cwd,
+                status: thread.status.label().to_string(),
+                created_at: thread.created_at,
+                updated_at: thread.updated_at,
+                scope: scope
+                    .map(ToOwned::to_owned)
+                    .or_else(|| existing.map(|thread| thread.summary.scope.clone()))
+                    .filter(|scope| !scope.is_empty())
+                    .unwrap_or_else(|| "upstream_discovered".to_string()),
+                recent_output: existing.and_then(|thread| thread.summary.recent_output.clone()),
+                recent_event: existing.and_then(|thread| thread.summary.recent_event.clone()),
+                turn_in_flight: existing
+                    .map(|thread| thread.summary.turn_in_flight)
+                    .unwrap_or(false),
+            },
+            turns: if thread.turns.is_empty() {
+                existing
+                    .map(|thread| thread.turns.clone())
+                    .unwrap_or_default()
+            } else {
+                thread
+                    .turns
+                    .into_iter()
+                    .map(Self::turn_view_from_codex)
+                    .collect()
+            },
         };
-        let turns = thread
-            .turns
-            .into_iter()
-            .map(Self::turn_view_from_codex)
-            .collect();
-        ipc::ThreadView { summary, turns }
+        Self::refresh_thread_summary(&mut view);
+        view
     }
 
     fn turn_view_from_codex(turn: types::Turn) -> ipc::TurnView {
@@ -1184,6 +1318,51 @@ impl OrcasDaemonService {
 
     fn touch_thread(thread: &mut ipc::ThreadView) {
         thread.summary.updated_at = Utc::now().timestamp();
+    }
+
+    fn refresh_thread_summary(thread: &mut ipc::ThreadView) {
+        thread.summary.turn_in_flight = thread
+            .turns
+            .iter()
+            .any(|turn| !Self::is_terminal_status(&turn.status));
+        if let Some(output) = thread
+            .turns
+            .iter()
+            .rev()
+            .flat_map(|turn| turn.items.iter().rev())
+            .filter_map(|item| item.text.as_deref())
+            .find(|text| !text.trim().is_empty())
+        {
+            thread.summary.recent_output = Some(Self::truncate_snippet(output));
+        }
+        if thread.summary.recent_event.is_none() {
+            thread.summary.recent_event = Some(if thread.summary.turn_in_flight {
+                "turn in progress".to_string()
+            } else {
+                format!("thread {}", thread.summary.status)
+            });
+        }
+    }
+
+    fn truncate_snippet(text: &str) -> String {
+        let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut snippet = single_line.chars().take(160).collect::<String>();
+        if single_line.chars().count() > 160 {
+            snippet.push_str("...");
+        }
+        snippet
+    }
+
+    fn prefer_scope(current: &str, fallback: &str) -> String {
+        if current.is_empty() || current == "upstream_discovered" {
+            fallback.to_string()
+        } else {
+            current.to_string()
+        }
+    }
+
+    fn is_terminal_status(status: &str) -> bool {
+        matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
     }
 
     fn upsert_turn(thread: &mut ipc::ThreadView, turn: ipc::TurnView) -> ipc::TurnView {
@@ -1359,17 +1538,22 @@ impl OrcasDaemonService {
 
 struct SocketGuard {
     path: PathBuf,
+    metadata_path: PathBuf,
 }
 
 impl SocketGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
+    fn new(path: PathBuf, metadata_path: PathBuf) -> Self {
+        Self {
+            path,
+            metadata_path,
+        }
     }
 }
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.metadata_path);
     }
 }
 
@@ -1386,5 +1570,75 @@ impl ClientGuard {
 impl Drop for ClientGuard {
     fn drop(&mut self) {
         self.service.client_count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::OrcasDaemonService;
+    use orcas_core::ipc;
+
+    fn sample_thread(id: &str, scope: &str, updated_at: i64) -> ipc::ThreadView {
+        ipc::ThreadView {
+            summary: ipc::ThreadSummary {
+                id: id.to_string(),
+                preview: format!("preview {id}"),
+                name: None,
+                model_provider: "openai".to_string(),
+                cwd: "/tmp/orcas".to_string(),
+                status: "idle".to_string(),
+                created_at: updated_at - 10,
+                updated_at,
+                scope: scope.to_string(),
+                recent_output: None,
+                recent_event: None,
+                turn_in_flight: false,
+            },
+            turns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scoped_thread_summaries_prefer_orcas_relevant_threads() {
+        let mut threads = HashMap::new();
+        threads.insert(
+            "upstream".to_string(),
+            sample_thread("upstream", "upstream_discovered", 100),
+        );
+        threads.insert(
+            "managed".to_string(),
+            sample_thread("managed", "orcas_managed", 200),
+        );
+
+        let scoped = OrcasDaemonService::scoped_thread_summaries(&threads);
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, "managed");
+    }
+
+    #[test]
+    fn refresh_thread_summary_tracks_recent_output_and_in_flight() {
+        let mut thread = sample_thread("thread-1", "orcas_managed", 200);
+        thread.turns.push(ipc::TurnView {
+            id: "turn-1".to_string(),
+            status: "in_progress".to_string(),
+            error_message: None,
+            items: vec![ipc::ItemView {
+                id: "item-1".to_string(),
+                item_type: "agent_message".to_string(),
+                status: Some("streaming".to_string()),
+                text: Some("hello world".to_string()),
+            }],
+        });
+
+        OrcasDaemonService::refresh_thread_summary(&mut thread);
+
+        assert!(thread.summary.turn_in_flight);
+        assert_eq!(thread.summary.recent_output.as_deref(), Some("hello world"));
+        assert_eq!(
+            thread.summary.recent_event.as_deref(),
+            Some("turn in progress")
+        );
     }
 }

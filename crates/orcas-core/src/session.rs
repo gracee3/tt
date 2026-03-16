@@ -28,6 +28,14 @@ pub struct ThreadMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub status: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub recent_output: Option<String>,
+    #[serde(default)]
+    pub recent_event: Option<String>,
+    #[serde(default)]
+    pub turn_in_flight: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

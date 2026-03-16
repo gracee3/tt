@@ -1,6 +1,7 @@
 # Codex App-Server Notes
 
 These notes are grounded in the local checkout at `/home/emmy/git/codex`.
+Current Orcas reference target: Codex `v0.115.0`.
 
 ## Confirmed WebSocket Entry Point
 

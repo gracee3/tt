@@ -56,7 +56,7 @@ Current snapshot content:
 
 - daemon status
 - active session state
-- known thread summaries
+- known scoped thread summaries
 - one active/focused thread view when available
 - recent event ring buffer
 
@@ -67,6 +67,22 @@ Additional query helpers now include:
 - `session/get_active`
 
 That gives new clients a deterministic bootstrap path before live notifications begin.
+
+Current daemon status payload also includes:
+
+- runtime metadata path
+- daemon PID
+- daemon startup timestamp
+- daemon version
+- daemon build fingerprint
+- daemon binary path
+
+Current thread summaries also include Orcas-owned frontend fields:
+
+- `scope`
+- `recent_output`
+- `recent_event`
+- `turn_in_flight`
 
 ## Design Rules
 

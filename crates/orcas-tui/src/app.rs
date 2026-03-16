@@ -317,6 +317,10 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         }
         UiEvent::Error(message) => {
             state.prompt_in_flight = false;
+            if let Some(daemon) = state.daemon.as_mut() {
+                daemon.upstream.status = "disconnected".to_string();
+                daemon.upstream.detail = Some(message.clone());
+            }
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Error,
                 message,
@@ -376,6 +380,10 @@ fn ensure_thread_detail(state: &mut AppState, thread_id: &str) {
             status: "pending".to_string(),
             created_at: 0,
             updated_at: 0,
+            scope: "live_observed".to_string(),
+            recent_output: None,
+            recent_event: None,
+            turn_in_flight: false,
         });
     state.thread_details.insert(
         thread_id.to_string(),

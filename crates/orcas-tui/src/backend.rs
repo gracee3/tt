@@ -54,6 +54,10 @@ impl OrcasDaemonBackend {
             return Ok(client);
         }
 
+        self.connect_client().await
+    }
+
+    async fn connect_client(&self) -> Result<Arc<OrcasIpcClient>> {
         self.daemon
             .ensure_running(OrcasDaemonLaunch::IfNeeded)
             .await?;
@@ -63,18 +67,37 @@ impl OrcasDaemonBackend {
         *guard = Some(Arc::clone(&client));
         Ok(client)
     }
+
+    async fn invalidate_client(&self) {
+        let mut guard = self.client.lock().await;
+        *guard = None;
+    }
 }
 
 #[async_trait]
 impl TuiBackend for OrcasDaemonBackend {
     async fn get_snapshot(&self) -> Result<ipc::StateSnapshot> {
         let client = self.ensure_client().await?;
-        Ok(client.state_get().await?.snapshot)
+        match client.state_get().await {
+            Ok(response) => Ok(response.snapshot),
+            Err(_) => {
+                self.invalidate_client().await;
+                let client = self.connect_client().await?;
+                Ok(client.state_get().await?.snapshot)
+            }
+        }
     }
 
     async fn subscribe_events(&self) -> Result<mpsc::Receiver<ipc::DaemonEventEnvelope>> {
         let client = self.ensure_client().await?;
-        let (events, _) = client.subscribe_events(false).await?;
+        let (events, _) = match client.subscribe_events(false).await {
+            Ok(response) => response,
+            Err(_) => {
+                self.invalidate_client().await;
+                let client = self.connect_client().await?;
+                client.subscribe_events(false).await?
+            }
+        };
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(async move {
             let mut events = events;
@@ -95,6 +118,22 @@ impl TuiBackend for OrcasDaemonBackend {
 
     async fn execute(&self, command: BackendCommand) -> Result<BackendCommandResult> {
         let client = self.ensure_client().await?;
+        match Self::execute_with_client(&client, command.clone()).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                self.invalidate_client().await;
+                let client = self.connect_client().await?;
+                Self::execute_with_client(&client, command).await
+            }
+        }
+    }
+}
+
+impl OrcasDaemonBackend {
+    async fn execute_with_client(
+        client: &Arc<OrcasIpcClient>,
+        command: BackendCommand,
+    ) -> Result<BackendCommandResult> {
         match command {
             BackendCommand::GetThread { thread_id } => Ok(BackendCommandResult::Thread(
                 client
