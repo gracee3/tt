@@ -6,6 +6,7 @@
 - [Object Model](./object-model.md)
 - [Reporting And Decisions](./reporting-and-decisions.md)
 - [Assignment Communication Protocol v1](./assignment-communication-protocol-v1.md)
+- [Assignment Communication Visibility v1](./assignment-communication-visibility.md)
 - [Lifecycles](./lifecycles.md)
 - [Runtime Mapping](./runtime-mapping.md)
 - [Supervisor Proposal v1](./supervisor-proposal-v1.md)

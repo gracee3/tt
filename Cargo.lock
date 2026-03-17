@@ -1069,6 +1069,7 @@ dependencies = [
  "clap",
  "orcas-core",
  "orcas-daemon",
+ "serde_json",
  "tokio",
  "tracing",
 ]

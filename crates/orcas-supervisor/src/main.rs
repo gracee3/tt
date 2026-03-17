@@ -135,6 +135,7 @@ enum WorkunitsCommand {
 enum AssignmentsCommand {
     Start(AssignmentStartArgs),
     Get(AssignmentRefArgs),
+    Communication(AssignmentRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -447,6 +448,11 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 AssignmentsCommand::Get(args) => service.assignment_get(&args.assignment).await?,
+                AssignmentsCommand::Communication(args) => {
+                    service
+                        .assignment_communication_get(&args.assignment)
+                        .await?
+                }
             },
             SupervisorCommand::Reports { command } => match command {
                 ReportsCommand::Get(args) => service.report_get(&args.report).await?,

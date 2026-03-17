@@ -476,6 +476,17 @@ impl SupervisorService {
         Ok(())
     }
 
+    pub async fn assignment_communication_get(&self, assignment_id: &str) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .assignment_communication_get(&ipc::AssignmentCommunicationGetRequest {
+                assignment_id: assignment_id.to_string(),
+            })
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&response.record)?);
+        Ok(())
+    }
+
     pub async fn report_get(&self, report_id: &str) -> Result<()> {
         let client = self.ready_client().await?;
         let response = client

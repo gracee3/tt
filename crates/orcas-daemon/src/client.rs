@@ -227,6 +227,14 @@ impl OrcasIpcClient {
         self.request(ipc::methods::ASSIGNMENT_GET, params).await
     }
 
+    pub async fn assignment_communication_get(
+        &self,
+        params: &ipc::AssignmentCommunicationGetRequest,
+    ) -> OrcasResult<ipc::AssignmentCommunicationGetResponse> {
+        self.request(ipc::methods::ASSIGNMENT_COMMUNICATION_GET, params)
+            .await
+    }
+
     pub async fn report_get(
         &self,
         params: &ipc::ReportGetRequest,

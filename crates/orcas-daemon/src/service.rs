@@ -528,6 +528,11 @@ impl OrcasDaemonService {
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.assignment_get(params).await?)?
             }
+            ipc::methods::ASSIGNMENT_COMMUNICATION_GET => {
+                let params: ipc::AssignmentCommunicationGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.assignment_communication_get(params).await?)?
+            }
             ipc::methods::REPORT_GET => {
                 let params: ipc::ReportGetRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.report_get(params).await?)?
@@ -1752,6 +1757,32 @@ impl OrcasDaemonService {
             worker_session,
             report,
         })
+    }
+
+    async fn assignment_communication_get(
+        &self,
+        params: ipc::AssignmentCommunicationGetRequest,
+    ) -> OrcasResult<ipc::AssignmentCommunicationGetResponse> {
+        if params.assignment_id.trim().is_empty() {
+            return Err(OrcasError::Protocol(
+                "assignment communication lookup requires a non-empty assignment_id".to_string(),
+            ));
+        }
+        let record = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .assignment_communications
+            .get(&params.assignment_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown assignment communication record for assignment `{}`",
+                    params.assignment_id
+                ))
+            })?;
+        Ok(ipc::AssignmentCommunicationGetResponse { record })
     }
 
     async fn report_get(
@@ -8841,6 +8872,129 @@ ORCAS_REPORT_END"#
             .expect("response contract section");
         assert!(objective_index < instructions_index);
         assert!(instructions_index < response_index);
+    }
+
+    #[tokio::test]
+    async fn assignment_communication_get_returns_record_for_assignment() {
+        let service = test_service().await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Visibility".to_string(),
+                objective: "Inspect assignment communication records".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id.clone(),
+                title: "Inspect record".to_string(),
+                task_statement: "Inspect the current assignment communication path.".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+        let prepared = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.clone(),
+                worker_id: "worker-visibility".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some(
+                    "Inspect the current assignment communication path.".to_string(),
+                ),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("prepared assignment");
+
+        let expected_record = service
+            .state
+            .read()
+            .await
+            .collaboration
+            .assignment_communications
+            .get(&prepared.assignment.id)
+            .cloned()
+            .expect("communication record");
+
+        let response = service
+            .assignment_communication_get(ipc::AssignmentCommunicationGetRequest {
+                assignment_id: prepared.assignment.id.clone(),
+            })
+            .await
+            .expect("assignment communication record");
+
+        assert_eq!(response.record.assignment_id, expected_record.assignment_id);
+        assert_eq!(response.record.work_unit_id, expected_record.work_unit_id);
+        assert_eq!(response.record.workstream_id, expected_record.workstream_id);
+        assert_eq!(
+            response.record.packet.packet_id,
+            expected_record.packet.packet_id
+        );
+        assert_eq!(
+            response.record.prompt_render.render_spec.template_version,
+            "assignment_prompt.v1"
+        );
+        assert_eq!(
+            response.record.prompt_render.prompt_text,
+            expected_record.prompt_render.prompt_text
+        );
+        assert_eq!(response.record.prompt_hash, expected_record.prompt_hash);
+        assert!(response.record.response_envelope.is_none());
+        assert!(response.record.validation.is_none());
+
+        let json = serde_json::to_value(&response).expect("serialize response");
+        assert_eq!(
+            json["record"]["assignment_id"],
+            Value::String(expected_record.assignment_id.clone())
+        );
+        assert_eq!(
+            json["record"]["packet"]["schema_version"],
+            Value::String("assignment_communication_packet.v1".to_string())
+        );
+        assert_eq!(
+            json["record"]["prompt_render"]["render_spec"]["template_version"],
+            Value::String("assignment_prompt.v1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn assignment_communication_get_rejects_empty_assignment_id() {
+        let service = test_service().await;
+
+        let error = service
+            .assignment_communication_get(ipc::AssignmentCommunicationGetRequest {
+                assignment_id: "   ".to_string(),
+            })
+            .await
+            .expect_err("empty id should be rejected");
+
+        assert!(matches!(
+            error,
+            OrcasError::Protocol(message)
+                if message.contains("assignment communication lookup requires a non-empty assignment_id")
+        ));
+    }
+
+    #[tokio::test]
+    async fn assignment_communication_get_rejects_missing_assignment() {
+        let service = test_service().await;
+
+        let error = service
+            .assignment_communication_get(ipc::AssignmentCommunicationGetRequest {
+                assignment_id: "assignment-missing".to_string(),
+            })
+            .await
+            .expect_err("missing assignment should be rejected");
+
+        assert!(matches!(
+            error,
+            OrcasError::Protocol(message)
+                if message.contains("unknown assignment communication record for assignment `assignment-missing`")
+        ));
     }
 
     #[test]

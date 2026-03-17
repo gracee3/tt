@@ -6,6 +6,7 @@ use crate::collaboration::{
     ReportDisposition, ReportParseResult, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
     Workstream, WorkstreamStatus,
 };
+use crate::communication::AssignmentCommunicationRecord;
 use crate::events::ConnectionState;
 use crate::supervisor::{
     SupervisorProposalEdits, SupervisorProposalFailureStage, SupervisorProposalRecord,
@@ -40,6 +41,7 @@ pub mod methods {
     pub const WORKUNIT_GET: &str = "workunit/get";
     pub const ASSIGNMENT_START: &str = "assignment/start";
     pub const ASSIGNMENT_GET: &str = "assignment/get";
+    pub const ASSIGNMENT_COMMUNICATION_GET: &str = "assignment_communication/get";
     pub const REPORT_GET: &str = "report/get";
     pub const REPORT_LIST_FOR_WORKUNIT: &str = "report/list_for_workunit";
     pub const DECISION_APPLY: &str = "decision/apply";
@@ -753,6 +755,16 @@ pub struct AssignmentGetResponse {
     pub worker: Worker,
     pub worker_session: WorkerSession,
     pub report: Option<Report>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentCommunicationGetRequest {
+    pub assignment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentCommunicationGetResponse {
+    pub record: AssignmentCommunicationRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
