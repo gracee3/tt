@@ -62,7 +62,9 @@ pub(super) fn render_footer(state: &AppState) -> Paragraph<'static> {
                 TopLevelView::Overview => "j/k no-op",
                 TopLevelView::Threads => "j/k threads",
                 TopLevelView::Collaboration => "j/k selection  h/l list focus",
-                TopLevelView::Supervisor => "m refresh models  s start daemon  x stop daemon",
+                TopLevelView::Supervisor => {
+                    "m refresh models  s start daemon  x stop daemon  R restart daemon"
+                }
             }
         )));
     }
@@ -107,7 +109,7 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
             "nav: j/k move selected list  h/l switch workstreams/work_units  r refresh  ? help  q quit"
         }
         TopLevelView::Supervisor => {
-            "nav: m reload models  s start daemon  x request daemon stop  r refresh  ? help  q quit"
+            "nav: m reload models  s start daemon  x request daemon stop  R restart daemon  r refresh  ? help  q quit"
         }
     }
 }

@@ -130,9 +130,10 @@ fn render_controls(state: &AppState) -> Paragraph<'static> {
         } else {
             "daemon not connected"
         };
+        let restart_hint = "R restart daemon";
         lines.push(Line::from(format!(
-            "actions: {}  {}  m refresh models",
-            start_hint, stop_hint
+            "actions: {}  {}  {}  m refresh models",
+            start_hint, stop_hint, restart_hint
         )));
         lines.push(Line::from(format!(
             "runtime: {} {} {}",

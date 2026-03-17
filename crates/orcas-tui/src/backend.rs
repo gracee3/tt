@@ -61,16 +61,16 @@ impl OrcasDaemonBackend {
         })
     }
 
-    async fn ensure_client(&self) -> Result<Arc<OrcasIpcClient>> {
+    async fn ensure_client(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
         if let Some(client) = self.client.lock().await.clone() {
             return Ok(client);
         }
 
-        self.connect_client().await
+        self.connect_client(launch).await
     }
 
-    async fn connect_client(&self) -> Result<Arc<OrcasIpcClient>> {
-        self.daemon.ensure_running(OrcasDaemonLaunch::Never).await?;
+    async fn connect_client(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
+        self.daemon.ensure_running(launch).await?;
         let client = OrcasIpcClient::connect(&self.paths).await?;
         client.daemon_connect().await?;
         let mut guard = self.client.lock().await;
@@ -87,24 +87,24 @@ impl OrcasDaemonBackend {
 #[async_trait]
 impl TuiBackend for OrcasDaemonBackend {
     async fn get_snapshot(&self) -> Result<ipc::StateSnapshot> {
-        let client = self.ensure_client().await?;
+        let client = self.ensure_client(OrcasDaemonLaunch::Never).await?;
         match client.state_get().await {
             Ok(response) => Ok(response.snapshot),
             Err(_) => {
                 self.invalidate_client().await;
-                let client = self.connect_client().await?;
+                let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
                 Ok(client.state_get().await?.snapshot)
             }
         }
     }
 
     async fn subscribe_events(&self) -> Result<mpsc::Receiver<ipc::DaemonEventEnvelope>> {
-        let client = self.ensure_client().await?;
+        let client = self.ensure_client(OrcasDaemonLaunch::Never).await?;
         let (events, _) = match client.subscribe_events(false).await {
             Ok(response) => response,
             Err(_) => {
                 self.invalidate_client().await;
-                let client = self.connect_client().await?;
+                let client = self.connect_client(OrcasDaemonLaunch::Never).await?;
                 client.subscribe_events(false).await?
             }
         };
@@ -127,12 +127,16 @@ impl TuiBackend for OrcasDaemonBackend {
     }
 
     async fn execute(&self, command: BackendCommand) -> Result<BackendCommandResult> {
-        let client = self.ensure_client().await?;
+        let launch = match command {
+            BackendCommand::StartDaemon => OrcasDaemonLaunch::IfNeeded,
+            _ => OrcasDaemonLaunch::Never,
+        };
+        let client = self.ensure_client(launch).await?;
         match Self::execute_with_client(&client, command.clone()).await {
             Ok(result) => Ok(result),
             Err(_) => {
                 self.invalidate_client().await;
-                let client = self.connect_client().await?;
+                let client = self.connect_client(launch).await?;
                 Self::execute_with_client(&client, command).await
             }
         }

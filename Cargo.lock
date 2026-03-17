@@ -1039,6 +1039,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1055,7 +1056,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -1070,7 +1070,7 @@ dependencies = [
  "orcas-core",
  "orcas-daemon",
  "tokio",
- "tracing-subscriber",
+ "tracing",
 ]
 
 [[package]]
@@ -1085,7 +1085,7 @@ dependencies = [
  "orcas-daemon",
  "ratatui",
  "tokio",
- "tracing-subscriber",
+ "tracing",
 ]
 
 [[package]]

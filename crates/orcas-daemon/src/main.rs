@@ -1,16 +1,17 @@
 #![allow(unused_crate_dependencies)]
 
 use anyhow::Result;
-use tracing_subscriber::EnvFilter;
+use orcas_core::{AppPaths, init_file_logger};
+use tracing::info;
 
 use orcas_daemon::OrcasDaemonService;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .init();
+    let paths = AppPaths::discover()?;
+    paths.ensure().await?;
+    init_file_logger("orcasd", &paths.daemon_log_file)?;
+    info!("starting orcas daemon process");
 
     let service = OrcasDaemonService::load_from_env().await?;
     service.run().await?;

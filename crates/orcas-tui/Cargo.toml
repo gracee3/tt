@@ -17,8 +17,8 @@ crossterm.workspace = true
 orcas-daemon = { path = "../orcas-daemon" }
 orcas-core = { path = "../orcas-core" }
 ratatui.workspace = true
+tracing.workspace = true
 tokio.workspace = true
-tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

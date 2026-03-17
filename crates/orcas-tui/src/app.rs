@@ -98,6 +98,7 @@ pub enum UserAction {
     Refresh,
     LoadModels,
     StartDaemon,
+    RestartDaemon,
     StopDaemon,
     ToggleHelp,
     CycleView,
@@ -246,6 +247,7 @@ pub enum Effect {
     SubmitPrompt { thread_id: String, text: String },
     LoadModels,
     StartDaemon,
+    RestartDaemon,
     StopDaemon,
 }
 
@@ -278,6 +280,10 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
         UserAction::StartDaemon => {
             state.confirming_daemon_stop = true;
             vec![Effect::StartDaemon]
+        }
+        UserAction::RestartDaemon => {
+            state.confirming_daemon_stop = true;
+            vec![Effect::RestartDaemon]
         }
         UserAction::ToggleHelp => {
             state.show_help = !state.show_help;

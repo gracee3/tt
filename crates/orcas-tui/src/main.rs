@@ -12,7 +12,9 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tracing::{debug, info};
 
+use orcas_core::{AppPaths, init_file_logger};
 use orcas_tui::app::{Action, TopLevelView, UserAction};
 use orcas_tui::backend::OrcasDaemonBackend;
 use orcas_tui::render;
@@ -27,7 +29,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    tracing_subscriber::fmt().with_target(false).init();
+    let paths = AppPaths::discover()?;
+    paths.ensure().await?;
+    init_file_logger("orcas-tui", &paths.logs_dir.join("orcas-tui.log"))?;
+    info!(version = env!("CARGO_PKG_VERSION"), "starting orcas-tui");
 
     if !(io::stdout().is_terminal() && io::stdin().is_terminal()) {
         anyhow::bail!("orcas-tui requires an interactive terminal (TTY)");
@@ -76,6 +81,11 @@ async fn run_app(
 
 async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode) -> bool {
     let in_supervisor_view = runtime.state().current_view == TopLevelView::Supervisor;
+    debug!(
+        key = ?code,
+        current_view = ?runtime.state().current_view,
+        "received key in tui"
+    );
     let action = match code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('r') => Some(UserAction::Refresh),
@@ -88,6 +98,7 @@ async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode)
         KeyCode::Char('m') if in_supervisor_view => Some(UserAction::LoadModels),
         KeyCode::Char('s') if in_supervisor_view => Some(UserAction::StartDaemon),
         KeyCode::Char('x') if in_supervisor_view => Some(UserAction::StopDaemon),
+        KeyCode::Char('R') if in_supervisor_view => Some(UserAction::RestartDaemon),
         KeyCode::Char('j') | KeyCode::Down => Some(UserAction::SelectNextInView),
         KeyCode::Char('k') | KeyCode::Up => Some(UserAction::SelectPreviousInView),
         KeyCode::Char('h') | KeyCode::Left => Some(UserAction::CycleCollaborationFocus),
@@ -96,6 +107,7 @@ async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode)
     };
 
     if let Some(action) = action {
+        info!(?action, "dispatching tui action");
         runtime.dispatch(Action::User(action));
     }
     false

@@ -8,6 +8,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::app::{Action, AppState, Effect, UiEvent, reduce};
 use crate::backend::{BackendCommand, BackendCommandResult, TuiBackend};
+use tracing::debug;
 
 const RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -88,7 +89,9 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 
     pub fn dispatch(&mut self, action: Action) {
+        debug!(?action, "dispatching app action");
         let effects = reduce(&mut self.state, action);
+        debug!(?effects, "action reduced to effects");
         for effect in effects {
             self.enqueue_effect(effect);
         }
@@ -100,6 +103,11 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 
     pub async fn process_all(&mut self) {
+        debug!(
+            pending = self.pending_effects.len(),
+            running = self.running_effects.len(),
+            "processing runtime cycle"
+        );
         self.enqueue_due_reconnect();
         self.drain_effect_completions();
         self.drain_backend_events();
@@ -127,6 +135,7 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 
     fn enqueue_effect(&mut self, effect: Effect) {
+        debug!(?effect, "enqueueing effect");
         if self.running_effects.contains(&effect) {
             return;
         }
@@ -137,6 +146,7 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 
     fn start_effect(&mut self, effect: Effect) {
+        debug!(?effect, "starting effect");
         self.running_effects.insert(effect.clone());
 
         let backend = Arc::clone(&self.backend);
@@ -150,6 +160,12 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
 
     fn apply_completion(&mut self, completion: EffectCompletion) {
         self.running_effects.remove(&completion.effect);
+        debug!(
+            ?completion.effect,
+            actions = completion.actions.len(),
+            follow_ups = completion.follow_up_effects.len(),
+            "completing effect"
+        );
 
         if completion.clear_reconnect {
             self.reconnect = None;
@@ -176,12 +192,17 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 
     fn drain_effect_completions(&mut self) {
+        let mut completion_count = 0usize;
         loop {
             match self.effect_rx.try_recv() {
                 Ok(completion) => self.apply_completion(completion),
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
             }
+            completion_count += 1;
+        }
+        if completion_count > 0 {
+            debug!(completion_count, "drained effect completions");
         }
     }
 
@@ -441,6 +462,7 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 .await
             }
             effect @ Effect::StartDaemon => {
+                debug!(?effect, "starting start-daemon effect");
                 Self::run_backend_effect(
                     backend,
                     effect,
@@ -468,6 +490,7 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 .await
             }
             effect @ Effect::StopDaemon => {
+                debug!(?effect, "starting stop-daemon effect");
                 Self::run_backend_effect(
                     backend,
                     effect,
@@ -493,6 +516,66 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                     },
                 )
                 .await
+            }
+            effect @ Effect::RestartDaemon => {
+                debug!(?effect, "starting restart-daemon effect");
+                let mut actions = Vec::new();
+
+                let stop_completion = Self::run_backend_effect(
+                    Arc::clone(&backend),
+                    Effect::StopDaemon,
+                    BackendCommand::StopDaemon,
+                    |response| match response {
+                        BackendCommandResult::DaemonStopped { stopping } => {
+                            vec![Action::Event(UiEvent::DaemonStopped { stopping })]
+                        }
+                        other => {
+                            vec![Action::Event(UiEvent::Error(format!(
+                                "unexpected stop-daemon response: {other:?}"
+                            )))]
+                        }
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "daemon stop failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!("daemon stop failed: {error}")))
+                        }
+                    },
+                )
+                .await;
+                actions.extend(stop_completion.actions);
+                let start_completion = Self::run_backend_effect(
+                    backend,
+                    Effect::StartDaemon,
+                    BackendCommand::StartDaemon,
+                    |response| match response {
+                        BackendCommandResult::DaemonStarted { connected } => {
+                            vec![Action::Event(UiEvent::DaemonStarted { connected })]
+                        }
+                        other => {
+                            vec![Action::Event(UiEvent::Error(format!(
+                                "unexpected start daemon response: {other:?}"
+                            )))]
+                        }
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "daemon restart start failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "daemon restart start failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await;
+                actions.extend(start_completion.actions);
+                EffectCompletion::success(effect, actions)
             }
             Effect::SubmitPrompt { thread_id, text } => {
                 let completion_effect = Effect::SubmitPrompt {
@@ -552,9 +635,26 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
         F: FnOnce(BackendCommandResult) -> Vec<Action>,
         G: FnOnce(anyhow::Error) -> Action,
     {
+        let started = Instant::now();
+        debug!(?effect, ?command, "running backend effect");
         match backend.execute(command).await {
-            Ok(result) => EffectCompletion::success(effect, on_success(result)),
-            Err(error) => EffectCompletion::failure(effect, on_error(error)),
+            Ok(result) => {
+                debug!(
+                    ?effect,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "backend effect succeeded"
+                );
+                EffectCompletion::success(effect, on_success(result))
+            }
+            Err(error) => {
+                debug!(
+                    ?effect,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    %error,
+                    "backend effect failed"
+                );
+                EffectCompletion::failure(effect, on_error(error))
+            }
         }
     }
 

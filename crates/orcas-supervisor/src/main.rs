@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use orcas_core::DecisionType;
-use tracing_subscriber::EnvFilter;
+use orcas_core::{AppPaths, DecisionType, init_file_logger};
+use tracing::info;
 
 use service::{RuntimeOverrides, SupervisorService};
 
@@ -364,10 +364,13 @@ struct QuickstartArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .init();
+    let paths = AppPaths::discover()?;
+    paths.ensure().await?;
+    init_file_logger(
+        "orcas-supervisor",
+        &paths.logs_dir.join("orcas-supervisor.log"),
+    )?;
+    info!("starting orcas supervisor process");
 
     let cli = Cli::parse();
     let overrides = RuntimeOverrides {

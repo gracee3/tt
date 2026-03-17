@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc};
 use tokio::time::{Duration, sleep};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use orcas_codex::types;
@@ -165,6 +165,7 @@ pub struct OrcasDaemonService {
 
 impl OrcasDaemonService {
     pub async fn load_from_env() -> OrcasResult<Arc<Self>> {
+        debug!("loading daemon service from environment");
         let paths = AppPaths::discover()?;
         paths.ensure().await?;
         let mut config = AppConfig::write_default_if_missing(&paths).await?;
@@ -203,11 +204,17 @@ impl OrcasDaemonService {
 
         service.initialize_state().await?;
         service.spawn_codex_event_bridge();
+        debug!(pid = std::process::id(), "daemon service initialized");
 
         Ok(service)
     }
 
     pub async fn run(self: Arc<Self>) -> OrcasResult<()> {
+        debug!(
+            socket = %self.paths.socket_file.display(),
+            pid = std::process::id(),
+            "starting orcasd service loop"
+        );
         let listener = self.bind_listener().await?;
         OrcasDaemonProcessManager::write_runtime_metadata(&self.paths, &self.runtime).await?;
         let _socket_guard = SocketGuard::new(
@@ -250,6 +257,7 @@ impl OrcasDaemonService {
     }
 
     async fn bind_listener(&self) -> OrcasResult<UnixListener> {
+        debug!(socket = %self.paths.socket_file.display(), "binding unix socket");
         self.paths.ensure().await?;
         if tokio::fs::try_exists(&self.paths.socket_file).await? {
             if crate::process::OrcasDaemonProcessManager::socket_responsive(&self.paths.socket_file)
@@ -266,6 +274,7 @@ impl OrcasDaemonService {
     }
 
     async fn initialize_state(&self) -> OrcasResult<()> {
+        debug!("initializing daemon state from persisted store");
         let stored = self.store.load().await.unwrap_or_default();
         let mut state = self.state.write().await;
         state.upstream = ConnectionState {
@@ -372,6 +381,11 @@ impl OrcasDaemonService {
         let message: JsonRpcMessage = serde_json::from_str(raw)?;
         match message {
             JsonRpcMessage::Request(request) => {
+                debug!(
+                    request_id = ?request.id,
+                    method = request.method.as_str(),
+                    "ipc request received"
+                );
                 if let Err(error) = self
                     .handle_request(request.clone(), outbound.clone(), subscription_task)
                     .await
@@ -399,6 +413,11 @@ impl OrcasDaemonService {
         outbound: mpsc::Sender<String>,
         subscription_task: &mut Option<tokio::task::JoinHandle<()>>,
     ) -> OrcasResult<()> {
+        debug!(
+            request_id = ?request.id,
+            method = request.method.as_str(),
+            "processing ipc request"
+        );
         if request.method == ipc::methods::DAEMON_STOP {
             let response = serde_json::to_value(self.daemon_stop().await?)?;
             Self::send_response(&outbound, request.id, response).await?;
@@ -572,6 +591,7 @@ impl OrcasDaemonService {
     }
 
     async fn daemon_status(&self) -> OrcasResult<ipc::DaemonStatusResponse> {
+        debug!("building daemon status response");
         let upstream = self.state.read().await.upstream.clone();
         Ok(ipc::DaemonStatusResponse {
             socket_path: self.paths.socket_file.display().to_string(),
@@ -586,6 +606,7 @@ impl OrcasDaemonService {
     }
 
     async fn daemon_connect(&self) -> OrcasResult<ipc::DaemonConnectResponse> {
+        debug!("handling daemon connect request");
         self.connect_upstream().await?;
         Ok(ipc::DaemonConnectResponse {
             status: self.daemon_status().await?,
@@ -593,22 +614,26 @@ impl OrcasDaemonService {
     }
 
     async fn daemon_stop(&self) -> OrcasResult<ipc::DaemonStopResponse> {
+        debug!("handling daemon stop request");
         Ok(ipc::DaemonStopResponse { stopping: true })
     }
 
     async fn state_get(&self) -> OrcasResult<ipc::StateGetResponse> {
+        debug!("handling state_get request");
         Ok(ipc::StateGetResponse {
             snapshot: self.snapshot().await?,
         })
     }
 
     async fn session_get_active(&self) -> OrcasResult<ipc::SessionGetActiveResponse> {
+        debug!("handling session_get_active request");
         Ok(ipc::SessionGetActiveResponse {
             session: self.state.read().await.session.clone(),
         })
     }
 
     async fn models_list(&self) -> OrcasResult<ipc::ModelsListResponse> {
+        debug!(listen_url = %self.config.codex.listen_url, "handling models_list request");
         self.connect_upstream().await?;
         let response = self
             .codex_client
@@ -3898,6 +3923,11 @@ impl OrcasDaemonService {
     }
 
     async fn connect_upstream(&self) -> OrcasResult<()> {
+        debug!(
+            mode = ?self.config.codex.connection_mode,
+            listen_url = %self.config.codex.listen_url,
+            "connecting to upstream codex"
+        );
         let _guard = self.connect_gate.lock().await;
         let launch = match self.config.codex.connection_mode {
             CodexConnectionMode::ConnectOnly => CodexDaemonLaunch::Never,

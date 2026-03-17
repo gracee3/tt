@@ -8,6 +8,7 @@ use chrono::Utc;
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tokio::time::sleep;
+use tracing::{debug, info, warn};
 
 use orcas_core::{AppConfig, AppPaths, CodexConnectionMode, OrcasError, OrcasResult, ipc};
 
@@ -89,6 +90,11 @@ impl OrcasDaemonProcessManager {
     }
 
     pub async fn status(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        debug!(
+            socket = %self.paths.socket_file.display(),
+            logs = %self.paths.daemon_log_file.display(),
+            "collecting daemon socket/status metadata"
+        );
         self.paths.ensure().await?;
         let socket_exists = tokio::fs::try_exists(&self.paths.socket_file).await?;
         let socket_responsive = Self::socket_responsive(&self.paths.socket_file).await;
@@ -152,9 +158,11 @@ impl OrcasDaemonProcessManager {
         &self,
         launch: OrcasDaemonLaunch,
     ) -> OrcasResult<OrcasDaemonSocketStatus> {
+        debug!(?launch, socket = %self.paths.socket_file.display(), "ensure_running called");
         let status = self.status().await?;
         match launch {
             OrcasDaemonLaunch::Never => {
+                debug!(running = status.running, "ensuring daemon without launch");
                 if status.running {
                     Ok(status)
                 } else {
@@ -165,6 +173,10 @@ impl OrcasDaemonProcessManager {
                 }
             }
             OrcasDaemonLaunch::IfNeeded => {
+                debug!(
+                    running = status.running,
+                    "ensuring daemon with if-needed launch"
+                );
                 if status.running {
                     Ok(status)
                 } else {
@@ -176,29 +188,51 @@ impl OrcasDaemonProcessManager {
     }
 
     pub async fn restart(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        debug!("restarting daemon");
         let status = self.status().await?;
         if status.running {
+            debug!(
+                pid = status.socket_owner_pid,
+                "daemon was running; stopping before restart"
+            );
             self.stop_process(&status).await?;
         }
+        debug!("cleanup stale runtime before restart");
         self.cleanup_stale_runtime().await?;
+        debug!("starting daemon after restart");
         self.spawn_background().await
     }
 
     pub async fn stop(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        debug!("stopping daemon");
         let status = self.status().await?;
         if status.running {
+            debug!(
+                pid = status.socket_owner_pid,
+                "daemon running; issuing stop"
+            );
             if status.daemon_status.is_some() {
+                debug!("requesting graceful stop through rpc");
                 self.request_graceful_stop().await?;
             } else {
+                debug!("performing direct process stop");
                 self.stop_process(&status).await?;
             }
         } else {
+            debug!("daemon not running; cleaning stale runtime");
             self.cleanup_stale_runtime().await?;
         }
+        debug!("waiting for stop completion");
         self.wait_for_stop().await
     }
 
     pub async fn spawn_background(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        let start = std::time::Instant::now();
+        debug!(
+            socket = %self.paths.socket_file.display(),
+            metadata = %self.paths.daemon_metadata_file.display(),
+            "spawning daemon in background"
+        );
         self.paths.ensure().await?;
         self.cleanup_stale_runtime().await?;
         std::fs::create_dir_all(self.paths.logs_dir.clone())?;
@@ -212,6 +246,11 @@ impl OrcasDaemonProcessManager {
         let binary_summary = Self::binary_summary_from_path(&daemon_binary)?;
         let mut command = Command::new("setsid");
         command.arg(&daemon_binary);
+        info!(
+            daemon_binary = %daemon_binary.display(),
+            env = ?self.overrides,
+            "launching daemon process"
+        );
         command
             .kill_on_drop(false)
             .stdin(Stdio::null())
@@ -238,6 +277,11 @@ impl OrcasDaemonProcessManager {
             sleep(Duration::from_millis(100)).await;
         }
 
+        warn!(
+            elapsed_ms = start.elapsed().as_millis(),
+            socket = %self.paths.socket_file.display(),
+            "daemon did not become responsive within timeout"
+        );
         Err(OrcasError::Transport(format!(
             "timed out waiting for Orcas daemon socket {}",
             self.paths.socket_file.display()
@@ -268,6 +312,11 @@ impl OrcasDaemonProcessManager {
             return Ok(());
         };
 
+        debug!(
+            pid = runtime.pid,
+            socket = %self.paths.socket_file.display(),
+            "sending TERM to daemon process"
+        );
         Self::signal_pid(runtime.pid, "TERM").await?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -280,8 +329,16 @@ impl OrcasDaemonProcessManager {
         }
 
         if Self::process_exists(runtime.pid) {
+            warn!(
+                pid = runtime.pid,
+                "daemon process still alive after TERM; sending KILL"
+            );
             Self::signal_pid(runtime.pid, "KILL").await?;
         }
+        debug!(
+            pid = runtime.pid,
+            "cleaning stale runtime metadata after stop"
+        );
         self.cleanup_stale_runtime().await
     }
 
@@ -297,22 +354,34 @@ impl OrcasDaemonProcessManager {
     }
 
     async fn request_graceful_stop(&self) -> OrcasResult<()> {
+        debug!("requesting graceful stop via daemon rpc");
         let client = OrcasIpcClient::connect(&self.paths).await?;
         let _ = client.daemon_stop().await?;
         Ok(())
     }
 
     async fn wait_for_stop(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        let start = std::time::Instant::now();
+        debug!("waiting for daemon stop");
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             let status = self.status().await?;
             if !status.running {
                 self.cleanup_stale_runtime().await?;
+                debug!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "daemon stop observed"
+                );
                 return self.status().await;
             }
             sleep(Duration::from_millis(100)).await;
         }
 
+        warn!(
+            elapsed_ms = start.elapsed().as_millis(),
+            socket = %self.paths.socket_file.display(),
+            "timeout waiting for stop"
+        );
         Err(OrcasError::Transport(format!(
             "timed out waiting for Orcas daemon at {} to stop",
             self.paths.socket_file.display()

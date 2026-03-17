@@ -1609,6 +1609,29 @@ async fn supervisor_start_daemon_dispatches_start_request_command() {
 }
 
 #[tokio::test]
+async fn supervisor_restart_daemon_dispatches_restart_request_sequence() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Supervisor))
+        .await;
+    harness.dispatch(UserAction::RestartDaemon).await;
+
+    let commands = harness.recorded_commands().await;
+    let stop_index = commands
+        .iter()
+        .position(|command| command == &BackendCommand::StopDaemon);
+    let start_index = commands
+        .iter()
+        .position(|command| command == &BackendCommand::StartDaemon);
+    assert!(matches!((stop_index, start_index), (Some(_), Some(_))));
+    assert!(
+        stop_index.unwrap() < start_index.unwrap(),
+        "restart should stop then start (commands were {commands:?})"
+    );
+}
+
+#[tokio::test]
 async fn supervisor_restart_sequence_dispatches_stop_and_start_commands() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
 
@@ -1656,6 +1679,7 @@ async fn supervisor_footer_shows_supervisor_actions_once_each() {
 
     assert_eq!(keys_line.matches("x stop daemon").count(), 1);
     assert!(keys_line.contains("s start daemon"));
+    assert!(keys_line.contains("R restart daemon"));
     assert!(keys_line.contains("m refresh models"));
 }
 
