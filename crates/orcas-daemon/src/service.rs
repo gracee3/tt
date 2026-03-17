@@ -172,7 +172,7 @@ pub struct OrcasDaemonService {
     config: AppConfig,
     runtime: ipc::DaemonRuntimeMetadata,
     store: Arc<JsonSessionStore>,
-    codex_daemon: LocalCodexDaemonManager,
+    codex_daemon: Arc<dyn CodexDaemonManager>,
     codex_client: Arc<CodexClient>,
     state: RwLock<DaemonState>,
     recent_events: Mutex<VecDeque<ipc::EventSummary>>,
@@ -193,8 +193,11 @@ impl OrcasDaemonService {
             OrcasDaemonProcessManager::runtime_metadata_for_current_process(&paths).await?;
 
         let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
-        let codex_daemon =
-            LocalCodexDaemonManager::new(config.codex.clone(), &paths, config.defaults.cwd.clone());
+        let codex_daemon: Arc<dyn CodexDaemonManager> = Arc::new(LocalCodexDaemonManager::new(
+            config.codex.clone(),
+            &paths,
+            config.defaults.cwd.clone(),
+        ));
         let codex_client = CodexClient::new(
             Arc::new(WebSocketTransport::new(config.codex.listen_url.clone())),
             config.codex.reconnect.clone(),
@@ -4923,7 +4926,9 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::Utc;
+    use serde_json::{Map, Value};
     use tokio::sync::{Mutex, Notify, RwLock, broadcast};
+    use tokio::time::Duration;
     use uuid::Uuid;
 
     use super::OrcasDaemonService;
@@ -4932,17 +4937,390 @@ mod tests {
         SupervisorReasoner, SupervisorReasonerFailure, SupervisorReasonerResult,
     };
     use orcas_codex::{
-        CodexClient, LocalCodexDaemonManager, RejectingApprovalRouter, WebSocketTransport,
+        CodexClient, CodexDaemonManager, CodexTransport, DaemonLaunch, DaemonStatus,
+        LocalCodexDaemonManager, RejectingApprovalRouter, WebSocketTransport, methods,
+        protocol::jsonrpc as codex_jsonrpc, transport::TransportConnection, types,
     };
     use orcas_core::{
         AppConfig, AppPaths, Assignment, AssignmentStatus, DecisionType, DraftAssignment,
-        JsonSessionStore, OrcasSessionStore, ProposedDecision, Report, ReportConfidence,
-        ReportDisposition, ReportParseResult, SupervisorContextPack, SupervisorProposal,
-        SupervisorProposalEdits, SupervisorProposalFailureStage, SupervisorProposalStatus,
-        SupervisorProposalTriggerKind, SupervisorSummary, WorkUnit, WorkUnitStatus,
-        WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus, Workstream,
-        WorkstreamStatus, ipc,
+        JsonSessionStore, OrcasError, OrcasResult, OrcasSessionStore, ProposedDecision, Report,
+        ReportConfidence, ReportDisposition, ReportParseResult, SupervisorContextPack,
+        SupervisorProposal, SupervisorProposalEdits, SupervisorProposalFailureStage,
+        SupervisorProposalStatus, SupervisorProposalTriggerKind, SupervisorSummary, WorkUnit,
+        WorkUnitStatus, WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus,
+        Workstream, WorkstreamStatus, ipc,
     };
+
+    #[derive(Debug)]
+    struct FakeCodexDaemonManager {
+        endpoint: String,
+    }
+
+    #[async_trait]
+    impl CodexDaemonManager for FakeCodexDaemonManager {
+        async fn status(&self) -> OrcasResult<DaemonStatus> {
+            Ok(DaemonStatus {
+                endpoint: self.endpoint.clone(),
+                reachable: true,
+                binary_path: PathBuf::from("fake-codex"),
+                log_path: PathBuf::from("/tmp/fake-codex.log"),
+            })
+        }
+
+        async fn ensure_running(&self, _launch: DaemonLaunch) -> OrcasResult<DaemonStatus> {
+            self.status().await
+        }
+
+        async fn spawn_background(&self) -> OrcasResult<DaemonStatus> {
+            self.status().await
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeCodexRuntimeState {
+        next_thread_id: usize,
+        next_turn_id: usize,
+        threads: HashMap<String, types::Thread>,
+    }
+
+    #[derive(Debug)]
+    struct FakeCodexTransport {
+        endpoint: String,
+        turn_output: String,
+        state: Arc<Mutex<FakeCodexRuntimeState>>,
+    }
+
+    impl FakeCodexTransport {
+        fn new(endpoint: impl Into<String>, turn_output: impl Into<String>) -> Self {
+            Self {
+                endpoint: endpoint.into(),
+                turn_output: turn_output.into(),
+                state: Arc::new(Mutex::new(FakeCodexRuntimeState::default())),
+            }
+        }
+
+        async fn handle_request(
+            state: Arc<Mutex<FakeCodexRuntimeState>>,
+            turn_output: String,
+            inbound_tx: tokio::sync::mpsc::Sender<String>,
+            request: codex_jsonrpc::JsonRpcRequest,
+        ) -> OrcasResult<()> {
+            match request.method.as_str() {
+                methods::INITIALIZE => {
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::InitializeResponse::default(),
+                    )
+                    .await?;
+                }
+                methods::THREAD_LIST => {
+                    let threads = state.lock().await.threads.values().cloned().collect();
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::ThreadListResponse {
+                            data: threads,
+                            next_cursor: None,
+                        },
+                    )
+                    .await?;
+                }
+                methods::THREAD_START => {
+                    let params: types::ThreadStartParams =
+                        serde_json::from_value(request.params.unwrap_or(Value::Null))?;
+                    let thread = {
+                        let mut state = state.lock().await;
+                        state.next_thread_id += 1;
+                        let thread = types::Thread {
+                            id: format!("thread-fake-{}", state.next_thread_id),
+                            preview: String::new(),
+                            ephemeral: params.ephemeral.unwrap_or(false),
+                            model_provider: "openai".to_string(),
+                            created_at: Utc::now().timestamp(),
+                            updated_at: Utc::now().timestamp(),
+                            status: types::ThreadStatus::Idle,
+                            path: None,
+                            cwd: params.cwd.unwrap_or_default(),
+                            cli_version: "test".to_string(),
+                            source: None,
+                            name: None,
+                            turns: Vec::new(),
+                            extra: Map::new(),
+                        };
+                        state.threads.insert(thread.id.clone(), thread.clone());
+                        thread
+                    };
+                    let model = params.model.unwrap_or_else(|| "gpt-5.4".to_string());
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::ThreadStartResponse {
+                            thread: thread.clone(),
+                            model,
+                            model_provider: "openai".to_string(),
+                            cwd: thread.cwd.clone(),
+                        },
+                    )
+                    .await?;
+                }
+                methods::THREAD_READ => {
+                    let params: types::ThreadReadParams =
+                        serde_json::from_value(request.params.unwrap_or(Value::Null))?;
+                    let thread = state
+                        .lock()
+                        .await
+                        .threads
+                        .get(&params.thread_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            OrcasError::Protocol(format!(
+                                "fake codex runtime missing thread `{}`",
+                                params.thread_id
+                            ))
+                        })?;
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::ThreadReadResponse { thread },
+                    )
+                    .await?;
+                }
+                methods::TURN_START => {
+                    let params: types::TurnStartParams =
+                        serde_json::from_value(request.params.unwrap_or(Value::Null))?;
+                    let turn = {
+                        let mut state = state.lock().await;
+                        state.next_turn_id += 1;
+                        let turn = types::Turn {
+                            id: format!("turn-fake-{}", state.next_turn_id),
+                            items: Vec::new(),
+                            status: types::TurnStatus::InProgress,
+                            error: None,
+                        };
+                        let thread = state.threads.get_mut(&params.thread_id).ok_or_else(|| {
+                            OrcasError::Protocol(format!(
+                                "fake codex runtime missing thread `{}`",
+                                params.thread_id
+                            ))
+                        })?;
+                        thread.status = types::ThreadStatus::Active {
+                            active_flags: vec!["turn_running".to_string()],
+                        };
+                        thread.updated_at = Utc::now().timestamp();
+                        thread.turns.push(turn.clone());
+                        turn
+                    };
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::TurnStartResponse { turn: turn.clone() },
+                    )
+                    .await?;
+
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        let item_id = format!("item-{}", turn.id);
+                        let _ = Self::send_notification(
+                            &inbound_tx,
+                            methods::TURN_STARTED,
+                            &types::TurnStartedNotification {
+                                thread_id: params.thread_id.clone(),
+                                turn: turn.clone(),
+                            },
+                        )
+                        .await;
+                        let _ = Self::send_notification(
+                            &inbound_tx,
+                            methods::ITEM_STARTED,
+                            &types::ItemStartedNotification {
+                                item: types::ThreadItem {
+                                    id: item_id.clone(),
+                                    item_type: "agent_message".to_string(),
+                                    extra: Map::new(),
+                                },
+                                thread_id: params.thread_id.clone(),
+                                turn_id: turn.id.clone(),
+                            },
+                        )
+                        .await;
+                        let _ = Self::send_notification(
+                            &inbound_tx,
+                            methods::AGENT_MESSAGE_DELTA,
+                            &types::AgentMessageDeltaNotification {
+                                thread_id: params.thread_id.clone(),
+                                turn_id: turn.id.clone(),
+                                item_id: item_id.clone(),
+                                delta: turn_output.clone(),
+                            },
+                        )
+                        .await;
+                        let _ = Self::send_notification(
+                            &inbound_tx,
+                            methods::ITEM_COMPLETED,
+                            &types::ItemCompletedNotification {
+                                item: types::ThreadItem {
+                                    id: item_id.clone(),
+                                    item_type: "agent_message".to_string(),
+                                    extra: Map::new(),
+                                },
+                                thread_id: params.thread_id.clone(),
+                                turn_id: turn.id.clone(),
+                            },
+                        )
+                        .await;
+
+                        let completed_turn = {
+                            let mut state = state.lock().await;
+                            let thread = match state.threads.get_mut(&params.thread_id) {
+                                Some(thread) => thread,
+                                None => return,
+                            };
+                            let completed_item = {
+                                let mut extra = Map::new();
+                                extra
+                                    .insert("text".to_string(), Value::String(turn_output.clone()));
+                                types::ThreadItem {
+                                    id: item_id,
+                                    item_type: "agent_message".to_string(),
+                                    extra,
+                                }
+                            };
+                            let completed_turn = types::Turn {
+                                id: turn.id.clone(),
+                                items: vec![completed_item],
+                                status: types::TurnStatus::Completed,
+                                error: None,
+                            };
+                            if let Some(existing_turn) = thread
+                                .turns
+                                .iter_mut()
+                                .find(|existing| existing.id == turn.id)
+                            {
+                                *existing_turn = completed_turn.clone();
+                            } else {
+                                thread.turns.push(completed_turn.clone());
+                            }
+                            thread.status = types::ThreadStatus::Idle;
+                            thread.updated_at = Utc::now().timestamp();
+                            completed_turn
+                        };
+
+                        let _ = Self::send_notification(
+                            &inbound_tx,
+                            methods::TURN_COMPLETED,
+                            &types::TurnCompletedNotification {
+                                thread_id: params.thread_id.clone(),
+                                turn: completed_turn,
+                            },
+                        )
+                        .await;
+                    });
+                }
+                methods::TURN_INTERRUPT => {
+                    Self::send_response(&inbound_tx, request.id, &types::TurnInterruptResponse {})
+                        .await?;
+                }
+                methods::MODEL_LIST => {
+                    Self::send_response(
+                        &inbound_tx,
+                        request.id,
+                        &types::ModelListResponse {
+                            data: Vec::new(),
+                            next_cursor: None,
+                        },
+                    )
+                    .await?;
+                }
+                other => {
+                    return Err(OrcasError::Protocol(format!(
+                        "fake codex transport does not implement `{other}`"
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        async fn send_response<T: serde::Serialize>(
+            inbound_tx: &tokio::sync::mpsc::Sender<String>,
+            id: codex_jsonrpc::RequestId,
+            result: &T,
+        ) -> OrcasResult<()> {
+            let raw = serde_json::to_string(&codex_jsonrpc::JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id,
+                result: serde_json::to_value(result)?,
+            })?;
+            inbound_tx.send(raw).await.map_err(|error| {
+                OrcasError::Transport(format!(
+                    "failed to send fake codex response to client: {error}"
+                ))
+            })
+        }
+
+        async fn send_notification<T: serde::Serialize>(
+            inbound_tx: &tokio::sync::mpsc::Sender<String>,
+            method: &str,
+            params: &T,
+        ) -> OrcasResult<()> {
+            let raw = serde_json::to_string(&codex_jsonrpc::JsonRpcNotification::new(
+                method,
+                Some(serde_json::to_value(params)?),
+            ))?;
+            inbound_tx.send(raw).await.map_err(|error| {
+                OrcasError::Transport(format!(
+                    "failed to send fake codex notification to client: {error}"
+                ))
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CodexTransport for FakeCodexTransport {
+        async fn connect(&self) -> OrcasResult<TransportConnection> {
+            let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<String>(256);
+            let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<String>(256);
+            let state = Arc::clone(&self.state);
+            let turn_output = self.turn_output.clone();
+
+            tokio::spawn(async move {
+                while let Some(raw) = outbound_rx.recv().await {
+                    let Ok(message) = serde_json::from_str::<codex_jsonrpc::JsonRpcMessage>(&raw)
+                    else {
+                        continue;
+                    };
+                    match message {
+                        codex_jsonrpc::JsonRpcMessage::Request(request) => {
+                            let _ = Self::handle_request(
+                                Arc::clone(&state),
+                                turn_output.clone(),
+                                inbound_tx.clone(),
+                                request,
+                            )
+                            .await;
+                        }
+                        codex_jsonrpc::JsonRpcMessage::Notification(notification) => {
+                            if notification.method == methods::INITIALIZED {
+                                continue;
+                            }
+                        }
+                        codex_jsonrpc::JsonRpcMessage::Response(_)
+                        | codex_jsonrpc::JsonRpcMessage::Error(_) => {}
+                    }
+                }
+            });
+
+            Ok(TransportConnection {
+                outbound: outbound_tx,
+                inbound: inbound_rx,
+            })
+        }
+
+        fn endpoint(&self) -> &str {
+            &self.endpoint
+        }
+    }
 
     #[derive(Clone)]
     enum StaticSupervisorReasonerOutcome {
@@ -5227,14 +5605,36 @@ mod tests {
             daemon_log_file: base.join("logs/orcasd.log"),
         };
         paths.ensure().await.expect("paths");
-        let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
-        let codex_daemon =
-            LocalCodexDaemonManager::new(config.codex.clone(), &paths, config.defaults.cwd.clone());
+        let codex_daemon: Arc<dyn CodexDaemonManager> = Arc::new(LocalCodexDaemonManager::new(
+            config.codex.clone(),
+            &paths,
+            config.defaults.cwd.clone(),
+        ));
         let codex_client = CodexClient::new(
             Arc::new(WebSocketTransport::new(config.codex.listen_url.clone())),
             config.codex.reconnect.clone(),
             Arc::new(RejectingApprovalRouter),
         );
+        test_service_at_with_components(
+            paths,
+            config,
+            supervisor_reasoner,
+            codex_daemon,
+            codex_client,
+            false,
+        )
+        .await
+    }
+
+    async fn test_service_at_with_components(
+        paths: AppPaths,
+        config: AppConfig,
+        supervisor_reasoner: Arc<dyn SupervisorReasoner>,
+        codex_daemon: Arc<dyn CodexDaemonManager>,
+        codex_client: Arc<CodexClient>,
+        spawn_codex_bridge: bool,
+    ) -> Arc<OrcasDaemonService> {
+        let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
         let (event_tx, _) = broadcast::channel(32);
         let service = Arc::new(OrcasDaemonService {
             paths,
@@ -5261,7 +5661,50 @@ mod tests {
             supervisor_reasoner,
         });
         service.initialize_state().await.expect("initialize state");
+        if spawn_codex_bridge {
+            service.spawn_codex_event_bridge();
+        }
         service
+    }
+
+    async fn test_service_with_fake_codex_runtime(
+        config: AppConfig,
+        supervisor_reasoner: Arc<dyn SupervisorReasoner>,
+        turn_output: &str,
+    ) -> Arc<OrcasDaemonService> {
+        let base = std::env::temp_dir().join(format!("orcas-collab-test-{}", Uuid::new_v4()));
+        let paths = AppPaths {
+            config_dir: base.join("config"),
+            config_file: base.join("config/config.toml"),
+            data_dir: base.join("data"),
+            state_file: base.join("data/state.json"),
+            logs_dir: base.join("logs"),
+            runtime_dir: base.join("runtime"),
+            socket_file: base.join("runtime/orcasd.sock"),
+            daemon_metadata_file: base.join("runtime/orcasd.json"),
+            daemon_log_file: base.join("logs/orcasd.log"),
+        };
+        paths.ensure().await.expect("paths");
+        let codex_daemon: Arc<dyn CodexDaemonManager> = Arc::new(FakeCodexDaemonManager {
+            endpoint: config.codex.listen_url.clone(),
+        });
+        let codex_client = CodexClient::new(
+            Arc::new(FakeCodexTransport::new(
+                config.codex.listen_url.clone(),
+                turn_output.to_string(),
+            )),
+            config.codex.reconnect.clone(),
+            Arc::new(RejectingApprovalRouter),
+        );
+        test_service_at_with_components(
+            paths,
+            config,
+            supervisor_reasoner,
+            codex_daemon,
+            codex_client,
+            true,
+        )
+        .await
     }
 
     async fn seed_awaiting_decision_fixture(
@@ -5588,6 +6031,20 @@ ORCAS_REPORT_END"#
                 return report;
             }
         }
+    }
+
+    fn sample_runtime_report_output() -> &'static str {
+        r#"ORCAS_REPORT_BEGIN
+{
+  "disposition": "completed",
+  "summary": "finished the bounded task",
+  "findings": ["root cause isolated"],
+  "blockers": [],
+  "questions": [],
+  "recommended_next_actions": ["apply supervisor decision"],
+  "confidence": "high"
+}
+ORCAS_REPORT_END"#
     }
 
     async fn assert_terminal_approval_path(
@@ -6493,6 +6950,194 @@ ORCAS_REPORT_END"#
             reject_after_approve
                 .to_string()
                 .contains("is not open and cannot be rejected")
+        );
+    }
+
+    #[tokio::test]
+    async fn full_assignment_runtime_path_creates_auto_proposal_with_fake_codex_runtime() {
+        let reasoner = Arc::new(PackDrivenSupervisorReasoner::new(DecisionType::Continue));
+        let service = test_service_with_fake_codex_runtime(
+            auto_proposal_config(true),
+            reasoner.clone(),
+            sample_runtime_report_output(),
+        )
+        .await;
+        let mut events = service.event_tx.subscribe();
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Full runtime".to_string(),
+                objective: "Exercise the assignment runtime path with fake Codex".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id.clone(),
+                title: "Runtime work unit".to_string(),
+                task_statement: "Run one bounded worker step and stop with a report.".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+
+        let response = service
+            .assignment_start(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.clone(),
+                worker_id: "worker-runtime".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Inspect the bounded task and report honestly.".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("assignment runtime");
+
+        let recorded_report = wait_for_report_recorded(&mut events).await;
+        let proposal_event =
+            wait_for_proposal_action(&mut events, ipc::ProposalLifecycleAction::Created).await;
+
+        assert_eq!(response.assignment.work_unit_id, work_unit.id);
+        assert_eq!(
+            response.assignment.status,
+            AssignmentStatus::AwaitingDecision
+        );
+        assert_eq!(response.worker.id, "worker-runtime");
+        assert_eq!(response.worker.status, WorkerStatus::Idle);
+        assert_eq!(response.worker.current_assignment_id, None);
+        assert_eq!(
+            response.assignment.worker_session_id,
+            response.worker_session.id
+        );
+        assert_eq!(response.worker_session.worker_id, response.worker.id);
+        assert!(response.worker_session.thread_id.is_some());
+        assert_eq!(response.worker_session.active_turn_id, None);
+        assert_eq!(
+            response.worker_session.runtime_status,
+            WorkerSessionRuntimeStatus::Completed
+        );
+        assert_eq!(
+            response.worker_session.attachability,
+            WorkerSessionAttachability::NotAttachable
+        );
+        assert_eq!(response.report.assignment_id, response.assignment.id);
+        assert_eq!(response.report.work_unit_id, work_unit.id);
+        assert_eq!(response.report.parse_result, ReportParseResult::Parsed);
+        assert_eq!(recorded_report.id, response.report.id);
+        assert_eq!(reasoner.propose_call_count(), 1);
+        assert_eq!(proposal_event.source_report_id, response.report.id);
+
+        let snapshot = service.snapshot().await.expect("snapshot");
+        let summary = snapshot
+            .collaboration
+            .work_units
+            .iter()
+            .find(|summary| summary.id == work_unit.id)
+            .and_then(|summary| summary.proposal.as_ref())
+            .expect("proposal summary");
+        assert!(summary.has_open_proposal);
+        assert_eq!(
+            summary.latest_proposed_decision_type,
+            Some(DecisionType::Continue)
+        );
+
+        let detail = service
+            .workunit_get(ipc::WorkunitGetRequest {
+                work_unit_id: work_unit.id.clone(),
+            })
+            .await
+            .expect("workunit detail");
+        assert_eq!(detail.reports.len(), 1);
+        assert_eq!(detail.proposals.len(), 1);
+
+        let proposal = latest_proposal_record_for_workunit(&service, &work_unit.id).await;
+        assert_eq!(proposal.status, SupervisorProposalStatus::Open);
+        assert_eq!(
+            proposal.trigger.kind,
+            SupervisorProposalTriggerKind::ReportRecorded
+        );
+
+        let state = service.state.read().await;
+        assert!(state.collaboration.decisions.is_empty());
+        assert_eq!(state.collaboration.assignments.len(), 1);
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id].status,
+            WorkUnitStatus::AwaitingDecision
+        );
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id].current_assignment_id,
+            Some(response.assignment.id.clone())
+        );
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id].latest_report_id,
+            Some(response.report.id.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn full_assignment_runtime_path_skips_auto_proposal_when_disabled() {
+        let reasoner = Arc::new(PackDrivenSupervisorReasoner::new(DecisionType::Continue));
+        let service = test_service_with_fake_codex_runtime(
+            auto_proposal_config(false),
+            reasoner.clone(),
+            sample_runtime_report_output(),
+        )
+        .await;
+        let workstream = service
+            .workstream_create(ipc::WorkstreamCreateRequest {
+                title: "Full runtime disabled".to_string(),
+                objective: "Exercise runtime path without auto proposals".to_string(),
+                priority: None,
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+        let work_unit = service
+            .workunit_create(ipc::WorkunitCreateRequest {
+                workstream_id: workstream.id.clone(),
+                title: "Runtime work unit".to_string(),
+                task_statement: "Run one bounded worker step and stop with a report.".to_string(),
+                dependencies: Vec::new(),
+            })
+            .await
+            .expect("workunit")
+            .work_unit;
+
+        let response = service
+            .assignment_start(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.clone(),
+                worker_id: "worker-runtime-disabled".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Inspect the bounded task and report honestly.".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("assignment runtime");
+
+        assert_eq!(
+            response.assignment.status,
+            AssignmentStatus::AwaitingDecision
+        );
+        assert_eq!(response.report.work_unit_id, work_unit.id);
+        assert_eq!(reasoner.propose_call_count(), 0);
+
+        let proposals = service
+            .proposal_list_for_workunit(ipc::ProposalListForWorkunitRequest {
+                work_unit_id: work_unit.id.clone(),
+            })
+            .await
+            .expect("proposal list");
+        assert!(proposals.proposals.is_empty());
+
+        let state = service.state.read().await;
+        assert!(state.collaboration.decisions.is_empty());
+        assert_eq!(state.collaboration.assignments.len(), 1);
+        assert_eq!(
+            state.collaboration.work_units[&work_unit.id].latest_report_id,
+            Some(response.report.id.clone())
         );
     }
 
