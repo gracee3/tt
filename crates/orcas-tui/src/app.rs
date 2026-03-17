@@ -10,6 +10,7 @@ pub enum TopLevelView {
     Overview,
     Threads,
     Collaboration,
+    Supervisor,
 }
 
 impl TopLevelView {
@@ -17,7 +18,8 @@ impl TopLevelView {
         match self {
             Self::Overview => Self::Threads,
             Self::Threads => Self::Collaboration,
-            Self::Collaboration => Self::Overview,
+            Self::Collaboration => Self::Supervisor,
+            Self::Supervisor => Self::Overview,
         }
     }
 }
@@ -54,6 +56,7 @@ pub struct AppState {
     pub session: ipc::SessionState,
     pub collaboration: ipc::CollaborationSnapshot,
     pub threads: Vec<ipc::ThreadSummary>,
+    pub daemon_models: Vec<ipc::ModelSummary>,
     pub thread_details: HashMap<String, ipc::ThreadView>,
     pub turn_states: HashMap<String, ipc::TurnStateView>,
     pub current_view: TopLevelView,
@@ -66,6 +69,7 @@ pub struct AppState {
     pub prompt_in_flight: bool,
     pub banner: Option<StatusBanner>,
     pub show_help: bool,
+    pub confirming_daemon_stop: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +95,8 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserAction {
     Refresh,
+    LoadModels,
+    StopDaemon,
     ToggleHelp,
     CycleView,
     ShowView(TopLevelView),
@@ -118,6 +124,10 @@ pub enum UiEvent {
     ThreadLoaded(ipc::ThreadView),
     ActiveTurnsLoaded(Vec<ipc::TurnStateView>),
     TurnStateLoaded(ipc::TurnAttachResponse),
+    ModelsLoaded(Vec<ipc::ModelSummary>),
+    DaemonStopped {
+        stopping: bool,
+    },
     PromptStarted {
         thread_id: String,
         turn_id: String,
@@ -229,6 +239,8 @@ pub enum Effect {
     LoadTurnState { thread_id: String, turn_id: String },
     LoadWorkUnitDetail { work_unit_id: String },
     SubmitPrompt { thread_id: String, text: String },
+    LoadModels,
+    StopDaemon,
 }
 
 pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
@@ -241,18 +253,37 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
 
 fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
     match action {
-        UserAction::Refresh => vec![Effect::RefreshSnapshot],
+        UserAction::Refresh => {
+            let mut effects = vec![Effect::RefreshSnapshot];
+            if state.current_view == TopLevelView::Supervisor {
+                effects.push(Effect::LoadModels);
+            }
+            effects
+        }
+        UserAction::LoadModels => vec![Effect::LoadModels],
+        UserAction::StopDaemon => {
+            state.confirming_daemon_stop = true;
+            vec![Effect::StopDaemon]
+        }
         UserAction::ToggleHelp => {
             state.show_help = !state.show_help;
             Vec::new()
         }
         UserAction::CycleView => {
             state.current_view = state.current_view.next();
-            Vec::new()
+            if state.current_view == TopLevelView::Supervisor {
+                vec![Effect::LoadModels]
+            } else {
+                Vec::new()
+            }
         }
         UserAction::ShowView(view) => {
             state.current_view = view;
-            Vec::new()
+            if state.current_view == TopLevelView::Supervisor {
+                vec![Effect::LoadModels]
+            } else {
+                Vec::new()
+            }
         }
         UserAction::CycleCollaborationFocus => {
             if state.current_view == TopLevelView::Collaboration {
@@ -385,13 +416,34 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         UiEvent::PromptStarted { thread_id, turn_id } => {
             state.selected_thread_id = Some(thread_id.clone());
             state.prompt_in_flight = true;
+            state.confirming_daemon_stop = false;
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
                 message: "Prompt submitted.".to_string(),
             });
             effects.push(Effect::LoadTurnState { thread_id, turn_id });
         }
+        UiEvent::ModelsLoaded(models) => {
+            state.daemon_models = models;
+            state.confirming_daemon_stop = false;
+        }
+        UiEvent::DaemonStopped { stopping } => {
+            state.confirming_daemon_stop = false;
+            state.banner = Some(StatusBanner {
+                level: if stopping {
+                    BannerLevel::Info
+                } else {
+                    BannerLevel::Warning
+                },
+                message: if stopping {
+                    "Daemon stop requested.".to_string()
+                } else {
+                    "Daemon stop was not accepted.".to_string()
+                },
+            });
+        }
         UiEvent::UpstreamChanged(upstream) => {
+            state.confirming_daemon_stop = false;
             if let Some(daemon) = state.daemon.as_mut() {
                 daemon.upstream = upstream.clone();
             }
@@ -585,6 +637,7 @@ fn select_relative_in_view(state: &mut AppState, delta: isize) -> Vec<Effect> {
             CollaborationFocus::Workstreams => select_relative_workstream(state, delta),
             CollaborationFocus::WorkUnits => select_relative_work_unit(state, delta),
         },
+        TopLevelView::Supervisor => Vec::new(),
     }
 }
 
@@ -1025,6 +1078,8 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
             Some(thread_id.clone()),
             Some(turn_id.clone()),
         ),
+        UiEvent::ModelsLoaded(_) => return None,
+        UiEvent::DaemonStopped { .. } => return None,
         UiEvent::UpstreamChanged(upstream) => (
             "upstream",
             format!("upstream {}", upstream.status),

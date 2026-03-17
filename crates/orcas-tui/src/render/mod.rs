@@ -2,6 +2,7 @@ mod collaboration;
 mod overview;
 mod shared;
 mod shell;
+mod supervisor;
 mod threads;
 
 use ratatui::Frame;
@@ -31,6 +32,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
         TopLevelView::Overview => overview::render_view(frame, state, layout[1]),
         TopLevelView::Threads => threads::render_view(frame, state, layout[1]),
         TopLevelView::Collaboration => collaboration::render_view(frame, state, layout[1]),
+        TopLevelView::Supervisor => supervisor::render_view(frame, state, layout[1]),
     }
     frame.render_widget(shell::render_footer(state), layout[2]);
 }

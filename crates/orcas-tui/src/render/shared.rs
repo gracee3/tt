@@ -25,5 +25,6 @@ pub(super) fn title_case_view_label(view: TopLevelView) -> &'static str {
         TopLevelView::Overview => "Overview",
         TopLevelView::Threads => "Threads",
         TopLevelView::Collaboration => "Collaboration",
+        TopLevelView::Supervisor => "Supervisor",
     }
 }

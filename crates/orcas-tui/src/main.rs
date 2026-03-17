@@ -68,6 +68,7 @@ async fn run_app(
 }
 
 async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode) -> bool {
+    let in_supervisor_view = runtime.state().current_view == TopLevelView::Supervisor;
     let action = match code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('r') => Some(UserAction::Refresh),
@@ -76,6 +77,9 @@ async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode)
         KeyCode::Char('1') => Some(UserAction::ShowView(TopLevelView::Overview)),
         KeyCode::Char('2') => Some(UserAction::ShowView(TopLevelView::Threads)),
         KeyCode::Char('3') => Some(UserAction::ShowView(TopLevelView::Collaboration)),
+        KeyCode::Char('4') => Some(UserAction::ShowView(TopLevelView::Supervisor)),
+        KeyCode::Char('m') if in_supervisor_view => Some(UserAction::LoadModels),
+        KeyCode::Char('x') if in_supervisor_view => Some(UserAction::StopDaemon),
         KeyCode::Char('j') | KeyCode::Down => Some(UserAction::SelectNextInView),
         KeyCode::Char('k') | KeyCode::Up => Some(UserAction::SelectPreviousInView),
         KeyCode::Char('h') | KeyCode::Left => Some(UserAction::CycleCollaborationFocus),

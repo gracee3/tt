@@ -16,6 +16,8 @@ pub enum BackendCommand {
     GetTurn { thread_id: String, turn_id: String },
     GetWorkUnit { work_unit_id: String },
     GetActiveTurns,
+    LoadModels,
+    StopDaemon,
     SubmitPrompt { thread_id: String, text: String },
 }
 
@@ -26,6 +28,8 @@ pub enum BackendCommandResult {
     Turn(ipc::TurnAttachResponse),
     WorkUnit(ipc::WorkunitGetResponse),
     ActiveTurns(Vec<ipc::TurnStateView>),
+    Models(Vec<ipc::ModelSummary>),
+    DaemonStopped { stopping: bool },
     PromptStarted { thread_id: String, turn_id: String },
 }
 
@@ -158,6 +162,12 @@ impl OrcasDaemonBackend {
             BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
                 client.turns_list_active().await?.turns,
             )),
+            BackendCommand::LoadModels => Ok(BackendCommandResult::Models(
+                client.models_list().await?.data,
+            )),
+            BackendCommand::StopDaemon => Ok(BackendCommandResult::DaemonStopped {
+                stopping: client.daemon_stop().await?.stopping,
+            }),
             BackendCommand::SubmitPrompt { thread_id, text } => {
                 let response = client
                     .turn_start(&ipc::TurnStartRequest {
@@ -187,6 +197,7 @@ struct FakeBackendState {
     turns: HashMap<(String, String), ipc::TurnAttachResponse>,
     work_unit_details: HashMap<String, ipc::WorkunitGetResponse>,
     active_turns: Vec<ipc::TurnStateView>,
+    models: Vec<ipc::ModelSummary>,
     next_submit_id: usize,
     fail_snapshot: Option<String>,
     fail_subscribe: Option<String>,
@@ -218,6 +229,20 @@ impl FakeBackend {
                 threads,
                 turns: HashMap::new(),
                 active_turns,
+                models: vec![
+                    ipc::ModelSummary {
+                        id: "codex-small".to_string(),
+                        display_name: "Codex Small".to_string(),
+                        hidden: false,
+                        is_default: true,
+                    },
+                    ipc::ModelSummary {
+                        id: "codex-large".to_string(),
+                        display_name: "Codex Large".to_string(),
+                        hidden: true,
+                        is_default: false,
+                    },
+                ],
                 next_submit_id: 1,
                 fail_snapshot: None,
                 fail_subscribe: None,
@@ -420,6 +445,10 @@ impl TuiBackend for FakeBackend {
             BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
                 guard.active_turns.clone(),
             )),
+            BackendCommand::LoadModels => Ok(BackendCommandResult::Models(guard.models.clone())),
+            BackendCommand::StopDaemon => {
+                Ok(BackendCommandResult::DaemonStopped { stopping: true })
+            }
             BackendCommand::SubmitPrompt { thread_id, .. } => {
                 let turn_id = format!("turn-{}", guard.next_submit_id);
                 guard.next_submit_id += 1;

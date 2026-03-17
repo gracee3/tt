@@ -52,16 +52,17 @@ pub(super) fn render_footer(state: &AppState) -> Paragraph<'static> {
     let mut lines = Vec::new();
     if state.show_help {
         lines.push(Line::from(
-            "views: 1 overview  2 threads  3 collaboration  tab next view",
+            "views: 1 overview  2 threads  3 collaboration  4 supervisor  tab next view",
         ));
         lines.push(Line::from(help_navigation_line(state.current_view)));
     } else {
         lines.push(Line::from(format!(
-            "keys: 1/2/3 views  tab next  {}  r refresh  ? help  q quit",
+            "keys: 1/2/3/4 views  tab next  m refresh models  x stop daemon  {}  r refresh  ? help  q quit",
             match state.current_view {
                 TopLevelView::Overview => "j/k no-op",
                 TopLevelView::Threads => "j/k threads",
                 TopLevelView::Collaboration => "j/k selection  h/l list focus",
+                TopLevelView::Supervisor => "m refresh models  x stop daemon",
             }
         )));
     }
@@ -90,6 +91,11 @@ fn selection_summary(state: &AppState) -> String {
             state.selected_workstream_id.as_deref().unwrap_or("-"),
             state.selected_work_unit_id.as_deref().unwrap_or("-")
         ),
+        TopLevelView::Supervisor => format!(
+            "models={}  selected_thread={}",
+            state.daemon_models.len(),
+            state.selected_thread_id.as_deref().unwrap_or("-"),
+        ),
     }
 }
 
@@ -99,6 +105,9 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
         TopLevelView::Threads => "nav: j/k thread selection  r refresh  ? help  q quit",
         TopLevelView::Collaboration => {
             "nav: j/k move selected list  h/l switch workstreams/work_units  r refresh  ? help  q quit"
+        }
+        TopLevelView::Supervisor => {
+            "nav: m reload models  x request daemon stop  r refresh  ? help  q quit"
         }
     }
 }

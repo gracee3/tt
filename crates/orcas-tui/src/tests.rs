@@ -1535,10 +1535,56 @@ async fn top_level_view_navigation_switches_between_overview_threads_and_collabo
     assert_eq!(harness.current_view(), TopLevelView::Threads);
     harness.dispatch(UserAction::CycleView).await;
     assert_eq!(harness.current_view(), TopLevelView::Collaboration);
+    harness.dispatch(UserAction::CycleView).await;
+    assert_eq!(harness.current_view(), TopLevelView::Supervisor);
+    harness.dispatch(UserAction::CycleView).await;
+    assert_eq!(harness.current_view(), TopLevelView::Overview);
     harness
         .dispatch(UserAction::ShowView(TopLevelView::Overview))
         .await;
     assert_eq!(harness.current_view(), TopLevelView::Overview);
+}
+
+#[tokio::test]
+async fn supervisor_view_loads_models_and_renders_available_models() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Supervisor))
+        .await;
+
+    let rendered = harness.render_text(160, 42);
+    assert!(rendered.contains("Supervisor"));
+    assert!(rendered.contains("Available Models"));
+    assert!(rendered.contains("codex-small"));
+    assert_eq!(harness.state().daemon_models.len(), 2);
+    assert!(
+        harness
+            .recorded_commands()
+            .await
+            .contains(&BackendCommand::LoadModels)
+    );
+}
+
+#[tokio::test]
+async fn supervisor_stop_daemon_dispatches_stop_request_command() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Supervisor))
+        .await;
+    harness.dispatch(UserAction::StopDaemon).await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.contains(&BackendCommand::StopDaemon));
+    assert_eq!(
+        harness
+            .state()
+            .banner
+            .as_ref()
+            .map(|banner| banner.message.as_str()),
+        Some("Daemon stop requested.")
+    );
 }
 
 #[tokio::test]

@@ -262,6 +262,48 @@ impl<B: TuiBackend> AppRuntime<B> {
                     }
                 }
             }
+            Effect::LoadModels => match self.backend.execute(BackendCommand::LoadModels).await {
+                Ok(BackendCommandResult::Models(models)) => {
+                    self.dispatch(Action::Event(UiEvent::ModelsLoaded(models)));
+                }
+                Ok(other) => {
+                    self.dispatch(Action::Event(UiEvent::Error(format!(
+                        "unexpected load models response: {other:?}"
+                    ))));
+                }
+                Err(error) => {
+                    if Self::is_disconnect_error(&error) {
+                        self.dispatch(Action::Event(UiEvent::ConnectionLost(format!(
+                            "model load failed: {error}"
+                        ))));
+                    } else {
+                        self.dispatch(Action::Event(UiEvent::Error(format!(
+                            "model load failed: {error}"
+                        ))));
+                    }
+                }
+            },
+            Effect::StopDaemon => match self.backend.execute(BackendCommand::StopDaemon).await {
+                Ok(BackendCommandResult::DaemonStopped { stopping }) => {
+                    self.dispatch(Action::Event(UiEvent::DaemonStopped { stopping }));
+                }
+                Ok(other) => {
+                    self.dispatch(Action::Event(UiEvent::Error(format!(
+                        "unexpected stop-daemon response: {other:?}"
+                    ))));
+                }
+                Err(error) => {
+                    if Self::is_disconnect_error(&error) {
+                        self.dispatch(Action::Event(UiEvent::ConnectionLost(format!(
+                            "daemon stop failed: {error}"
+                        ))));
+                    } else {
+                        self.dispatch(Action::Event(UiEvent::Error(format!(
+                            "daemon stop failed: {error}"
+                        ))));
+                    }
+                }
+            },
             Effect::SubmitPrompt { thread_id, text } => {
                 match self
                     .backend
