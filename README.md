@@ -26,7 +26,6 @@ Orcas state is authoritative. Codex remains the worker execution substrate. Supe
 - `crates/orcas-daemon`: `orcasd`, UDS server, event fanout, shared IPC client/process manager
 - `crates/orcas-supervisor`: `orcas` CLI that talks to `orcasd`
 - `crates/orcas-tui`: TUI app core, runtime, render layer, and tests
-- `docs/`: architecture, daemon behavior, IPC protocol, and collaboration design docs
 
 ## Build
 
