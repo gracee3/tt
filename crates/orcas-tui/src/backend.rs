@@ -483,6 +483,7 @@ fn workunit_details_from_snapshot(
                 worker_id: assignment.worker_id.clone(),
                 worker_session_id: assignment.worker_session_id.clone(),
                 instructions: String::new(),
+                communication_seed: None,
                 status: assignment.status,
                 attempt_number: assignment.attempt_number,
                 created_at: assignment.updated_at,

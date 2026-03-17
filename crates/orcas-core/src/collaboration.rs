@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::communication::{AssignmentCommunicationRecord, AssignmentCommunicationSeed};
 use crate::supervisor::SupervisorProposalRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -21,6 +22,8 @@ pub struct CollaborationState {
     pub reports: BTreeMap<String, Report>,
     #[serde(default)]
     pub decisions: BTreeMap<String, Decision>,
+    #[serde(default)]
+    pub assignment_communications: BTreeMap<String, AssignmentCommunicationRecord>,
     #[serde(default)]
     pub supervisor_proposals: BTreeMap<String, SupervisorProposalRecord>,
 }
@@ -94,6 +97,8 @@ pub struct Assignment {
     pub worker_id: String,
     pub worker_session_id: String,
     pub instructions: String,
+    #[serde(default)]
+    pub communication_seed: Option<AssignmentCommunicationSeed>,
     #[serde(default)]
     pub status: AssignmentStatus,
     pub attempt_number: u32,

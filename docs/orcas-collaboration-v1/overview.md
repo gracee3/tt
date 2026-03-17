@@ -5,6 +5,7 @@
 - [Scope And Non-Goals](./v1-scope.md)
 - [Object Model](./object-model.md)
 - [Reporting And Decisions](./reporting-and-decisions.md)
+- [Assignment Communication Protocol v1](./assignment-communication-protocol-v1.md)
 - [Lifecycles](./lifecycles.md)
 - [Runtime Mapping](./runtime-mapping.md)
 - [Supervisor Proposal v1](./supervisor-proposal-v1.md)
