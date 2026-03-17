@@ -1,6 +1,8 @@
 use chrono::Utc;
 
-use crate::app::{BannerLevel, DaemonConnectionPhase, NavigationFocus, UiEvent, UserAction};
+use crate::app::{
+    BannerLevel, CollaborationFocus, DaemonConnectionPhase, TopLevelView, UiEvent, UserAction,
+};
 use crate::backend::BackendCommand;
 use crate::test_harness::AppHarness;
 use orcas_core::{
@@ -641,12 +643,28 @@ fn sample_workunit_detail(work_unit_id: &str) -> ipc::WorkunitGetResponse {
 async fn initial_snapshot_load_populates_state() {
     let harness = AppHarness::new(sample_snapshot()).await.unwrap();
     let connection = harness.connection_vm();
+    let overview = harness.overview_vm();
     let threads = harness.thread_list_vm();
     let workstreams = harness.workstream_list_vm();
     let work_units = harness.work_unit_list_vm();
 
+    assert_eq!(harness.current_view(), TopLevelView::Overview);
     assert_eq!(connection.daemon_phase, DaemonConnectionPhase::Connected);
     assert_eq!(connection.upstream_status, "connected");
+    assert!(
+        overview
+            .connection
+            .lines
+            .iter()
+            .any(|line| line.contains("daemon: connected"))
+    );
+    assert!(
+        overview
+            .recent_events
+            .lines
+            .iter()
+            .any(|line| line.contains("loaded thread-1"))
+    );
     assert_eq!(threads.rows.len(), 2);
     assert!(threads.rows[0].selected);
     assert_eq!(workstreams.rows.len(), 2);
@@ -686,10 +704,17 @@ async fn active_turn_state_drives_prompt_in_flight_and_thread_badge() {
     }];
 
     let harness = AppHarness::new(snapshot).await.unwrap();
-    let prompt = harness.prompt_box_vm();
+    let overview = harness.overview_vm();
     let threads = harness.thread_list_vm();
 
-    assert!(prompt.in_flight);
+    assert!(harness.prompt_in_flight());
+    assert!(
+        overview
+            .active_work
+            .lines
+            .iter()
+            .any(|line| line.contains("thread-1 / turn-7 [in_progress]"))
+    );
     assert_eq!(threads.rows[0].status, "active");
     assert_eq!(
         threads.rows[0].turn_badge.as_deref(),
@@ -726,7 +751,7 @@ async fn thread_selection_loads_detail() {
         detail
             .lines
             .iter()
-            .any(|line| line.contains("turn_state: completed"))
+            .any(|line| line.contains("lifecycle=completed"))
     );
     assert!(
         detail
@@ -783,12 +808,17 @@ async fn streamed_deltas_accumulate_in_selected_thread() {
 #[tokio::test]
 async fn completed_turn_clears_in_progress_marker() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::EnterPromptMode).await;
-    for ch in "status".chars() {
-        harness.dispatch(UserAction::PromptAppend(ch)).await;
-    }
-    harness.dispatch(UserAction::SubmitPrompt).await;
-    assert!(harness.prompt_box_vm().in_flight);
+    harness
+        .set_active_turns(vec![sample_turn_state(
+            "thread-1",
+            "turn-1",
+            ipc::TurnLifecycleState::Active,
+            "in_progress",
+            true,
+        )])
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    assert!(harness.prompt_in_flight());
 
     harness
         .inject_event(ipc::DaemonEventEnvelope::new(
@@ -805,23 +835,23 @@ async fn completed_turn_clears_in_progress_marker() {
         .await
         .unwrap();
 
-    assert!(!harness.prompt_box_vm().in_flight);
+    assert!(!harness.prompt_in_flight());
 }
 
 #[tokio::test]
-async fn prompt_submission_emits_backend_command() {
+async fn prompt_submission_is_disabled_in_read_only_console() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::EnterPromptMode).await;
-    for ch in "ship it".chars() {
-        harness.dispatch(UserAction::PromptAppend(ch)).await;
-    }
     harness.dispatch(UserAction::SubmitPrompt).await;
 
+    let banner = harness.state().banner.clone().expect("banner");
     let commands = harness.recorded_commands().await;
-    assert!(commands.contains(&BackendCommand::SubmitPrompt {
-        thread_id: "thread-1".to_string(),
-        text: "ship it".to_string(),
-    }));
+    assert_eq!(banner.level, BannerLevel::Info);
+    assert!(banner.message.contains("read-only"));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::SubmitPrompt { .. }))
+    );
 }
 
 #[tokio::test]
@@ -975,6 +1005,9 @@ async fn proposal_state_renders_distinct_from_report_and_decision_state() {
         .set_workunit_detail(sample_workunit_detail("wu-1"))
         .await;
     harness.dispatch(UserAction::Refresh).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
 
     let work_units = harness.work_unit_list_vm();
     let detail = harness.collaboration_detail_vm();
@@ -1181,7 +1214,9 @@ async fn collaboration_events_refresh_summaries_incrementally() {
         .await
         .unwrap();
 
-    harness.dispatch(UserAction::CycleFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
     for _ in 0..3 {
         if harness
             .workstream_detail_vm()
@@ -1190,7 +1225,7 @@ async fn collaboration_events_refresh_summaries_incrementally() {
         {
             break;
         }
-        harness.dispatch(UserAction::SelectPreviousInFocus).await;
+        harness.dispatch(UserAction::SelectPreviousInView).await;
     }
 
     let workstreams = harness.workstream_list_vm();
@@ -1451,30 +1486,72 @@ async fn collaboration_history_shows_failed_interrupted_and_lost_states_explicit
 #[tokio::test]
 async fn focus_switches_collaboration_navigation_without_overwriting_thread_state() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
-    harness.dispatch(UserAction::CycleFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
 
     let status = harness.collaboration_status_vm();
     let detail = harness.workstream_detail_vm();
     let threads = harness.thread_list_vm();
 
-    assert_eq!(status.focus, NavigationFocus::WorkUnits);
+    assert_eq!(status.focus, CollaborationFocus::WorkUnits);
     assert!(detail.title.contains("Deferred work"));
     assert!(threads.rows[0].selected);
 }
 
 #[tokio::test]
-async fn focus_cycle_order_is_threads_then_workstreams_then_work_units_then_threads() {
+async fn collaboration_focus_cycle_order_is_workstreams_then_work_units_then_workstreams() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+
+    assert_eq!(
+        harness.collaboration_focus(),
+        CollaborationFocus::Workstreams
+    );
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    assert_eq!(harness.collaboration_focus(), CollaborationFocus::WorkUnits);
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    assert_eq!(
+        harness.collaboration_focus(),
+        CollaborationFocus::Workstreams
+    );
+}
+
+#[tokio::test]
+async fn top_level_view_navigation_switches_between_overview_threads_and_collaboration() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
 
-    assert_eq!(harness.focus(), NavigationFocus::Threads);
-    harness.dispatch(UserAction::CycleFocus).await;
-    assert_eq!(harness.focus(), NavigationFocus::Workstreams);
-    harness.dispatch(UserAction::CycleFocus).await;
-    assert_eq!(harness.focus(), NavigationFocus::WorkUnits);
-    harness.dispatch(UserAction::CycleFocus).await;
-    assert_eq!(harness.focus(), NavigationFocus::Threads);
+    assert_eq!(harness.current_view(), TopLevelView::Overview);
+    harness.dispatch(UserAction::CycleView).await;
+    assert_eq!(harness.current_view(), TopLevelView::Threads);
+    harness.dispatch(UserAction::CycleView).await;
+    assert_eq!(harness.current_view(), TopLevelView::Collaboration);
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Overview))
+        .await;
+    assert_eq!(harness.current_view(), TopLevelView::Overview);
+}
+
+#[tokio::test]
+async fn reconnect_keeps_selected_top_level_view_and_collaboration_focus() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+
+    harness.replace_snapshot(sample_snapshot()).await;
+    harness.disconnect_events().await;
+    harness.process().await;
+    harness.force_reconnect_now();
+    harness.process().await;
+
+    assert_eq!(harness.current_view(), TopLevelView::Collaboration);
+    assert_eq!(harness.collaboration_focus(), CollaborationFocus::WorkUnits);
 }
 
 #[tokio::test]
@@ -1485,10 +1562,16 @@ async fn j_and_k_only_move_the_focused_list_selection() {
     let initial_workstream = harness.selected_workstream_id().map(str::to_string);
     let initial_work_unit = harness.selected_work_unit_id().map(str::to_string);
 
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
 
-    assert_eq!(harness.focus(), NavigationFocus::Workstreams);
+    assert_eq!(harness.current_view(), TopLevelView::Collaboration);
+    assert_eq!(
+        harness.collaboration_focus(),
+        CollaborationFocus::Workstreams
+    );
     assert_eq!(harness.selected_thread_id(), initial_thread.as_deref());
     assert_ne!(
         harness.selected_workstream_id(),
@@ -1501,10 +1584,10 @@ async fn j_and_k_only_move_the_focused_list_selection() {
 
     let workstream_after_move = harness.selected_workstream_id().map(str::to_string);
     let thread_after_workstream_move = harness.selected_thread_id().map(str::to_string);
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectPreviousInFocus).await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    harness.dispatch(UserAction::SelectPreviousInView).await;
 
-    assert_eq!(harness.focus(), NavigationFocus::WorkUnits);
+    assert_eq!(harness.collaboration_focus(), CollaborationFocus::WorkUnits);
     assert_eq!(
         harness.selected_thread_id(),
         thread_after_workstream_move.as_deref()
@@ -1519,8 +1602,10 @@ async fn j_and_k_only_move_the_focused_list_selection() {
 #[tokio::test]
 async fn workstream_navigation_updates_selected_work_unit_and_rendered_context() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
 
     let status = harness.collaboration_status_vm();
     let workstreams = harness.workstream_list_vm();
@@ -1528,7 +1613,7 @@ async fn workstream_navigation_updates_selected_work_unit_and_rendered_context()
     let history = harness.collaboration_history_vm();
     let rendered = harness.render_text(160, 42);
 
-    assert_eq!(status.focus, NavigationFocus::Workstreams);
+    assert_eq!(status.focus, CollaborationFocus::Workstreams);
     assert!(
         workstreams
             .rows
@@ -1544,15 +1629,17 @@ async fn workstream_navigation_updates_selected_work_unit_and_rendered_context()
     assert!(rendered.contains("> Deferred work [blocked]"));
     assert!(rendered.contains("> Out of scope"));
     assert!(rendered.contains("[blocked]"));
-    assert!(rendered.contains("nav: tab focus=workstreams"));
+    assert!(rendered.contains("selected stream: Deferred work"));
 }
 
 #[tokio::test]
 async fn work_unit_navigation_refreshes_detail_history_and_fetch_command() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
 
     let status = harness.collaboration_status_vm();
     let work_units = harness.work_unit_list_vm();
@@ -1561,7 +1648,7 @@ async fn work_unit_navigation_refreshes_detail_history_and_fetch_command() {
     let commands = harness.recorded_commands().await;
     let rendered = harness.render_text(160, 42);
 
-    assert_eq!(status.focus, NavigationFocus::WorkUnits);
+    assert_eq!(status.focus, CollaborationFocus::WorkUnits);
     assert!(
         work_units
             .rows
@@ -1584,11 +1671,13 @@ async fn work_unit_navigation_refreshes_detail_history_and_fetch_command() {
 #[tokio::test]
 async fn late_detail_for_non_selected_work_unit_does_not_overwrite_visible_history() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
     assert_eq!(harness.selected_work_unit_id(), Some("wu-2"));
-    harness.dispatch(UserAction::SelectPreviousInFocus).await;
+    harness.dispatch(UserAction::SelectPreviousInView).await;
     assert_eq!(harness.selected_work_unit_id(), Some("wu-1"));
 
     harness
@@ -1606,6 +1695,69 @@ async fn late_detail_for_non_selected_work_unit_does_not_overwrite_visible_histo
             .lines
             .iter()
             .any(|line| line.contains("assignment-3 [created]"))
+    );
+}
+
+#[tokio::test]
+async fn collaboration_detail_does_not_overwrite_thread_detail_and_vice_versa() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+    harness
+        .set_thread(sample_thread_view("thread-2", "later", "second output"))
+        .await;
+    harness
+        .set_turn(ipc::TurnAttachResponse {
+            turn: Some(sample_turn_state(
+                "thread-2",
+                "turn-1",
+                ipc::TurnLifecycleState::Completed,
+                "completed",
+                false,
+            )),
+            attached: false,
+            reason: Some("turn already completed; only terminal state is queryable".to_string()),
+        })
+        .await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Threads))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::CycleCollaborationFocus).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+
+    let collaboration_detail = harness.collaboration_detail_vm();
+    let collaboration_history = harness.collaboration_history_vm();
+    assert!(collaboration_detail.title.contains("Work Unit wu-2"));
+    assert!(collaboration_history.title.contains("Event wiring"));
+
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Threads))
+        .await;
+    let thread_detail = harness.thread_detail_vm();
+    assert!(thread_detail.title.contains("thread-2"));
+    assert!(
+        thread_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("second output"))
+    );
+
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    let collaboration_history_again = harness.collaboration_history_vm();
+    assert!(collaboration_history_again.title.contains("Event wiring"));
+    assert!(
+        !collaboration_history_again
+            .lines
+            .iter()
+            .any(|line| line.contains("second output"))
     );
 }
 
@@ -1796,8 +1948,10 @@ async fn reconnect_refreshes_history_for_selected_work_unit() {
 #[tokio::test]
 async fn event_refresh_does_not_leave_invalid_parent_child_selection() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
     assert_eq!(harness.selected_workstream_id(), Some("ws-2"));
     assert_eq!(harness.selected_work_unit_id(), Some("wu-3"));
 
@@ -1835,8 +1989,10 @@ async fn event_refresh_does_not_leave_invalid_parent_child_selection() {
 #[tokio::test]
 async fn reconnect_reconciles_collaboration_selection_to_authoritative_snapshot() {
     let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
-    harness.dispatch(UserAction::CycleFocus).await;
-    harness.dispatch(UserAction::SelectNextInFocus).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
+    harness.dispatch(UserAction::SelectNextInView).await;
 
     let mut recovered = sample_snapshot();
     recovered.collaboration.workstreams = vec![ipc::WorkstreamSummary {
@@ -1924,34 +2080,53 @@ async fn compact_layout_keeps_focus_selection_and_state_labels_visible_across_si
     harness.dispatch(UserAction::Refresh).await;
 
     let expanded = harness.render_text(160, 42);
-    assert!(expanded.contains("ambiguous"), "{expanded}");
-    assert!(expanded.contains("proposal="), "{expanded}");
+    assert!(expanded.contains("Connection"), "{expanded}");
+    assert!(expanded.contains("Recent Events"), "{expanded}");
 
     for (width, height) in [(120, 40), (100, 30), (80, 24)] {
-        let rendered = harness.render_text(width, height);
+        harness
+            .dispatch(UserAction::ShowView(TopLevelView::Overview))
+            .await;
+        let overview = harness.render_text(width, height);
         assert!(
-            rendered.contains("Threads <focus>"),
-            "missing thread focus marker at {width}x{height}\n{rendered}"
+            overview.contains("Connection"),
+            "missing overview connection panel at {width}x{height}\n{overview}"
         );
         assert!(
-            rendered.contains("Workstreams"),
-            "missing workstreams title at {width}x{height}\n{rendered}"
+            overview.contains("Active Work"),
+            "missing overview active-work panel at {width}x{height}\n{overview}"
+        );
+
+        harness
+            .dispatch(UserAction::ShowView(TopLevelView::Threads))
+            .await;
+        let threads = harness.render_text(width, height);
+        assert!(
+            threads.contains("Threads"),
+            "missing threads list at {width}x{height}\n{threads}"
         );
         assert!(
-            rendered.contains("Work Units"),
-            "missing work units title at {width}x{height}\n{rendered}"
+            threads.contains("Thread Activity"),
+            "missing thread activity at {width}x{height}\n{threads}"
+        );
+
+        harness
+            .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+            .await;
+        let collaboration = harness.render_text(width, height);
+        assert!(
+            collaboration.contains("Workstreams"),
+            "missing workstreams at {width}x{height}\n{collaboration}"
         );
         assert!(
-            rendered.contains("Snapshot wiring"),
-            "missing selected work-unit title at {width}x{height}\n{rendered}"
+            collaboration.contains("Work Units"),
+            "missing work units at {width}x{height}\n{collaboration}"
+        );
+        assert!(
+            collaboration.contains("Snapshot wiring"),
+            "missing selected work-unit detail at {width}x{height}\n{collaboration}"
         );
     }
-
-    let boundary = harness.render_text(72, 22);
-    assert!(boundary.contains("Threads <focus>"), "{boundary}");
-    assert!(boundary.contains("Workstreams"), "{boundary}");
-    assert!(boundary.contains("Work Units"), "{boundary}");
-    assert!(boundary.contains("Snapshot wiring"), "{boundary}");
 }
 
 #[tokio::test]
@@ -1961,11 +2136,14 @@ async fn small_terminal_render_keeps_collaboration_surface_stable() {
         .set_workunit_detail(sample_workunit_detail("wu-1"))
         .await;
     harness.dispatch(UserAction::Refresh).await;
+    harness
+        .dispatch(UserAction::ShowView(TopLevelView::Collaboration))
+        .await;
 
     let rendered = harness.render_text(110, 34);
 
     assert!(rendered.contains("Workstreams"));
-    assert!(rendered.contains("History"));
+    assert!(rendered.contains("History Snapshot wiring"));
     assert!(rendered.contains("Collaboration"));
     assert!(rendered.contains("Snapshot wiring"));
     assert!(rendered.contains("assignment-2"));

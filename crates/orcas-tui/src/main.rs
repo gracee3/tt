@@ -13,7 +13,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use orcas_tui::app::{Action, UserAction};
+use orcas_tui::app::{Action, TopLevelView, UserAction};
 use orcas_tui::backend::OrcasDaemonBackend;
 use orcas_tui::render;
 use orcas_tui::runtime::AppRuntime;
@@ -64,25 +64,19 @@ async fn run_app(
 }
 
 async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode) -> bool {
-    let action = if runtime.state().prompt_mode {
-        match code {
-            KeyCode::Esc => Some(UserAction::ExitPromptMode),
-            KeyCode::Enter => Some(UserAction::SubmitPrompt),
-            KeyCode::Backspace => Some(UserAction::PromptBackspace),
-            KeyCode::Char(ch) => Some(UserAction::PromptAppend(ch)),
-            _ => None,
-        }
-    } else {
-        match code {
-            KeyCode::Char('q') => return true,
-            KeyCode::Char('r') => Some(UserAction::Refresh),
-            KeyCode::Char('?') => Some(UserAction::ToggleHelp),
-            KeyCode::Tab => Some(UserAction::CycleFocus),
-            KeyCode::Char('j') | KeyCode::Down => Some(UserAction::SelectNextInFocus),
-            KeyCode::Char('k') | KeyCode::Up => Some(UserAction::SelectPreviousInFocus),
-            KeyCode::Char('i') => Some(UserAction::EnterPromptMode),
-            _ => None,
-        }
+    let action = match code {
+        KeyCode::Char('q') => return true,
+        KeyCode::Char('r') => Some(UserAction::Refresh),
+        KeyCode::Char('?') => Some(UserAction::ToggleHelp),
+        KeyCode::Tab => Some(UserAction::CycleView),
+        KeyCode::Char('1') => Some(UserAction::ShowView(TopLevelView::Overview)),
+        KeyCode::Char('2') => Some(UserAction::ShowView(TopLevelView::Threads)),
+        KeyCode::Char('3') => Some(UserAction::ShowView(TopLevelView::Collaboration)),
+        KeyCode::Char('j') | KeyCode::Down => Some(UserAction::SelectNextInView),
+        KeyCode::Char('k') | KeyCode::Up => Some(UserAction::SelectPreviousInView),
+        KeyCode::Char('h') | KeyCode::Left => Some(UserAction::CycleCollaborationFocus),
+        KeyCode::Char('l') | KeyCode::Right => Some(UserAction::CycleCollaborationFocus),
+        _ => None,
     };
 
     if let Some(action) = action {

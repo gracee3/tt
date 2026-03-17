@@ -4,7 +4,7 @@ use anyhow::Result;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{Action, AppState, NavigationFocus, UiEvent, UserAction};
+use crate::app::{Action, AppState, CollaborationFocus, TopLevelView, UiEvent, UserAction};
 use crate::backend::{BackendCommand, FakeBackend};
 use crate::render;
 use crate::runtime::AppRuntime;
@@ -108,16 +108,24 @@ impl AppHarness {
         view_model::event_log(self.runtime.state())
     }
 
-    pub fn prompt_box_vm(&self) -> view_model::PromptBoxViewModel {
-        view_model::prompt_box(self.runtime.state())
+    pub fn overview_vm(&self) -> view_model::OverviewViewModel {
+        view_model::overview_view(self.runtime.state())
     }
 
     pub fn connection_vm(&self) -> view_model::ConnectionStatusViewModel {
         view_model::connection_status(self.runtime.state())
     }
 
-    pub fn focus(&self) -> NavigationFocus {
-        self.runtime.state().navigation_focus
+    pub fn current_view(&self) -> TopLevelView {
+        self.runtime.state().current_view
+    }
+
+    pub fn collaboration_focus(&self) -> CollaborationFocus {
+        self.runtime.state().collaboration_focus
+    }
+
+    pub fn prompt_in_flight(&self) -> bool {
+        self.runtime.state().prompt_in_flight
     }
 
     pub fn selected_thread_id(&self) -> Option<&str> {
@@ -134,6 +142,14 @@ impl AppHarness {
 
     pub fn thread_detail_vm(&self) -> view_model::ThreadDetailViewModel {
         view_model::thread_detail(self.runtime.state())
+    }
+
+    pub fn thread_summary_vm(&self) -> view_model::PanelViewModel {
+        view_model::thread_summary(self.runtime.state())
+    }
+
+    pub fn threads_vm(&self) -> view_model::ThreadsViewModel {
+        view_model::threads_view(self.runtime.state())
     }
 
     pub fn workstream_list_vm(&self) -> view_model::WorkstreamListViewModel {
@@ -162,6 +178,10 @@ impl AppHarness {
 
     pub fn collaboration_history_vm(&self) -> view_model::CollaborationHistoryViewModel {
         view_model::collaboration_history(self.runtime.state())
+    }
+
+    pub fn collaboration_vm(&self) -> view_model::CollaborationViewModel {
+        view_model::collaboration_view(self.runtime.state())
     }
 
     pub fn render_text(&self, width: u16, height: u16) -> String {

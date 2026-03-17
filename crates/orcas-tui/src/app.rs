@@ -5,11 +5,37 @@ use orcas_core::{ConnectionState, ipc};
 const MAX_LOG_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NavigationFocus {
+pub enum TopLevelView {
     #[default]
+    Overview,
     Threads,
+    Collaboration,
+}
+
+impl TopLevelView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Overview => Self::Threads,
+            Self::Threads => Self::Collaboration,
+            Self::Collaboration => Self::Overview,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CollaborationFocus {
+    #[default]
     Workstreams,
     WorkUnits,
+}
+
+impl CollaborationFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Workstreams => Self::WorkUnits,
+            Self::WorkUnits => Self::Workstreams,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,14 +56,13 @@ pub struct AppState {
     pub threads: Vec<ipc::ThreadSummary>,
     pub thread_details: HashMap<String, ipc::ThreadView>,
     pub turn_states: HashMap<String, ipc::TurnStateView>,
+    pub current_view: TopLevelView,
     pub selected_thread_id: Option<String>,
     pub selected_workstream_id: Option<String>,
     pub selected_work_unit_id: Option<String>,
     pub work_unit_details: HashMap<String, ipc::WorkunitGetResponse>,
-    pub navigation_focus: NavigationFocus,
+    pub collaboration_focus: CollaborationFocus,
     pub recent_events: VecDeque<ipc::EventSummary>,
-    pub prompt_input: String,
-    pub prompt_mode: bool,
     pub prompt_in_flight: bool,
     pub banner: Option<StatusBanner>,
     pub show_help: bool,
@@ -67,9 +92,11 @@ pub enum Action {
 pub enum UserAction {
     Refresh,
     ToggleHelp,
-    CycleFocus,
-    SelectNextInFocus,
-    SelectPreviousInFocus,
+    CycleView,
+    ShowView(TopLevelView),
+    CycleCollaborationFocus,
+    SelectNextInView,
+    SelectPreviousInView,
     SelectNextThread,
     SelectPreviousThread,
     SelectThread(String),
@@ -219,63 +246,36 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
             state.show_help = !state.show_help;
             Vec::new()
         }
-        UserAction::CycleFocus => {
-            state.navigation_focus = match state.navigation_focus {
-                NavigationFocus::Threads => NavigationFocus::Workstreams,
-                NavigationFocus::Workstreams => NavigationFocus::WorkUnits,
-                NavigationFocus::WorkUnits => NavigationFocus::Threads,
-            };
+        UserAction::CycleView => {
+            state.current_view = state.current_view.next();
             Vec::new()
         }
-        UserAction::SelectNextInFocus => select_relative_in_focus(state, 1),
-        UserAction::SelectPreviousInFocus => select_relative_in_focus(state, -1),
+        UserAction::ShowView(view) => {
+            state.current_view = view;
+            Vec::new()
+        }
+        UserAction::CycleCollaborationFocus => {
+            if state.current_view == TopLevelView::Collaboration {
+                state.collaboration_focus = state.collaboration_focus.next();
+            }
+            Vec::new()
+        }
+        UserAction::SelectNextInView => select_relative_in_view(state, 1),
+        UserAction::SelectPreviousInView => select_relative_in_view(state, -1),
         UserAction::SelectNextThread => select_relative_thread(state, 1),
         UserAction::SelectPreviousThread => select_relative_thread(state, -1),
         UserAction::SelectThread(thread_id) => select_thread(state, thread_id),
-        UserAction::EnterPromptMode => {
-            state.prompt_mode = true;
-            Vec::new()
-        }
-        UserAction::ExitPromptMode => {
-            state.prompt_mode = false;
-            Vec::new()
-        }
-        UserAction::PromptAppend(ch) => {
-            if state.prompt_mode {
-                state.prompt_input.push(ch);
-            }
-            Vec::new()
-        }
-        UserAction::PromptBackspace => {
-            if state.prompt_mode {
-                state.prompt_input.pop();
-            }
-            Vec::new()
-        }
-        UserAction::SubmitPrompt => {
-            let Some(thread_id) = state.selected_thread_id.clone() else {
-                state.banner = Some(StatusBanner {
-                    level: BannerLevel::Error,
-                    message: "Select a thread before submitting a prompt.".to_string(),
-                });
-                return Vec::new();
-            };
-            let text = state.prompt_input.trim().to_string();
-            if text.is_empty() {
-                state.banner = Some(StatusBanner {
-                    level: BannerLevel::Error,
-                    message: "Prompt input is empty.".to_string(),
-                });
-                return Vec::new();
-            }
-            state.prompt_mode = false;
-            state.prompt_in_flight = true;
-            state.prompt_input.clear();
+        UserAction::EnterPromptMode
+        | UserAction::ExitPromptMode
+        | UserAction::PromptAppend(_)
+        | UserAction::PromptBackspace
+        | UserAction::SubmitPrompt => {
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
-                message: format!("Submitting prompt to thread {thread_id}."),
+                message: "TUI is read-only in this pass. Use the Orcas CLI for prompt submission."
+                    .to_string(),
             });
-            vec![Effect::SubmitPrompt { thread_id, text }]
+            Vec::new()
         }
     }
 }
@@ -288,6 +288,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
 
     match event {
         UiEvent::SnapshotLoaded(snapshot) => {
+            let preserved_thread_selection = state.selected_thread_id.clone();
             state.daemon_phase = DaemonConnectionPhase::Connected;
             state.reconnect_attempt = 0;
             state.daemon = Some(snapshot.daemon);
@@ -298,7 +299,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.turn_states.clear();
             state.work_unit_details.clear();
             state.recent_events = snapshot.recent_events.into_iter().collect();
-            state.selected_thread_id = None;
+            state.selected_thread_id = preserved_thread_selection;
             state.prompt_in_flight = false;
             if let Some(thread) = snapshot.active_thread {
                 let turn_ids = thread
@@ -315,13 +316,8 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                     turn_id,
                 }));
             }
-            if state.selected_thread_id.is_none() {
-                state.selected_thread_id = state
-                    .session
-                    .active_thread_id
-                    .clone()
-                    .or_else(|| state.threads.first().map(|thread| thread.id.clone()));
-            }
+            let preferred_thread_id = state.session.active_thread_id.clone();
+            reconcile_thread_selection(state, preferred_thread_id.as_deref());
             if let Some(thread_id) = state.selected_thread_id.clone()
                 && !state.thread_details.contains_key(&thread_id)
             {
@@ -581,12 +577,40 @@ fn select_thread(state: &mut AppState, thread_id: String) -> Vec<Effect> {
     }
 }
 
-fn select_relative_in_focus(state: &mut AppState, delta: isize) -> Vec<Effect> {
-    match state.navigation_focus {
-        NavigationFocus::Threads => select_relative_thread(state, delta),
-        NavigationFocus::Workstreams => select_relative_workstream(state, delta),
-        NavigationFocus::WorkUnits => select_relative_work_unit(state, delta),
+fn select_relative_in_view(state: &mut AppState, delta: isize) -> Vec<Effect> {
+    match state.current_view {
+        TopLevelView::Overview => Vec::new(),
+        TopLevelView::Threads => select_relative_thread(state, delta),
+        TopLevelView::Collaboration => match state.collaboration_focus {
+            CollaborationFocus::Workstreams => select_relative_workstream(state, delta),
+            CollaborationFocus::WorkUnits => select_relative_work_unit(state, delta),
+        },
     }
+}
+
+fn reconcile_thread_selection(state: &mut AppState, preferred_thread_id: Option<&str>) {
+    if state.threads.is_empty() {
+        state.selected_thread_id = None;
+        return;
+    }
+
+    let selected_thread_exists = state
+        .selected_thread_id
+        .as_ref()
+        .is_some_and(|thread_id| state.threads.iter().any(|thread| thread.id == *thread_id));
+    if selected_thread_exists {
+        return;
+    }
+
+    state.selected_thread_id = preferred_thread_id
+        .and_then(|thread_id| {
+            state
+                .threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .map(|thread| thread.id.clone())
+        })
+        .or_else(|| state.threads.first().map(|thread| thread.id.clone()));
 }
 
 fn select_relative_workstream(state: &mut AppState, delta: isize) -> Vec<Effect> {
