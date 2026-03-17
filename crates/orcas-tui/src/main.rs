@@ -1,6 +1,6 @@
 #![allow(unused_crate_dependencies)]
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +21,10 @@ use orcas_tui::runtime::AppRuntime;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
+
+    if !(io::stdout().is_terminal() && io::stdin().is_terminal()) {
+        anyhow::bail!("orcas-tui requires an interactive terminal (TTY)");
+    }
 
     let backend = Arc::new(OrcasDaemonBackend::discover().await?);
     let mut runtime = AppRuntime::new(backend);
