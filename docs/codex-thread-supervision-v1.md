@@ -37,6 +37,8 @@ This slice does not store Orcas workflow metadata inside Codex thread history.
 - auto-generate a single human-reviewable next-turn proposal for an active assigned idle thread
 - approve and send that proposal through documented `turn/start`
 - let an operator propose a steer message for an active assigned thread
+- let an operator author or revise steer text in the TUI before approval/send
+- let an operator author or revise multiline steer text in the TUI before approval/send
 - approve and send that steer through documented `turn/steer`
 - let an operator propose an interrupt for an active assigned thread
 - approve and send that interrupt through documented `turn/interrupt`
@@ -51,6 +53,9 @@ This slice does not store Orcas workflow metadata inside Codex thread history.
   - assignment badge / assignment panel
   - pending human approval / pending steer approval / pending interrupt approval / stale / sent / rejected decision state
   - latest next-turn, steer, or interrupt proposal rationale
+  - authored steer text for pending review
+  - edit pending steer before send
+  - recent decision history for the selected thread, including superseded steer revisions and replacement links
   - persisted turn history
   - aggregated item text
   - turn lifecycle snapshots
@@ -148,6 +153,8 @@ Steer decisions reuse the same Orcas-native object with:
 - documented send path limited to `turn/steer`
 
 Steer proposals are operator-initiated only in this slice. Orcas does not auto-generate them just because a thread is active.
+Steer text is operator-authored in the TUI in this slice; Orcas does not synthesize steer text automatically.
+The current TUI compose flow supports bounded multiline editing with cursor movement, newline insertion, save, and cancel.
 
 ## Basis / Stale Validation
 
@@ -196,12 +203,17 @@ If any of those checks fail, Orcas does not steer. The decision is marked stale 
 - If an open interrupt decision already exists, Orcas rejects steer proposal creation as conflicting in this slice.
 - If an assignment pauses or releases while a steer proposal is pending, the proposal becomes stale and cannot be sent.
 - If the active turn changes or completes naturally before approval, the steer proposal becomes stale.
+- Pending steer edits use immutable replacement: Orcas supersedes the previous pending steer decision and creates a new pending steer decision with the revised text.
+- Sent, rejected, stale, and superseded steer decisions remain immutable.
+- The TUI keeps recent per-thread decision history visible so superseded steer revisions remain inspectable with their `superseded_by` linkage.
 - A successful steer send does not start a new turn. Orcas waits for normal Codex event ingestion to reflect the continued in-flight turn state.
 - Orcas uses documented `turn/steer` constraints only:
   - `expectedTurnId` is required and must match the active turn
   - steer fails if there is no active turn
   - steer does not start a new turn
   - steer does not accept turn-level overrides such as model, cwd, sandbox policy, or output schema
+
+Current operator text-entry support is TUI-only in this slice. Orcas does not yet expose authored steer text entry through a separate CLI command surface.
 
 ## Interrupt Proposal Semantics
 
@@ -258,6 +270,7 @@ Supervisor decision IPC added:
 - `supervisor_decision/list`
 - `supervisor_decision/get`
 - `supervisor_decision/propose_steer`
+- `supervisor_decision/replace_pending_steer`
 - `supervisor_decision/propose_interrupt`
 - `supervisor_decision/approve_and_send`
 - `supervisor_decision/reject`

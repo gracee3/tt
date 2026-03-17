@@ -179,6 +179,29 @@ fn sample_turn_state(
     }
 }
 
+async fn type_steer_text(harness: &mut AppHarness, text: &str) {
+    for ch in text.chars() {
+        harness.dispatch(UserAction::SteerComposeAppend(ch)).await;
+    }
+}
+
+async fn type_multiline_steer_text(harness: &mut AppHarness, lines: &[&str]) {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            harness
+                .dispatch(UserAction::SteerComposeInsertNewline)
+                .await;
+        }
+        type_steer_text(harness, line).await;
+    }
+}
+
+async fn clear_steer_text(harness: &mut AppHarness, text_len: usize) {
+    for _ in 0..text_len {
+        harness.dispatch(UserAction::SteerComposeBackspace).await;
+    }
+}
+
 fn sample_proposal_summary(
     latest_status: SupervisorProposalStatus,
     latest_decision_type: Option<DecisionType>,
@@ -1060,7 +1083,7 @@ async fn assigned_active_thread_without_open_decision_shows_propose_interrupt_ac
         detail
             .lines
             .iter()
-            .any(|line| line.contains("actions: s propose steer  i propose interrupt"))
+            .any(|line| line.contains("actions: s compose steer  i propose interrupt"))
     );
 }
 
@@ -1093,12 +1116,12 @@ async fn assigned_active_thread_without_open_decision_shows_propose_steer_action
         detail
             .lines
             .iter()
-            .any(|line| line.contains("actions: s propose steer  i propose interrupt"))
+            .any(|line| line.contains("actions: s compose steer  i propose interrupt"))
     );
 }
 
 #[tokio::test]
-async fn propose_steer_dispatches_backend_command_only_when_valid() {
+async fn propose_edit_and_review_steer_text_flow_works_end_to_end() {
     let mut snapshot = sample_snapshot();
     snapshot.threads[0].status = "active".to_string();
     snapshot.threads[0].loaded_status = ipc::ThreadLoadedStatus::Active;
@@ -1120,17 +1143,38 @@ async fn propose_steer_dispatches_backend_command_only_when_valid() {
             orcas_core::CodexThreadAssignmentStatus::Active,
         ));
     let mut harness = AppHarness::new(snapshot).await.unwrap();
+    let initial_command_count = harness.recorded_commands().await.len();
 
     harness
         .dispatch(UserAction::ProposeSteerForSelectedThread)
         .await;
+    assert_eq!(
+        harness.recorded_commands().await.len(),
+        initial_command_count
+    );
+    let compose_detail = harness.thread_detail_vm();
+    assert!(
+        compose_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("Steer Compose: new steer proposal"))
+    );
+    assert!(
+        compose_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("ctrl+s create steer"))
+    );
+    type_multiline_steer_text(&mut harness, &["focus tests", "then summarize blockers"]).await;
+    harness.dispatch(UserAction::SubmitSteerCompose).await;
 
     let commands = harness.recorded_commands().await;
     assert!(commands.iter().any(|command| {
         matches!(
             command,
-            BackendCommand::ProposeSteerSupervisorDecision { assignment_id }
+            BackendCommand::ProposeSteerSupervisorDecision { assignment_id, proposed_text }
                 if assignment_id == "cta-1"
+                    && proposed_text == "focus tests\nthen summarize blockers"
         )
     }));
 
@@ -1151,7 +1195,72 @@ async fn propose_steer_dispatches_backend_command_only_when_valid() {
         detail
             .lines
             .iter()
-            .any(|line| line.contains("proposed Continue the active turn"))
+            .any(|line| line.contains("proposed focus tests then summarize blockers"))
+    );
+
+    harness
+        .dispatch(UserAction::EditPendingSteerForSelectedThread)
+        .await;
+    let edit_detail = harness.thread_detail_vm();
+    assert!(
+        edit_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("Steer Compose: editing pending steer"))
+    );
+    assert!(
+        edit_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("focus tests"))
+    );
+    clear_steer_text(
+        &mut harness,
+        "focus tests\nthen summarize blockers".chars().count(),
+    )
+    .await;
+    type_multiline_steer_text(&mut harness, &["focus logs", "then summarize risks"]).await;
+    harness.dispatch(UserAction::SubmitSteerCompose).await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| {
+        matches!(
+            command,
+            BackendCommand::ReplacePendingSteerSupervisorDecision { decision_id, proposed_text }
+                if decision_id == "std-1"
+                    && proposed_text == "focus logs\nthen summarize risks"
+        )
+    }));
+
+    let revised_detail = harness.thread_detail_vm();
+    assert!(
+        revised_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("proposed focus logs then summarize risks"))
+    );
+    assert!(
+        revised_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("Decision History:"))
+    );
+    assert!(
+        revised_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("superseded by std-2"))
+    );
+
+    harness
+        .dispatch(UserAction::ApproveSelectedSupervisorDecision)
+        .await;
+    let sent_detail = harness.thread_detail_vm();
+    assert!(
+        sent_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("decision std-2 [sent]"))
     );
 }
 
@@ -1187,6 +1296,205 @@ async fn steer_decisions_render_distinctly_from_interrupt_and_next_turn() {
             .lines
             .iter()
             .any(|line| line.contains("kind=steer active turn  proposal=operator steer"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("editable=yes revision_state=pending steer"))
+    );
+}
+
+#[tokio::test]
+async fn submit_steer_compose_rejects_empty_text_without_backend_command() {
+    let mut snapshot = sample_snapshot();
+    snapshot.threads[0].status = "active".to_string();
+    snapshot.threads[0].loaded_status = ipc::ThreadLoadedStatus::Active;
+    snapshot.threads[0].active_turn_id = Some("turn-1".to_string());
+    snapshot.threads[0].turn_in_flight = true;
+    snapshot.active_thread = Some(sample_thread_view("thread-1", "hello", "turn output"));
+    if let Some(active_thread) = snapshot.active_thread.as_mut() {
+        active_thread.summary.status = "active".to_string();
+        active_thread.summary.loaded_status = ipc::ThreadLoadedStatus::Active;
+        active_thread.summary.active_turn_id = Some("turn-1".to_string());
+        active_thread.summary.turn_in_flight = true;
+        active_thread.turns[0].status = "in_progress".to_string();
+    }
+    snapshot
+        .collaboration
+        .codex_thread_assignments
+        .push(sample_codex_assignment_summary(
+            "thread-1",
+            orcas_core::CodexThreadAssignmentStatus::Active,
+        ));
+    let mut harness = AppHarness::new(snapshot).await.unwrap();
+    let initial_command_count = harness.recorded_commands().await.len();
+
+    harness
+        .dispatch(UserAction::ProposeSteerForSelectedThread)
+        .await;
+    harness.dispatch(UserAction::SubmitSteerCompose).await;
+
+    assert_eq!(
+        harness.recorded_commands().await.len(),
+        initial_command_count
+    );
+    let banner = harness.state().banner.clone().expect("banner");
+    assert_eq!(banner.level, BannerLevel::Warning);
+    assert!(banner.message.contains("must not be empty"));
+}
+
+#[tokio::test]
+async fn multiline_compose_cancel_does_not_mutate_backend_state() {
+    let mut snapshot = sample_snapshot();
+    snapshot.threads[0].status = "active".to_string();
+    snapshot.threads[0].loaded_status = ipc::ThreadLoadedStatus::Active;
+    snapshot.threads[0].active_turn_id = Some("turn-1".to_string());
+    snapshot.threads[0].turn_in_flight = true;
+    snapshot.active_thread = Some(sample_thread_view("thread-1", "hello", "turn output"));
+    if let Some(active_thread) = snapshot.active_thread.as_mut() {
+        active_thread.summary.status = "active".to_string();
+        active_thread.summary.loaded_status = ipc::ThreadLoadedStatus::Active;
+        active_thread.summary.active_turn_id = Some("turn-1".to_string());
+        active_thread.summary.turn_in_flight = true;
+        active_thread.turns[0].status = "in_progress".to_string();
+    }
+    snapshot
+        .collaboration
+        .codex_thread_assignments
+        .push(sample_codex_assignment_summary(
+            "thread-1",
+            orcas_core::CodexThreadAssignmentStatus::Active,
+        ));
+    let mut harness = AppHarness::new(snapshot).await.unwrap();
+    let initial_command_count = harness.recorded_commands().await.len();
+
+    harness
+        .dispatch(UserAction::ProposeSteerForSelectedThread)
+        .await;
+    type_multiline_steer_text(&mut harness, &["line one", "line two"]).await;
+    harness.dispatch(UserAction::CancelSteerCompose).await;
+
+    assert_eq!(
+        harness.recorded_commands().await.len(),
+        initial_command_count
+    );
+    let detail = harness.thread_detail_vm();
+    assert!(
+        !detail
+            .lines
+            .iter()
+            .any(|line| line.contains("Steer Compose:"))
+    );
+}
+
+#[tokio::test]
+async fn non_pending_steer_decisions_cannot_enter_edit_mode() {
+    for status in [
+        orcas_core::SupervisorTurnDecisionStatus::Sent,
+        orcas_core::SupervisorTurnDecisionStatus::Rejected,
+        orcas_core::SupervisorTurnDecisionStatus::Stale,
+        orcas_core::SupervisorTurnDecisionStatus::Superseded,
+    ] {
+        let mut snapshot = sample_snapshot();
+        snapshot
+            .collaboration
+            .codex_thread_assignments
+            .push(sample_codex_assignment_summary(
+                "thread-1",
+                orcas_core::CodexThreadAssignmentStatus::Active,
+            ));
+        snapshot.collaboration.supervisor_turn_decisions.push(
+            sample_supervisor_turn_decision_summary_with_kind(
+                "thread-1",
+                status,
+                orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn,
+                orcas_core::SupervisorTurnProposalKind::OperatorSteer,
+            ),
+        );
+        let mut harness = AppHarness::new(snapshot).await.unwrap();
+        let initial_command_count = harness.recorded_commands().await.len();
+        harness
+            .dispatch(UserAction::EditPendingSteerForSelectedThread)
+            .await;
+        assert_eq!(
+            harness.recorded_commands().await.len(),
+            initial_command_count
+        );
+        assert!(harness.state().steer_compose.is_none());
+        let banner = harness.state().banner.clone().expect("banner");
+        assert!(
+            banner
+                .message
+                .contains("no editable pending steer decision")
+        );
+    }
+}
+
+#[tokio::test]
+async fn decision_history_includes_superseded_steer_revision_chain() {
+    let mut snapshot = sample_snapshot();
+    snapshot
+        .collaboration
+        .codex_thread_assignments
+        .push(sample_codex_assignment_summary(
+            "thread-1",
+            orcas_core::CodexThreadAssignmentStatus::Active,
+        ));
+    let mut original = sample_supervisor_turn_decision_summary_with_kind(
+        "thread-1",
+        orcas_core::SupervisorTurnDecisionStatus::Superseded,
+        orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn,
+        orcas_core::SupervisorTurnProposalKind::OperatorSteer,
+    );
+    original.decision_id = "std-1".to_string();
+    original.superseded_by = Some("std-2".to_string());
+    original.proposed_text = Some("first steer revision".to_string());
+    let mut replacement = sample_supervisor_turn_decision_summary_with_kind(
+        "thread-1",
+        orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman,
+        orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn,
+        orcas_core::SupervisorTurnProposalKind::OperatorSteer,
+    );
+    replacement.decision_id = "std-2".to_string();
+    replacement.proposed_text = Some("second steer revision".to_string());
+    replacement.created_at = Utc::now() + chrono::TimeDelta::seconds(1);
+    snapshot
+        .collaboration
+        .supervisor_turn_decisions
+        .extend([original, replacement]);
+
+    let harness = AppHarness::new(snapshot).await.unwrap();
+    let detail = harness.thread_detail_vm();
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("Decision History:"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("std-2 [pending steer approval]"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("std-1 [superseded]"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("superseded by std-2"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("text first steer revision"))
     );
 }
 
@@ -1258,7 +1566,7 @@ async fn interrupt_action_is_hidden_for_idle_or_conflicting_thread() {
         !idle_detail
             .lines
             .iter()
-            .any(|line| line.contains("actions: s propose steer  i propose interrupt"))
+            .any(|line| line.contains("actions: s compose steer  i propose interrupt"))
     );
 
     snapshot.threads[0].status = "active".to_string();
@@ -1287,7 +1595,7 @@ async fn interrupt_action_is_hidden_for_idle_or_conflicting_thread() {
         !conflicting_detail
             .lines
             .iter()
-            .any(|line| line.contains("actions: s propose steer  i propose interrupt"))
+            .any(|line| line.contains("actions: s compose steer  i propose interrupt"))
     );
 }
 

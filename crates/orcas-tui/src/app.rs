@@ -91,8 +91,19 @@ pub struct AppState {
     pub collaboration_focus: CollaborationFocus,
     pub recent_events: VecDeque<ipc::EventSummary>,
     pub prompt_in_flight: bool,
+    pub steer_compose: Option<SteerComposeState>,
     pub banner: Option<StatusBanner>,
     pub show_help: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerComposeState {
+    pub assignment_id: String,
+    pub thread_id: String,
+    pub replace_decision_id: Option<String>,
+    pub buffer: String,
+    pub cursor: usize,
+    pub preferred_column: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +148,17 @@ pub enum UserAction {
     PromptBackspace,
     SubmitPrompt,
     ProposeSteerForSelectedThread,
+    EditPendingSteerForSelectedThread,
+    SteerComposeAppend(char),
+    SteerComposeInsertNewline,
+    SteerComposeBackspace,
+    SteerComposeDelete,
+    SteerComposeMoveLeft,
+    SteerComposeMoveRight,
+    SteerComposeMoveUp,
+    SteerComposeMoveDown,
+    SubmitSteerCompose,
+    CancelSteerCompose,
     ProposeInterruptForSelectedThread,
     ApproveSelectedSupervisorDecision,
     RejectSelectedSupervisorDecision,
@@ -166,6 +188,9 @@ pub enum UiEvent {
     PromptStarted {
         thread_id: String,
         turn_id: String,
+    },
+    SteerComposeCommitted {
+        decision_id: String,
     },
     UpstreamChanged(ConnectionState),
     SessionChanged(ipc::SessionState),
@@ -284,15 +309,40 @@ pub enum Effect {
     SubscribeEvents,
     ScheduleReconnect,
     LoadActiveTurns,
-    LoadThread { thread_id: String },
-    AttachThread { thread_id: String },
-    LoadTurnState { thread_id: String, turn_id: String },
-    LoadWorkUnitDetail { work_unit_id: String },
-    SubmitPrompt { thread_id: String, text: String },
-    ProposeSteerDecision { assignment_id: String },
-    ProposeInterruptDecision { assignment_id: String },
-    ApproveSupervisorDecision { decision_id: String },
-    RejectSupervisorDecision { decision_id: String },
+    LoadThread {
+        thread_id: String,
+    },
+    AttachThread {
+        thread_id: String,
+    },
+    LoadTurnState {
+        thread_id: String,
+        turn_id: String,
+    },
+    LoadWorkUnitDetail {
+        work_unit_id: String,
+    },
+    SubmitPrompt {
+        thread_id: String,
+        text: String,
+    },
+    ProposeSteerDecision {
+        assignment_id: String,
+        proposed_text: String,
+    },
+    ReplacePendingSteerDecision {
+        decision_id: String,
+        proposed_text: String,
+    },
+    ProposeInterruptDecision {
+        assignment_id: String,
+    },
+    ApproveSupervisorDecision {
+        decision_id: String,
+    },
+    RejectSupervisorDecision {
+        decision_id: String,
+    },
     LoadModels,
     StartDaemon,
     RestartDaemon,
@@ -432,6 +482,13 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
             Vec::new()
         }
         UserAction::ProposeSteerForSelectedThread => {
+            let Some(thread_id) = state.selected_thread_id.clone() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Selected thread cannot propose a steer right now.".to_string(),
+                });
+                return Vec::new();
+            };
             let Some(assignment_id) = selected_thread_steer_assignment_id(state) else {
                 state.banner = Some(StatusBanner {
                     level: BannerLevel::Warning,
@@ -439,14 +496,157 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 });
                 return Vec::new();
             };
+            state.steer_compose = Some(SteerComposeState {
+                assignment_id: assignment_id.clone(),
+                thread_id,
+                replace_decision_id: None,
+                buffer: String::new(),
+                cursor: 0,
+                preferred_column: 0,
+            });
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
-                message: format!(
-                    "Creating steer proposal for assignment {}...",
-                    assignment_id
-                ),
+                message: "Author multiline steer text. Ctrl+S saves, Esc cancels.".to_string(),
             });
-            vec![Effect::ProposeSteerDecision { assignment_id }]
+            Vec::new()
+        }
+        UserAction::EditPendingSteerForSelectedThread => {
+            let Some(thread_id) = state.selected_thread_id.clone() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Selected thread has no editable pending steer decision.".to_string(),
+                });
+                return Vec::new();
+            };
+            let Some(decision) = selected_thread_pending_steer_decision(state).cloned() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Selected thread has no editable pending steer decision.".to_string(),
+                });
+                return Vec::new();
+            };
+            let buffer = decision.proposed_text.clone().unwrap_or_default();
+            let cursor = buffer.len();
+            let preferred_column = compose_column_at(&buffer, cursor);
+            state.steer_compose = Some(SteerComposeState {
+                assignment_id: decision.assignment_id,
+                thread_id,
+                replace_decision_id: Some(decision.decision_id),
+                buffer,
+                cursor,
+                preferred_column,
+            });
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Edit multiline steer text. Ctrl+S saves, Esc cancels.".to_string(),
+            });
+            Vec::new()
+        }
+        UserAction::SteerComposeAppend(ch) => {
+            let Some(compose) = state.steer_compose.as_mut() else {
+                return Vec::new();
+            };
+            steer_compose_insert(compose, ch);
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeInsertNewline => {
+            let Some(compose) = state.steer_compose.as_mut() else {
+                return Vec::new();
+            };
+            steer_compose_insert(compose, '\n');
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeBackspace => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_backspace(compose);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeDelete => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_delete(compose);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeMoveLeft => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_move_left(compose);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeMoveRight => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_move_right(compose);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeMoveUp => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_move_vertical(compose, -1);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SteerComposeMoveDown => {
+            if let Some(compose) = state.steer_compose.as_mut() {
+                steer_compose_move_vertical(compose, 1);
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SubmitSteerCompose => {
+            let Some(compose) = state.steer_compose.as_ref() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "No steer proposal is being edited.".to_string(),
+                });
+                return Vec::new();
+            };
+            let proposed_text = compose.buffer.trim().to_string();
+            if proposed_text.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Steer text must not be empty.".to_string(),
+                });
+                return Vec::new();
+            }
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: if let Some(decision_id) = compose.replace_decision_id.as_ref() {
+                    format!("Replacing pending steer proposal {}...", decision_id)
+                } else {
+                    format!(
+                        "Creating steer proposal for assignment {}...",
+                        compose.assignment_id
+                    )
+                },
+            });
+            if let Some(decision_id) = compose.replace_decision_id.clone() {
+                vec![Effect::ReplacePendingSteerDecision {
+                    decision_id,
+                    proposed_text,
+                }]
+            } else {
+                vec![Effect::ProposeSteerDecision {
+                    assignment_id: compose.assignment_id.clone(),
+                    proposed_text,
+                }]
+            }
+        }
+        UserAction::CancelSteerCompose => {
+            if state.steer_compose.take().is_some() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Info,
+                    message: "Cancelled steer text editing.".to_string(),
+                });
+            }
+            Vec::new()
         }
         UserAction::ProposeInterruptForSelectedThread => {
             let Some(assignment_id) = selected_thread_interrupt_assignment_id(state) else {
@@ -646,6 +846,13 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 message: "Prompt submitted.".to_string(),
             });
             effects.push(Effect::LoadTurnState { thread_id, turn_id });
+        }
+        UiEvent::SteerComposeCommitted { .. } => {
+            state.steer_compose = None;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Steer proposal saved for review.".to_string(),
+            });
         }
         UiEvent::ModelsLoaded(models) => {
             state.daemon_models = models;
@@ -1167,6 +1374,127 @@ fn refresh_prompt_in_flight(state: &mut AppState) {
     };
 }
 
+fn steer_compose_insert(compose: &mut SteerComposeState, ch: char) {
+    compose.buffer.insert(compose.cursor, ch);
+    compose.cursor += ch.len_utf8();
+    compose.preferred_column = compose_column_at(&compose.buffer, compose.cursor);
+}
+
+fn steer_compose_backspace(compose: &mut SteerComposeState) {
+    if compose.cursor == 0 {
+        return;
+    }
+    let previous = previous_char_boundary(&compose.buffer, compose.cursor);
+    compose.buffer.drain(previous..compose.cursor);
+    compose.cursor = previous;
+    compose.preferred_column = compose_column_at(&compose.buffer, compose.cursor);
+}
+
+fn steer_compose_delete(compose: &mut SteerComposeState) {
+    if compose.cursor >= compose.buffer.len() {
+        return;
+    }
+    let next = next_char_boundary(&compose.buffer, compose.cursor);
+    compose.buffer.drain(compose.cursor..next);
+    compose.preferred_column = compose_column_at(&compose.buffer, compose.cursor);
+}
+
+fn steer_compose_move_left(compose: &mut SteerComposeState) {
+    if compose.cursor == 0 {
+        return;
+    }
+    compose.cursor = previous_char_boundary(&compose.buffer, compose.cursor);
+    compose.preferred_column = compose_column_at(&compose.buffer, compose.cursor);
+}
+
+fn steer_compose_move_right(compose: &mut SteerComposeState) {
+    if compose.cursor >= compose.buffer.len() {
+        return;
+    }
+    compose.cursor = next_char_boundary(&compose.buffer, compose.cursor);
+    compose.preferred_column = compose_column_at(&compose.buffer, compose.cursor);
+}
+
+fn steer_compose_move_vertical(compose: &mut SteerComposeState, delta: isize) {
+    let lines = compose.buffer.split('\n').collect::<Vec<_>>();
+    let (line_index, _, _) = compose_line_column_position(&compose.buffer, compose.cursor);
+    let target_line_index = if delta.is_negative() {
+        line_index.saturating_sub(delta.unsigned_abs())
+    } else {
+        (line_index + delta as usize).min(lines.len().saturating_sub(1))
+    };
+    if target_line_index == line_index {
+        return;
+    }
+    let target_column = compose
+        .preferred_column
+        .min(lines[target_line_index].chars().count());
+    compose.cursor = cursor_for_line_column(&compose.buffer, target_line_index, target_column);
+}
+
+fn previous_char_boundary(buffer: &str, cursor: usize) -> usize {
+    buffer[..cursor]
+        .char_indices()
+        .next_back()
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(buffer: &str, cursor: usize) -> usize {
+    let slice = &buffer[cursor..];
+    slice
+        .chars()
+        .next()
+        .map(|ch| cursor + ch.len_utf8())
+        .unwrap_or(cursor)
+}
+
+fn compose_column_at(buffer: &str, cursor: usize) -> usize {
+    let (_, column, _) = compose_line_column_position(buffer, cursor);
+    column
+}
+
+fn compose_line_column_position(buffer: &str, cursor: usize) -> (usize, usize, usize) {
+    let mut line_index = 0usize;
+    let mut column = 0usize;
+    let mut line_start = 0usize;
+    for (index, ch) in buffer.char_indices() {
+        if index >= cursor {
+            break;
+        }
+        if ch == '\n' {
+            line_index += 1;
+            column = 0;
+            line_start = index + ch.len_utf8();
+        } else {
+            column += 1;
+        }
+    }
+    (line_index, column, line_start)
+}
+
+fn cursor_for_line_column(buffer: &str, target_line_index: usize, target_column: usize) -> usize {
+    let mut line_index = 0usize;
+    let mut line_start = 0usize;
+    for (index, ch) in buffer.char_indices() {
+        if line_index == target_line_index {
+            break;
+        }
+        if ch == '\n' {
+            line_index += 1;
+            line_start = index + ch.len_utf8();
+        }
+    }
+    if line_index != target_line_index {
+        return buffer.len();
+    }
+    let line = buffer[line_start..].split('\n').next().unwrap_or_default();
+    line.char_indices()
+        .nth(target_column)
+        .map(|(offset, _)| line_start + offset)
+        .unwrap_or(line_start + line.len())
+}
+
 fn is_daemon_action_in_flight(state: &AppState) -> bool {
     matches!(
         state.daemon_lifecycle,
@@ -1418,6 +1746,13 @@ fn selected_thread_pending_supervisor_decision(
         })
 }
 
+fn selected_thread_pending_steer_decision(
+    state: &AppState,
+) -> Option<&ipc::SupervisorTurnDecisionSummary> {
+    selected_thread_pending_supervisor_decision(state)
+        .filter(|decision| decision.kind == orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn)
+}
+
 fn selected_thread_interrupt_assignment_id(state: &AppState) -> Option<String> {
     let thread_id = state.selected_thread_id.as_deref()?;
     let assignment = state
@@ -1558,6 +1893,7 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
             Some(thread_id.clone()),
             Some(turn_id.clone()),
         ),
+        UiEvent::SteerComposeCommitted { .. } => return None,
         UiEvent::ModelsLoaded(_) => return None,
         UiEvent::DaemonStarted { .. } => return None,
         UiEvent::DaemonStopped { .. } => return None,

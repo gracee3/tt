@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -69,7 +69,7 @@ async fn run_app(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if handle_key(runtime, key.code).await {
+                if handle_key(runtime, key).await {
                     break;
                 }
             }
@@ -79,17 +79,17 @@ async fn run_app(
     Ok(())
 }
 
-async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode) -> bool {
+async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, key: KeyEvent) -> bool {
     debug!(
-        key = ?code,
+        key = ?key,
         current_view = ?runtime.state().current_view,
         "received key in tui"
     );
-    if code == KeyCode::Char('q') {
+    if key.code == KeyCode::Char('q') && runtime.state().steer_compose.is_none() {
         return true;
     }
 
-    let action = action_for_key(runtime.state().current_view, code);
+    let action = action_for_key(runtime.state(), key);
 
     if let Some(action) = action {
         info!(?action, "dispatching tui action");
@@ -98,10 +98,29 @@ async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, code: KeyCode)
     false
 }
 
-fn action_for_key(current_view: TopLevelView, code: KeyCode) -> Option<UserAction> {
+fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<UserAction> {
+    if state.steer_compose.is_some() {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(UserAction::CancelSteerCompose),
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(UserAction::SubmitSteerCompose),
+            (KeyCode::Enter, _) => Some(UserAction::SteerComposeInsertNewline),
+            (KeyCode::Backspace, _) => Some(UserAction::SteerComposeBackspace),
+            (KeyCode::Delete, _) => Some(UserAction::SteerComposeDelete),
+            (KeyCode::Left, _) => Some(UserAction::SteerComposeMoveLeft),
+            (KeyCode::Right, _) => Some(UserAction::SteerComposeMoveRight),
+            (KeyCode::Up, _) => Some(UserAction::SteerComposeMoveUp),
+            (KeyCode::Down, _) => Some(UserAction::SteerComposeMoveDown),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(UserAction::SteerComposeAppend(ch))
+            }
+            _ => None,
+        };
+    }
+
+    let current_view = state.current_view;
     let in_supervisor_view = current_view == TopLevelView::Supervisor;
     let in_threads_view = current_view == TopLevelView::Threads;
-    match code {
+    match key.code {
         KeyCode::Char('r') => Some(UserAction::Refresh),
         KeyCode::Char('?') => Some(UserAction::ToggleHelp),
         KeyCode::Char('1') => Some(UserAction::ShowView(TopLevelView::Overview)),
@@ -117,6 +136,9 @@ fn action_for_key(current_view: TopLevelView, code: KeyCode) -> Option<UserActio
         }
         KeyCode::Char('d') if in_threads_view => Some(UserAction::RejectSelectedSupervisorDecision),
         KeyCode::Char('s') if in_threads_view => Some(UserAction::ProposeSteerForSelectedThread),
+        KeyCode::Char('e') if in_threads_view => {
+            Some(UserAction::EditPendingSteerForSelectedThread)
+        }
         KeyCode::Char('i') if in_threads_view => {
             Some(UserAction::ProposeInterruptForSelectedThread)
         }
@@ -134,24 +156,27 @@ fn action_for_key(current_view: TopLevelView, code: KeyCode) -> Option<UserActio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
     fn left_and_right_cycle_top_level_views() {
         assert_eq!(
-            action_for_key(TopLevelView::Overview, KeyCode::Right),
+            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Right)),
             Some(UserAction::ShowView(TopLevelView::Threads))
         );
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Right),
+            action_for_key(&state_for_view(TopLevelView::Threads), key(KeyCode::Right)),
             Some(UserAction::ShowView(TopLevelView::Collaboration))
         );
         assert_eq!(
-            action_for_key(TopLevelView::Collaboration, KeyCode::Left),
+            action_for_key(
+                &state_for_view(TopLevelView::Collaboration),
+                key(KeyCode::Left)
+            ),
             Some(UserAction::ShowView(TopLevelView::Threads))
         );
         assert_eq!(
-            action_for_key(TopLevelView::Overview, KeyCode::Left),
+            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Left)),
             Some(UserAction::ShowView(TopLevelView::Supervisor))
         );
     }
@@ -159,32 +184,47 @@ mod tests {
     #[test]
     fn arrow_keys_drive_selection_and_tab_switches_collaboration_focus() {
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Down),
+            action_for_key(&state_for_view(TopLevelView::Threads), key(KeyCode::Down)),
             Some(UserAction::SelectNextInView)
         );
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Up),
+            action_for_key(&state_for_view(TopLevelView::Threads), key(KeyCode::Up)),
             Some(UserAction::SelectPreviousInView)
         );
         assert_eq!(
-            action_for_key(TopLevelView::Collaboration, KeyCode::Tab),
+            action_for_key(
+                &state_for_view(TopLevelView::Collaboration),
+                key(KeyCode::Tab)
+            ),
             Some(UserAction::CycleCollaborationFocus)
         );
-        assert_eq!(action_for_key(TopLevelView::Supervisor, KeyCode::Tab), None);
+        assert_eq!(
+            action_for_key(&state_for_view(TopLevelView::Supervisor), key(KeyCode::Tab)),
+            None
+        );
     }
 
     #[test]
     fn legacy_j_k_h_l_keys_are_not_mapped_anymore() {
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Char('j')),
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('j'))
+            ),
             None
         );
         assert_eq!(
-            action_for_key(TopLevelView::Collaboration, KeyCode::Char('h')),
+            action_for_key(
+                &state_for_view(TopLevelView::Collaboration),
+                key(KeyCode::Char('h'))
+            ),
             None
         );
         assert_eq!(
-            action_for_key(TopLevelView::Collaboration, KeyCode::Char('l')),
+            action_for_key(
+                &state_for_view(TopLevelView::Collaboration),
+                key(KeyCode::Char('l'))
+            ),
             None
         );
     }
@@ -192,20 +232,95 @@ mod tests {
     #[test]
     fn threads_view_maps_supervisor_review_actions() {
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Char('a')),
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('a'))
+            ),
             Some(UserAction::ApproveSelectedSupervisorDecision)
         );
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Char('d')),
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('d'))
+            ),
             Some(UserAction::RejectSelectedSupervisorDecision)
         );
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Char('s')),
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('s'))
+            ),
             Some(UserAction::ProposeSteerForSelectedThread)
         );
         assert_eq!(
-            action_for_key(TopLevelView::Threads, KeyCode::Char('i')),
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('e'))
+            ),
+            Some(UserAction::EditPendingSteerForSelectedThread)
+        );
+        assert_eq!(
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('i'))
+            ),
             Some(UserAction::ProposeInterruptForSelectedThread)
         );
+    }
+
+    #[test]
+    fn steer_compose_mode_captures_text_keys() {
+        let mut state = state_for_view(TopLevelView::Threads);
+        state.steer_compose = Some(orcas_tui::app::SteerComposeState {
+            assignment_id: "cta-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            replace_decision_id: None,
+            buffer: String::new(),
+            cursor: 0,
+            preferred_column: 0,
+        });
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Char('x'))),
+            Some(UserAction::SteerComposeAppend('x'))
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Backspace)),
+            Some(UserAction::SteerComposeBackspace)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Enter)),
+            Some(UserAction::SteerComposeInsertNewline)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Esc)),
+            Some(UserAction::CancelSteerCompose)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Delete)),
+            Some(UserAction::SteerComposeDelete)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Left)),
+            Some(UserAction::SteerComposeMoveLeft)
+        );
+        assert_eq!(
+            action_for_key(&state, ctrl_key('s')),
+            Some(UserAction::SubmitSteerCompose)
+        );
+    }
+
+    fn state_for_view(view: TopLevelView) -> orcas_tui::app::AppState {
+        orcas_tui::app::AppState {
+            current_view: view,
+            ..Default::default()
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 }

@@ -12,19 +12,44 @@ use orcas_daemon::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCommand {
-    GetThread { thread_id: String },
-    AttachThread { thread_id: String },
-    GetTurn { thread_id: String, turn_id: String },
-    GetWorkUnit { work_unit_id: String },
+    GetThread {
+        thread_id: String,
+    },
+    AttachThread {
+        thread_id: String,
+    },
+    GetTurn {
+        thread_id: String,
+        turn_id: String,
+    },
+    GetWorkUnit {
+        work_unit_id: String,
+    },
     GetActiveTurns,
     LoadModels,
     StartDaemon,
     StopDaemon,
-    SubmitPrompt { thread_id: String, text: String },
-    ProposeSteerSupervisorDecision { assignment_id: String },
-    ProposeInterruptSupervisorDecision { assignment_id: String },
-    ApproveSupervisorDecision { decision_id: String },
-    RejectSupervisorDecision { decision_id: String },
+    SubmitPrompt {
+        thread_id: String,
+        text: String,
+    },
+    ProposeSteerSupervisorDecision {
+        assignment_id: String,
+        proposed_text: String,
+    },
+    ReplacePendingSteerSupervisorDecision {
+        decision_id: String,
+        proposed_text: String,
+    },
+    ProposeInterruptSupervisorDecision {
+        assignment_id: String,
+    },
+    ApproveSupervisorDecision {
+        decision_id: String,
+    },
+    RejectSupervisorDecision {
+        decision_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -207,21 +232,38 @@ impl OrcasDaemonBackend {
                     turn_id: response.turn_id,
                 })
             }
-            BackendCommand::ProposeSteerSupervisorDecision { assignment_id } => {
-                Ok(BackendCommandResult::SupervisorDecision(
-                    client
-                        .supervisor_decision_propose_steer(
-                            &ipc::SupervisorDecisionProposeSteerRequest {
-                                assignment_id,
-                                requested_by: Some("tui_operator".to_string()),
-                                proposed_text: None,
-                                rationale_note: None,
-                            },
-                        )
-                        .await?
-                        .decision,
-                ))
-            }
+            BackendCommand::ProposeSteerSupervisorDecision {
+                assignment_id,
+                proposed_text,
+            } => Ok(BackendCommandResult::SupervisorDecision(
+                client
+                    .supervisor_decision_propose_steer(
+                        &ipc::SupervisorDecisionProposeSteerRequest {
+                            assignment_id,
+                            requested_by: Some("tui_operator".to_string()),
+                            proposed_text: Some(proposed_text),
+                            rationale_note: None,
+                        },
+                    )
+                    .await?
+                    .decision,
+            )),
+            BackendCommand::ReplacePendingSteerSupervisorDecision {
+                decision_id,
+                proposed_text,
+            } => Ok(BackendCommandResult::SupervisorDecision(
+                client
+                    .supervisor_decision_replace_pending_steer(
+                        &ipc::SupervisorDecisionReplacePendingSteerRequest {
+                            decision_id,
+                            requested_by: Some("tui_operator".to_string()),
+                            proposed_text,
+                            rationale_note: None,
+                        },
+                    )
+                    .await?
+                    .decision,
+            )),
             BackendCommand::ProposeInterruptSupervisorDecision { assignment_id } => {
                 Ok(BackendCommandResult::SupervisorDecision(
                     client
@@ -579,7 +621,14 @@ impl TuiBackend for FakeBackend {
                 guard.active_turns.push(turn);
                 Ok(BackendCommandResult::PromptStarted { thread_id, turn_id })
             }
-            BackendCommand::ProposeSteerSupervisorDecision { assignment_id } => {
+            BackendCommand::ProposeSteerSupervisorDecision {
+                assignment_id,
+                proposed_text,
+            } => {
+                let trimmed_text = proposed_text.trim();
+                if trimmed_text.is_empty() {
+                    return Err(anyhow!("steer proposal requires non-empty proposed_text"));
+                }
                 let assignment_index = guard
                     .snapshot
                     .collaboration
@@ -623,10 +672,7 @@ impl TuiBackend for FakeBackend {
                     basis_turn_id: Some(active_turn_id.clone()),
                     kind: orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn,
                     proposal_kind: orcas_core::SupervisorTurnProposalKind::OperatorSteer,
-                    proposed_text: Some(format!(
-                        "Continue the active turn for work unit `{}` with the next bounded step already in progress. Briefly call out blockers before broadening scope.",
-                        assignment_snapshot.work_unit_id
-                    )),
+                    proposed_text: Some(trimmed_text.to_string()),
                     rationale_summary: format!(
                         "Operator requested review of steering active turn `{active_turn_id}`."
                     ),
@@ -674,6 +720,126 @@ impl TuiBackend for FakeBackend {
                         superseded_by: decision.superseded_by,
                         sent_turn_id: decision.sent_turn_id,
                         notes: decision.notes,
+                    },
+                ))
+            }
+            BackendCommand::ReplacePendingSteerSupervisorDecision {
+                decision_id,
+                proposed_text,
+            } => {
+                let decision_index = guard
+                    .snapshot
+                    .collaboration
+                    .supervisor_turn_decisions
+                    .iter()
+                    .position(|decision| decision.decision_id == decision_id)
+                    .ok_or_else(|| anyhow!("unknown supervisor decision `{decision_id}`"))?;
+                let existing =
+                    guard.snapshot.collaboration.supervisor_turn_decisions[decision_index].clone();
+                if existing.kind != orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn {
+                    return Err(anyhow!(
+                        "supervisor decision `{decision_id}` is not a steer decision"
+                    ));
+                }
+                if existing.status != orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman {
+                    return Err(anyhow!(
+                        "supervisor decision `{decision_id}` is no longer editable"
+                    ));
+                }
+                let trimmed_text = proposed_text.trim();
+                if trimmed_text.is_empty() {
+                    return Err(anyhow!(
+                        "pending steer replacement requires non-empty proposed_text"
+                    ));
+                }
+                if guard
+                    .snapshot
+                    .threads
+                    .iter()
+                    .find(|thread| thread.id == existing.codex_thread_id)
+                    .and_then(|thread| thread.active_turn_id.as_deref())
+                    != existing.basis_turn_id.as_deref()
+                {
+                    let existing_decision = guard
+                        .snapshot
+                        .collaboration
+                        .supervisor_turn_decisions
+                        .get_mut(decision_index)
+                        .expect("existing decision");
+                    existing_decision.status = orcas_core::SupervisorTurnDecisionStatus::Stale;
+                    existing_decision.open = false;
+                    return Err(anyhow!(
+                        "steer decision `{decision_id}` became stale: active turn changed"
+                    ));
+                }
+                let replacement_id = format!("std-{}", guard.next_submit_id);
+                guard.next_submit_id += 1;
+                let now = chrono::Utc::now();
+                let existing_decision = guard
+                    .snapshot
+                    .collaboration
+                    .supervisor_turn_decisions
+                    .get_mut(decision_index)
+                    .expect("existing decision");
+                existing_decision.status = orcas_core::SupervisorTurnDecisionStatus::Superseded;
+                existing_decision.superseded_by = Some(replacement_id.clone());
+                existing_decision.open = false;
+                let replacement = ipc::SupervisorTurnDecisionSummary {
+                    decision_id: replacement_id.clone(),
+                    assignment_id: existing.assignment_id.clone(),
+                    codex_thread_id: existing.codex_thread_id.clone(),
+                    basis_turn_id: existing.basis_turn_id.clone(),
+                    kind: orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn,
+                    proposal_kind: orcas_core::SupervisorTurnProposalKind::OperatorSteer,
+                    proposed_text: Some(trimmed_text.to_string()),
+                    rationale_summary: "Operator revised the pending steer guidance.".to_string(),
+                    status: orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman,
+                    created_at: now,
+                    approved_at: None,
+                    rejected_at: None,
+                    sent_at: None,
+                    superseded_by: None,
+                    sent_turn_id: None,
+                    notes: Some(format!(
+                        "steer text replaced from prior decision {} by tui_operator",
+                        decision_id
+                    )),
+                    open: true,
+                };
+                if let Some(assignment) = guard
+                    .snapshot
+                    .collaboration
+                    .codex_thread_assignments
+                    .iter_mut()
+                    .find(|assignment| assignment.assignment_id == existing.assignment_id)
+                {
+                    assignment.latest_decision_id = Some(replacement_id);
+                    assignment.latest_basis_turn_id = existing.basis_turn_id.clone();
+                    assignment.updated_at = now;
+                }
+                guard
+                    .snapshot
+                    .collaboration
+                    .supervisor_turn_decisions
+                    .push(replacement.clone());
+                Ok(BackendCommandResult::SupervisorDecision(
+                    SupervisorTurnDecision {
+                        decision_id: replacement.decision_id,
+                        assignment_id: replacement.assignment_id,
+                        codex_thread_id: replacement.codex_thread_id,
+                        basis_turn_id: replacement.basis_turn_id,
+                        kind: replacement.kind,
+                        proposal_kind: replacement.proposal_kind,
+                        proposed_text: replacement.proposed_text,
+                        rationale_summary: replacement.rationale_summary,
+                        status: replacement.status,
+                        created_at: replacement.created_at,
+                        approved_at: replacement.approved_at,
+                        rejected_at: replacement.rejected_at,
+                        sent_at: replacement.sent_at,
+                        superseded_by: replacement.superseded_by,
+                        sent_turn_id: replacement.sent_turn_id,
+                        notes: replacement.notes,
                     },
                 ))
             }

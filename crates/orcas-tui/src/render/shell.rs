@@ -141,7 +141,7 @@ pub(super) fn render_footer(state: &AppState, compact: bool) -> Paragraph<'stati
             spans.push(Span::styled("tab", key_hint_style()));
             spans.push(Span::styled(" focus  ", metadata_style()));
         }
-        spans.extend(key_bindings_hint(state.current_view));
+        spans.extend(key_bindings_hint(state));
         spans.push(Span::styled(" ", metadata_style()));
         spans.push(Span::styled("? help", key_hint_style()));
         spans.push(Span::styled("  ", metadata_style()));
@@ -197,7 +197,7 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
     match view {
         TopLevelView::Overview => "nav: left/right views  r refresh  ? help  q quit",
         TopLevelView::Threads => {
-            "nav: left/right views  up/down thread selection  s propose steer  i propose interrupt  a approve/send  d reject  r refresh  ? help  q quit"
+            "nav: left/right views  up/down thread selection  s compose steer  e edit steer  i propose interrupt  a approve/send  d reject  r refresh  ? help  q quit"
         }
         TopLevelView::Collaboration => {
             "nav: left/right views  tab switch workstreams/work_units  up/down move selection  r refresh  ? help  q quit"
@@ -211,19 +211,35 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
 fn help_navigation_line_compact(view: TopLevelView) -> &'static str {
     match view {
         TopLevelView::Overview => "nav: left/right  r",
-        TopLevelView::Threads => "nav: left/right  up/down  s/i/a/d  r",
+        TopLevelView::Threads => "nav: left/right  up/down  s/e/i/a/d  r",
         TopLevelView::Collaboration => "nav: left/right  tab focus  up/down  r",
         TopLevelView::Supervisor => "nav: left/right  m/s/x/R  r",
     }
 }
 
-fn key_bindings_hint(view: TopLevelView) -> Vec<Span<'static>> {
-    match view {
+fn key_bindings_hint(state: &AppState) -> Vec<Span<'static>> {
+    match state.current_view {
         TopLevelView::Overview => action_hint("r", "refresh"),
         TopLevelView::Threads => {
+            if state.steer_compose.is_some() {
+                let mut spans = action_hint("type", "edit steer text");
+                spans.push(Span::styled("  ", metadata_style()));
+                spans.extend(action_hint("enter", "newline"));
+                spans.push(Span::styled("  ", metadata_style()));
+                spans.extend(action_hint("ctrl+s", "save steer"));
+                spans.push(Span::styled("  ", metadata_style()));
+                spans.extend(action_hint("arrows", "move cursor"));
+                spans.push(Span::styled("  ", metadata_style()));
+                spans.extend(action_hint("esc", "cancel"));
+                spans.push(Span::styled("  ", metadata_style()));
+                spans.extend(action_hint("backspace/del", "delete"));
+                return spans;
+            }
             let mut spans = action_hint("up/down", "thread selection");
             spans.push(Span::styled("  ", metadata_style()));
-            spans.extend(action_hint("s", "propose steer"));
+            spans.extend(action_hint("s", "compose steer"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("e", "edit steer"));
             spans.push(Span::styled("  ", metadata_style()));
             spans.extend(action_hint("i", "propose interrupt"));
             spans.push(Span::styled("  ", metadata_style()));

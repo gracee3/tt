@@ -59,6 +59,8 @@ pub mod methods {
     pub const SUPERVISOR_DECISION_LIST: &str = "supervisor_decision/list";
     pub const SUPERVISOR_DECISION_GET: &str = "supervisor_decision/get";
     pub const SUPERVISOR_DECISION_PROPOSE_STEER: &str = "supervisor_decision/propose_steer";
+    pub const SUPERVISOR_DECISION_REPLACE_PENDING_STEER: &str =
+        "supervisor_decision/replace_pending_steer";
     pub const SUPERVISOR_DECISION_PROPOSE_INTERRUPT: &str = "supervisor_decision/propose_interrupt";
     pub const SUPERVISOR_DECISION_APPROVE_AND_SEND: &str = "supervisor_decision/approve_and_send";
     pub const SUPERVISOR_DECISION_REJECT: &str = "supervisor_decision/reject";
@@ -1082,6 +1084,20 @@ pub struct SupervisorDecisionProposeSteerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorDecisionProposeSteerResponse {
+    pub decision: SupervisorTurnDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorDecisionReplacePendingSteerRequest {
+    pub decision_id: String,
+    pub requested_by: Option<String>,
+    pub proposed_text: String,
+    #[serde(default)]
+    pub rationale_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorDecisionReplacePendingSteerResponse {
     pub decision: SupervisorTurnDecision,
 }
 

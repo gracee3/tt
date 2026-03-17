@@ -605,6 +605,14 @@ impl OrcasDaemonService {
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.supervisor_decision_propose_steer(params).await?)?
             }
+            ipc::methods::SUPERVISOR_DECISION_REPLACE_PENDING_STEER => {
+                let params: ipc::SupervisorDecisionReplacePendingSteerRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(
+                    self.supervisor_decision_replace_pending_steer(params)
+                        .await?,
+                )?
+            }
             ipc::methods::SUPERVISOR_DECISION_PROPOSE_INTERRUPT => {
                 let params: ipc::SupervisorDecisionProposeInterruptRequest =
                     Self::decode_params(request.params.clone())?;
@@ -2414,18 +2422,17 @@ impl OrcasDaemonService {
                 .workstreams
                 .get(&assignment.workstream_id);
             let work_unit = state.collaboration.work_units.get(&assignment.work_unit_id);
-            let proposed_text = match params.proposed_text.as_ref() {
-                Some(text) => {
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        return Err(OrcasError::Protocol(
-                            "steer proposal requires non-empty proposed_text".to_string(),
-                        ));
-                    }
-                    trimmed.to_string()
-                }
-                None => Self::generate_steer_turn_text(&assignment, workstream, work_unit),
-            };
+            let proposed_text = params
+                .proposed_text
+                .as_ref()
+                .map(|text| text.trim())
+                .filter(|text| !text.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(
+                        "steer proposal requires non-empty proposed_text".to_string(),
+                    )
+                })?;
             let workstream_title = workstream
                 .map(|workstream| workstream.title.clone())
                 .unwrap_or_else(|| assignment.workstream_id.clone());
@@ -2492,6 +2499,233 @@ impl OrcasDaemonService {
         )
         .await;
         Ok(ipc::SupervisorDecisionProposeSteerResponse { decision })
+    }
+
+    async fn supervisor_decision_replace_pending_steer(
+        &self,
+        params: ipc::SupervisorDecisionReplacePendingSteerRequest,
+    ) -> OrcasResult<ipc::SupervisorDecisionReplacePendingSteerResponse> {
+        let proposed_text = params.proposed_text.trim();
+        if proposed_text.is_empty() {
+            return Err(OrcasError::Protocol(
+                "pending steer replacement requires non-empty proposed_text".to_string(),
+            ));
+        }
+
+        let requested_by = params
+            .requested_by
+            .clone()
+            .unwrap_or_else(|| "orcas_operator".to_string());
+
+        enum ReplacePendingSteerOutcome {
+            Replaced {
+                superseded: SupervisorTurnDecision,
+                replacement: SupervisorTurnDecision,
+                updated_assignment: Option<CodexThreadAssignment>,
+            },
+            Stale {
+                decision: SupervisorTurnDecision,
+                reason: String,
+            },
+        }
+
+        let outcome = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            let existing = state
+                .collaboration
+                .supervisor_turn_decisions
+                .get(&params.decision_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown supervisor decision `{}`",
+                        params.decision_id
+                    ))
+                })?;
+            if existing.kind != SupervisorTurnDecisionKind::SteerActiveTurn {
+                return Err(OrcasError::Protocol(format!(
+                    "supervisor decision `{}` is not a steer decision",
+                    existing.decision_id
+                )));
+            }
+            if existing.status != SupervisorTurnDecisionStatus::ProposedToHuman {
+                return Err(OrcasError::Protocol(format!(
+                    "supervisor decision `{}` is no longer editable",
+                    existing.decision_id
+                )));
+            }
+
+            let assignment = state
+                .collaboration
+                .codex_thread_assignments
+                .get(&existing.assignment_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "assignment `{}` no longer exists",
+                        existing.assignment_id
+                    ))
+                })?;
+            let thread = state
+                .threads
+                .get(&existing.codex_thread_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "thread `{}` is not loaded in Orcas state",
+                        existing.codex_thread_id
+                    ))
+                })?;
+            if let Some(reason) = Self::steer_decision_basis_reason(&assignment, &thread, &existing)
+            {
+                let stale = {
+                    let decision = state
+                        .collaboration
+                        .supervisor_turn_decisions
+                        .get_mut(&existing.decision_id)
+                        .expect("decision exists");
+                    decision.status = SupervisorTurnDecisionStatus::Stale;
+                    Self::merge_assignment_notes(
+                        &mut decision.notes,
+                        Some(format!(
+                            "pending steer edit rejected because the decision became stale: {reason}"
+                        )),
+                    );
+                    decision.clone()
+                };
+                ReplacePendingSteerOutcome::Stale {
+                    decision: stale,
+                    reason,
+                }
+            } else {
+                let workstream_title = state
+                    .collaboration
+                    .workstreams
+                    .get(&assignment.workstream_id)
+                    .map(|workstream| workstream.title.clone())
+                    .unwrap_or_else(|| assignment.workstream_id.clone());
+                let work_unit_title = state
+                    .collaboration
+                    .work_units
+                    .get(&assignment.work_unit_id)
+                    .map(|work_unit| work_unit.title.clone())
+                    .unwrap_or_else(|| assignment.work_unit_id.clone());
+                let rationale_summary = params
+                    .rationale_note
+                    .as_ref()
+                    .map(|note| note.trim())
+                    .filter(|note| !note.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Operator `{requested_by}` revised steer guidance for active turn `{}` on assigned workstream `{}` and work unit `{}`.",
+                            existing.basis_turn_id.as_deref().unwrap_or("-"),
+                            workstream_title,
+                            work_unit_title
+                        )
+                    });
+                let new_decision_id = Self::new_object_id("std");
+                let superseded = {
+                    let decision = state
+                        .collaboration
+                        .supervisor_turn_decisions
+                        .get_mut(&existing.decision_id)
+                        .expect("decision exists");
+                    decision.status = SupervisorTurnDecisionStatus::Superseded;
+                    decision.superseded_by = Some(new_decision_id.clone());
+                    Self::merge_assignment_notes(
+                        &mut decision.notes,
+                        Some(format!(
+                            "superseded by updated steer text from {requested_by}"
+                        )),
+                    );
+                    decision.clone()
+                };
+                let replacement = SupervisorTurnDecision {
+                    decision_id: new_decision_id.clone(),
+                    assignment_id: existing.assignment_id.clone(),
+                    codex_thread_id: existing.codex_thread_id.clone(),
+                    basis_turn_id: existing.basis_turn_id.clone(),
+                    kind: SupervisorTurnDecisionKind::SteerActiveTurn,
+                    proposal_kind: SupervisorTurnProposalKind::OperatorSteer,
+                    proposed_text: Some(proposed_text.to_string()),
+                    rationale_summary,
+                    status: SupervisorTurnDecisionStatus::ProposedToHuman,
+                    created_at: now,
+                    approved_at: None,
+                    rejected_at: None,
+                    sent_at: None,
+                    superseded_by: None,
+                    sent_turn_id: None,
+                    notes: Some(format!(
+                        "steer text replaced from prior decision {} by {requested_by}",
+                        existing.decision_id
+                    )),
+                };
+                state
+                    .collaboration
+                    .supervisor_turn_decisions
+                    .insert(replacement.decision_id.clone(), replacement.clone());
+                let updated_assignment = state
+                    .collaboration
+                    .codex_thread_assignments
+                    .get_mut(&existing.assignment_id)
+                    .map(|assignment| {
+                        assignment.latest_decision_id = Some(replacement.decision_id.clone());
+                        assignment.latest_basis_turn_id = replacement.basis_turn_id.clone();
+                        assignment.updated_at = now;
+                        assignment.clone()
+                    });
+                ReplacePendingSteerOutcome::Replaced {
+                    superseded,
+                    replacement,
+                    updated_assignment,
+                }
+            }
+        };
+
+        match outcome {
+            ReplacePendingSteerOutcome::Replaced {
+                superseded,
+                replacement,
+                updated_assignment,
+            } => {
+                self.persist_collaboration_state().await?;
+                if let Some(assignment) = updated_assignment.as_ref() {
+                    self.emit_codex_assignment_lifecycle(
+                        ipc::CodexAssignmentLifecycleAction::Updated,
+                        assignment,
+                    )
+                    .await;
+                }
+                self.emit_supervisor_decision_lifecycle(
+                    ipc::SupervisorDecisionLifecycleAction::Superseded,
+                    &superseded,
+                )
+                .await;
+                self.emit_supervisor_decision_lifecycle(
+                    ipc::SupervisorDecisionLifecycleAction::Created,
+                    &replacement,
+                )
+                .await;
+                Ok(ipc::SupervisorDecisionReplacePendingSteerResponse {
+                    decision: replacement,
+                })
+            }
+            ReplacePendingSteerOutcome::Stale { decision, reason } => {
+                self.persist_collaboration_state().await?;
+                self.emit_supervisor_decision_lifecycle(
+                    ipc::SupervisorDecisionLifecycleAction::Stale,
+                    &decision,
+                )
+                .await;
+                Err(OrcasError::Protocol(format!(
+                    "steer decision `{}` became stale: {reason}",
+                    decision.decision_id
+                )))
+            }
+        }
     }
 
     async fn supervisor_decision_propose_interrupt(
@@ -5119,24 +5353,6 @@ Then continue with the next bounded step for this assigned work unit."
 Briefly summarize what the prior turn completed{basis_clause}.\n\
 State the next bounded step, then proceed with that step.\n\
 Call out blockers, uncertainty, or risky/destructive changes before taking them."
-        )
-    }
-
-    fn generate_steer_turn_text(
-        assignment: &CodexThreadAssignment,
-        workstream: Option<&Workstream>,
-        work_unit: Option<&WorkUnit>,
-    ) -> String {
-        let workstream_label = workstream
-            .map(|workstream| format!("{} ({})", workstream.id, workstream.title))
-            .unwrap_or_else(|| assignment.workstream_id.clone());
-        let work_unit_label = work_unit
-            .map(|work_unit| format!("{} ({})", work_unit.id, work_unit.title))
-            .unwrap_or_else(|| assignment.work_unit_id.clone());
-        format!(
-            "Continue the current turn under Orcas supervision for workstream {workstream_label} and work unit {work_unit_label}.\n\
-Briefly re-anchor on the assigned objective, summarize any blocker or uncertainty, and focus only on the next bounded step already in progress.\n\
-Do not broaden scope without calling it out first."
         )
     }
 
@@ -12317,7 +12533,7 @@ ORCAS_REPORT_END"#
             .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
                 assignment_id: assignment.assignment_id.clone(),
                 requested_by: Some("reviewer".to_string()),
-                proposed_text: None,
+                proposed_text: Some("Focus on the current failing test only.".to_string()),
                 rationale_note: Some("steer for review".to_string()),
             })
             .await
@@ -12334,7 +12550,7 @@ ORCAS_REPORT_END"#
                 .proposed_text
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Continue the current turn")
+                .contains("Focus on the current failing test only.")
         );
 
         let listed = service
@@ -12381,6 +12597,119 @@ ORCAS_REPORT_END"#
             })
             .await
             .expect_err("blank steer text should fail");
+        assert!(error.to_string().contains("non-empty proposed_text"));
+    }
+
+    #[tokio::test]
+    async fn pending_steer_text_can_be_replaced_before_send() {
+        let service = test_service().await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+        let original = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id.clone(),
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("Original steer text".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+
+        let replacement = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: original.decision_id.clone(),
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "Replacement steer text".to_string(),
+                    rationale_note: Some("tighten scope".to_string()),
+                },
+            )
+            .await
+            .expect("replace pending steer")
+            .decision;
+        assert_ne!(replacement.decision_id, original.decision_id);
+        assert_eq!(
+            replacement.proposed_text.as_deref(),
+            Some("Replacement steer text")
+        );
+        assert_eq!(
+            replacement.status,
+            SupervisorTurnDecisionStatus::ProposedToHuman
+        );
+
+        let original_after = service
+            .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
+                decision_id: original.decision_id.clone(),
+            })
+            .await
+            .expect("original decision get")
+            .decision;
+        assert_eq!(
+            original_after.status,
+            SupervisorTurnDecisionStatus::Superseded
+        );
+        assert_eq!(
+            original_after.superseded_by.as_deref(),
+            Some(replacement.decision_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_pending_steer_rejects_empty_text() {
+        let service = test_service().await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+        let decision = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id,
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("Original steer text".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+
+        let error = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: decision.decision_id,
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "   ".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect_err("blank replacement text should fail");
         assert!(error.to_string().contains("non-empty proposed_text"));
     }
 
@@ -12787,6 +13116,96 @@ ORCAS_REPORT_END"#
     }
 
     #[tokio::test]
+    async fn approve_and_send_uses_current_replacement_steer_text() {
+        let (service, runtime) = test_service_with_fake_codex_runtime_capture(
+            AppConfig::default(),
+            Arc::new(StaticSupervisorReasoner::default()),
+            "unused",
+            FakeCodexTerminalOutcome::Completed,
+        )
+        .await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        runtime.lock().await.threads.insert(
+            thread.summary.id.clone(),
+            types::Thread {
+                id: thread.summary.id.clone(),
+                preview: thread.summary.preview.clone(),
+                ephemeral: false,
+                model_provider: "openai".to_string(),
+                created_at: thread.summary.created_at,
+                updated_at: thread.summary.updated_at,
+                status: types::ThreadStatus::Active {
+                    active_flags: vec!["turn_running".to_string()],
+                },
+                path: None,
+                cwd: thread.summary.cwd.clone(),
+                cli_version: "test".to_string(),
+                source: None,
+                name: thread.summary.name.clone(),
+                turns: vec![types::Turn {
+                    id: "turn-live".to_string(),
+                    items: Vec::new(),
+                    status: types::TurnStatus::InProgress,
+                    error: None,
+                }],
+                extra: Map::new(),
+            },
+        );
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+        let original = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id,
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("Original steer text".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        let replacement = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: original.decision_id,
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "Use the replacement steer text".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect("replace steer")
+            .decision;
+
+        let sent = service
+            .supervisor_decision_approve_and_send(ipc::SupervisorDecisionApproveAndSendRequest {
+                decision_id: replacement.decision_id,
+                reviewed_by: Some("reviewer".to_string()),
+                review_note: None,
+            })
+            .await
+            .expect("approve and send steer")
+            .decision;
+        assert_eq!(sent.status, SupervisorTurnDecisionStatus::Sent);
+        assert_eq!(
+            runtime.lock().await.last_turn_steer_text.as_deref(),
+            Some("Use the replacement steer text")
+        );
+    }
+
+    #[tokio::test]
     async fn stale_validation_prevents_send_if_newer_turn_state_exists() {
         let service = test_service().await;
         let thread = sample_thread("thread-idle", "live_observed", 200);
@@ -13066,6 +13485,77 @@ ORCAS_REPORT_END"#
         let stored = service
             .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
                 decision_id: decision.decision_id,
+            })
+            .await
+            .expect("decision get")
+            .decision;
+        assert_eq!(stored.status, SupervisorTurnDecisionStatus::Stale);
+    }
+
+    #[tokio::test]
+    async fn replacement_steer_send_stales_if_active_turn_changes_before_send() {
+        let service = test_service().await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+        let original = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id,
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("Original steer text".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        let replacement = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: original.decision_id,
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "Edited steer text".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect("replace steer")
+            .decision;
+        {
+            let mut state = service.state.write().await;
+            let thread = state
+                .threads
+                .get_mut("thread-active")
+                .expect("thread exists");
+            thread.summary.active_turn_id = Some("turn-new".to_string());
+            thread.summary.last_seen_turn_id = Some("turn-new".to_string());
+        }
+
+        let error = service
+            .supervisor_decision_approve_and_send(ipc::SupervisorDecisionApproveAndSendRequest {
+                decision_id: replacement.decision_id.clone(),
+                reviewed_by: Some("reviewer".to_string()),
+                review_note: None,
+            })
+            .await
+            .expect_err("changed active turn should stale edited steer");
+        assert!(error.to_string().contains("became stale"));
+
+        let stored = service
+            .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
+                decision_id: replacement.decision_id,
             })
             .await
             .expect("decision get")
@@ -13378,6 +13868,163 @@ ORCAS_REPORT_END"#
     }
 
     #[tokio::test]
+    async fn sent_rejected_or_stale_steer_decisions_cannot_be_replaced() {
+        let (service, runtime) = test_service_with_fake_codex_runtime_capture(
+            AppConfig::default(),
+            Arc::new(StaticSupervisorReasoner::default()),
+            "unused",
+            FakeCodexTerminalOutcome::Completed,
+        )
+        .await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        runtime.lock().await.threads.insert(
+            thread.summary.id.clone(),
+            types::Thread {
+                id: thread.summary.id.clone(),
+                preview: thread.summary.preview.clone(),
+                ephemeral: false,
+                model_provider: "openai".to_string(),
+                created_at: thread.summary.created_at,
+                updated_at: thread.summary.updated_at,
+                status: types::ThreadStatus::Active {
+                    active_flags: vec!["turn_running".to_string()],
+                },
+                path: None,
+                cwd: thread.summary.cwd.clone(),
+                cli_version: "test".to_string(),
+                source: None,
+                name: thread.summary.name.clone(),
+                turns: vec![types::Turn {
+                    id: "turn-live".to_string(),
+                    items: Vec::new(),
+                    status: types::TurnStatus::InProgress,
+                    error: None,
+                }],
+                extra: Map::new(),
+            },
+        );
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+
+        let sent_decision = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id.clone(),
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("sent steer".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        service
+            .supervisor_decision_approve_and_send(ipc::SupervisorDecisionApproveAndSendRequest {
+                decision_id: sent_decision.decision_id.clone(),
+                reviewed_by: Some("reviewer".to_string()),
+                review_note: None,
+            })
+            .await
+            .expect("send steer");
+        let sent_error = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: sent_decision.decision_id,
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "edited after send".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect_err("sent steer should not be replaceable");
+        assert!(sent_error.to_string().contains("no longer editable"));
+
+        service
+            .record_turn_started(&thread.summary.id, "turn-new", "submitted")
+            .await;
+        let rejected_decision = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id.clone(),
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("rejected steer".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        service
+            .supervisor_decision_reject(ipc::SupervisorDecisionRejectRequest {
+                decision_id: rejected_decision.decision_id.clone(),
+                reviewed_by: Some("reviewer".to_string()),
+                review_note: None,
+            })
+            .await
+            .expect("reject steer");
+        let rejected_error = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: rejected_decision.decision_id,
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "edited after reject".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect_err("rejected steer should not be replaceable");
+        assert!(rejected_error.to_string().contains("no longer editable"));
+
+        let stale_decision = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id,
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("stale steer".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        {
+            let mut state = service.state.write().await;
+            let thread = state
+                .threads
+                .get_mut("thread-active")
+                .expect("thread exists");
+            thread.summary.active_turn_id = Some("turn-other".to_string());
+        }
+        let stale_error = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: stale_decision.decision_id.clone(),
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "edited after stale".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect_err("stale steer should not be replaceable");
+        assert!(stale_error.to_string().contains("became stale"));
+        let stale_stored = service
+            .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
+                decision_id: stale_decision.decision_id,
+            })
+            .await
+            .expect("stale decision get")
+            .decision;
+        assert_eq!(stale_stored.status, SupervisorTurnDecisionStatus::Stale);
+    }
+
+    #[tokio::test]
     async fn supervisor_decisions_persist_across_restart() {
         let base =
             std::env::temp_dir().join(format!("orcas-supervisor-decision-{}", Uuid::new_v4()));
@@ -13607,6 +14254,83 @@ ORCAS_REPORT_END"#
         assert_eq!(
             stored.proposed_text.as_deref(),
             Some("focus on the current bounded step")
+        );
+    }
+
+    #[tokio::test]
+    async fn replaced_steer_revision_chain_persists_across_restart() {
+        let base =
+            std::env::temp_dir().join(format!("orcas-supervisor-steer-chain-{}", Uuid::new_v4()));
+        let service = test_service_at(base.clone()).await;
+        let thread = sample_active_thread("thread-active", "live_observed", 200, "turn-live");
+        let (workstream, work_unit) =
+            seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
+        let assignment = service
+            .codex_assignment_create(ipc::CodexAssignmentCreateRequest {
+                codex_thread_id: thread.summary.id.clone(),
+                workstream_id: workstream.id,
+                work_unit_id: work_unit.id,
+                supervisor_id: "supervisor-a".to_string(),
+                assigned_by: "tester".to_string(),
+                send_policy: None,
+                notes: None,
+            })
+            .await
+            .expect("assignment create")
+            .assignment;
+        let original = service
+            .supervisor_decision_propose_steer(ipc::SupervisorDecisionProposeSteerRequest {
+                assignment_id: assignment.assignment_id,
+                requested_by: Some("reviewer".to_string()),
+                proposed_text: Some("first steer revision".to_string()),
+                rationale_note: None,
+            })
+            .await
+            .expect("steer proposal")
+            .decision;
+        let replacement = service
+            .supervisor_decision_replace_pending_steer(
+                ipc::SupervisorDecisionReplacePendingSteerRequest {
+                    decision_id: original.decision_id.clone(),
+                    requested_by: Some("reviewer".to_string()),
+                    proposed_text: "second steer revision".to_string(),
+                    rationale_note: None,
+                },
+            )
+            .await
+            .expect("replace steer")
+            .decision;
+
+        let restarted = test_service_at(base).await;
+        let original_after = restarted
+            .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
+                decision_id: original.decision_id,
+            })
+            .await
+            .expect("original decision get after restart")
+            .decision;
+        let replacement_after = restarted
+            .supervisor_decision_get(ipc::SupervisorDecisionGetRequest {
+                decision_id: replacement.decision_id.clone(),
+            })
+            .await
+            .expect("replacement decision get after restart")
+            .decision;
+        assert_eq!(
+            original_after.status,
+            SupervisorTurnDecisionStatus::Superseded
+        );
+        assert_eq!(
+            original_after.superseded_by.as_deref(),
+            Some(replacement.decision_id.as_str())
+        );
+        assert_eq!(
+            replacement_after.proposed_text.as_deref(),
+            Some("second steer revision")
+        );
+        assert_eq!(
+            replacement_after.status,
+            SupervisorTurnDecisionStatus::ProposedToHuman
         );
     }
 

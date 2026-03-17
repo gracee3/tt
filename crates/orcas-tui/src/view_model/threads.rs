@@ -263,16 +263,106 @@ pub fn thread_detail(state: &AppState) -> ThreadDetailViewModel {
         if let Some(notes) = decision.notes.as_ref() {
             lines.push(format!("  notes {}", abbreviate(&compact_line(notes), 84)));
         }
+        if decision.kind == orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn {
+            lines.push(format!(
+                "  editable={} revision_state={}",
+                if steer_decision_editable(state, decision) {
+                    "yes"
+                } else {
+                    "no"
+                },
+                steer_revision_state_label(decision)
+            ));
+        }
         if decision.status == orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman {
-            lines.push("  actions: a approve/send  d reject".to_string());
+            if decision.kind == orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn {
+                if steer_compose_for_thread(state, thread_id).is_some_and(|compose| {
+                    compose.replace_decision_id.as_deref() == Some(decision.decision_id.as_str())
+                }) {
+                    lines.push(
+                        "  actions: ctrl+s save steer  esc cancel  enter newline".to_string(),
+                    );
+                } else {
+                    lines.push(
+                        "  actions: e edit pending steer  a approve/send  d reject".to_string(),
+                    );
+                }
+            } else {
+                lines.push("  actions: a approve/send  d reject".to_string());
+            }
         }
         lines.push(String::new());
     } else {
         lines.push("Decision: none".to_string());
-        if thread_steer_proposable(state, thread_id)
+        if steer_compose_for_thread(state, thread_id).is_some() {
+            lines.push("  actions: ctrl+s create steer  esc cancel  enter newline".to_string());
+        } else if thread_steer_proposable(state, thread_id)
             || thread_interrupt_proposable(state, thread_id)
         {
-            lines.push("  actions: s propose steer  i propose interrupt".to_string());
+            lines.push("  actions: s compose steer  i propose interrupt".to_string());
+        }
+        lines.push(String::new());
+    }
+
+    if let Some(compose) = steer_compose_for_thread(state, thread_id) {
+        lines.push(if compose.replace_decision_id.is_some() {
+            "Steer Compose: editing pending steer".to_string()
+        } else {
+            "Steer Compose: new steer proposal".to_string()
+        });
+        let (line_index, column, _) = compose_cursor_position(compose);
+        lines.push(format!(
+            "  cursor line={} col={} chars={}",
+            line_index + 1,
+            column + 1,
+            compose.buffer.chars().count()
+        ));
+        for line in render_compose_lines(compose, 6, 84) {
+            lines.push(line);
+        }
+        lines.push(
+            "  actions: ctrl+s save steer  esc cancel  enter newline  arrows move  backspace/delete edit"
+                .to_string(),
+        );
+        lines.push(String::new());
+    }
+
+    let history = thread_decision_history(state, thread_id);
+    if !history.is_empty() {
+        lines.push("Decision History:".to_string());
+        for decision in history {
+            lines.push(format!(
+                "  {} [{}] kind={} proposal={} basis={}",
+                decision.decision_id,
+                supervisor_decision_status_label(decision),
+                supervisor_decision_kind_label(decision.kind),
+                supervisor_proposal_kind_label(decision.proposal_kind),
+                decision.basis_turn_id.as_deref().unwrap_or("-"),
+            ));
+            lines.push(format!(
+                "    created={} sent={} rejected={}",
+                timestamp_label(decision.created_at),
+                decision
+                    .sent_at
+                    .map(timestamp_label)
+                    .unwrap_or_else(|| "-".to_string()),
+                decision
+                    .rejected_at
+                    .map(timestamp_label)
+                    .unwrap_or_else(|| "-".to_string()),
+            ));
+            if let Some(superseded_by) = decision.superseded_by.as_ref() {
+                lines.push(format!("    superseded by {}", superseded_by));
+            }
+            lines.push(format!(
+                "    rationale {}",
+                abbreviate(&compact_line(&decision.rationale_summary), 76)
+            ));
+            if let Some(text) = decision.proposed_text.as_ref() {
+                for preview in render_decision_text_preview(text, 2, 76) {
+                    lines.push(preview);
+                }
+            }
         }
         lines.push(String::new());
     }
@@ -454,6 +544,17 @@ fn supervisor_decision_status_label(decision: &ipc::SupervisorTurnDecisionSummar
     }
 }
 
+fn steer_revision_state_label(decision: &ipc::SupervisorTurnDecisionSummary) -> &'static str {
+    match decision.status {
+        orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman => "pending steer",
+        orcas_core::SupervisorTurnDecisionStatus::Superseded => "superseded revision",
+        orcas_core::SupervisorTurnDecisionStatus::Stale => "stale revision",
+        orcas_core::SupervisorTurnDecisionStatus::Rejected => "rejected revision",
+        orcas_core::SupervisorTurnDecisionStatus::Sent => "sent revision",
+        _ => "non-editable revision",
+    }
+}
+
 fn thread_steer_proposable(state: &AppState, thread_id: &str) -> bool {
     thread_active_turn_decision_proposable(state, thread_id)
 }
@@ -510,6 +611,24 @@ fn current_thread_assignment<'a>(
         })
 }
 
+fn steer_compose_for_thread<'a>(
+    state: &'a AppState,
+    thread_id: &str,
+) -> Option<&'a crate::app::SteerComposeState> {
+    state
+        .steer_compose
+        .as_ref()
+        .filter(|compose| compose.thread_id == thread_id)
+}
+
+fn steer_decision_editable(
+    _state: &AppState,
+    decision: &ipc::SupervisorTurnDecisionSummary,
+) -> bool {
+    decision.kind == orcas_core::SupervisorTurnDecisionKind::SteerActiveTurn
+        && decision.status == orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman
+}
+
 fn latest_thread_assignment<'a>(
     state: &'a AppState,
     thread_id: &str,
@@ -544,6 +663,97 @@ fn thread_decision_for_display<'a>(
                 .cmp(&right.created_at)
                 .then_with(|| left.decision_id.cmp(&right.decision_id))
         })
+}
+
+fn thread_decision_history<'a>(
+    state: &'a AppState,
+    thread_id: &str,
+) -> Vec<&'a ipc::SupervisorTurnDecisionSummary> {
+    let mut decisions = state
+        .collaboration
+        .supervisor_turn_decisions
+        .iter()
+        .filter(|decision| decision.codex_thread_id == thread_id)
+        .collect::<Vec<_>>();
+    decisions.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| left.decision_id.cmp(&right.decision_id))
+    });
+    decisions.into_iter().take(6).collect()
+}
+
+fn render_decision_text_preview(text: &str, max_lines: usize, width: usize) -> Vec<String> {
+    text.lines()
+        .take(max_lines)
+        .map(|line| format!("    text {}", abbreviate(&compact_line(line), width)))
+        .collect()
+}
+
+fn render_compose_lines(
+    compose: &crate::app::SteerComposeState,
+    max_lines: usize,
+    width: usize,
+) -> Vec<String> {
+    let (cursor_line, cursor_col, _) = compose_cursor_position(compose);
+    let lines = if compose.buffer.is_empty() {
+        vec![String::new()]
+    } else {
+        compose
+            .buffer
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    };
+    lines
+        .into_iter()
+        .take(max_lines)
+        .enumerate()
+        .map(|(index, line)| {
+            let decorated = if index == cursor_line {
+                insert_cursor_marker(&line, cursor_col)
+            } else {
+                line
+            };
+            format!("  {:>2}> {}", index + 1, abbreviate(&decorated, width))
+        })
+        .collect()
+}
+
+fn insert_cursor_marker(line: &str, column: usize) -> String {
+    let mut out = String::new();
+    let mut inserted = false;
+    for (idx, ch) in line.chars().enumerate() {
+        if idx == column {
+            out.push('|');
+            inserted = true;
+        }
+        out.push(ch);
+    }
+    if !inserted {
+        out.push('|');
+    }
+    out
+}
+
+fn compose_cursor_position(compose: &crate::app::SteerComposeState) -> (usize, usize, usize) {
+    let mut line_index = 0usize;
+    let mut column = 0usize;
+    let mut line_start = 0usize;
+    for (index, ch) in compose.buffer.char_indices() {
+        if index >= compose.cursor {
+            break;
+        }
+        if ch == '\n' {
+            line_index += 1;
+            column = 0;
+            line_start = index + ch.len_utf8();
+        } else {
+            column += 1;
+        }
+    }
+    (line_index, column, line_start)
 }
 
 fn latest_turn_state_for_thread<'a>(

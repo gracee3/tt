@@ -239,6 +239,17 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn supervisor_decision_replace_pending_steer(
+        &self,
+        params: &ipc::SupervisorDecisionReplacePendingSteerRequest,
+    ) -> OrcasResult<ipc::SupervisorDecisionReplacePendingSteerResponse> {
+        self.request(
+            ipc::methods::SUPERVISOR_DECISION_REPLACE_PENDING_STEER,
+            params,
+        )
+        .await
+    }
+
     pub async fn supervisor_decision_approve_and_send(
         &self,
         params: &ipc::SupervisorDecisionApproveAndSendRequest,

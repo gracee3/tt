@@ -664,17 +664,29 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                     }
                 }
             }
-            Effect::ProposeSteerDecision { assignment_id } => {
+            Effect::ProposeSteerDecision {
+                assignment_id,
+                proposed_text,
+            } => {
                 let effect = Effect::ProposeSteerDecision {
                     assignment_id: assignment_id.clone(),
+                    proposed_text: proposed_text.clone(),
                 };
                 Self::run_backend_effect(
                     backend,
                     effect,
-                    BackendCommand::ProposeSteerSupervisorDecision { assignment_id },
+                    BackendCommand::ProposeSteerSupervisorDecision {
+                        assignment_id,
+                        proposed_text,
+                    },
                     |response| match response {
-                        BackendCommandResult::SupervisorDecision(_) => {
-                            vec![Action::User(UserAction::Refresh)]
+                        BackendCommandResult::SupervisorDecision(decision) => {
+                            vec![
+                                Action::Event(UiEvent::SteerComposeCommitted {
+                                    decision_id: decision.decision_id,
+                                }),
+                                Action::User(UserAction::Refresh),
+                            ]
                         }
                         other => {
                             vec![Action::Event(UiEvent::Error(format!(
@@ -690,6 +702,50 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                         } else {
                             Action::Event(UiEvent::Error(format!(
                                 "supervisor steer proposal failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::ReplacePendingSteerDecision {
+                decision_id,
+                proposed_text,
+            } => {
+                let effect = Effect::ReplacePendingSteerDecision {
+                    decision_id: decision_id.clone(),
+                    proposed_text: proposed_text.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::ReplacePendingSteerSupervisorDecision {
+                        decision_id,
+                        proposed_text,
+                    },
+                    |response| match response {
+                        BackendCommandResult::SupervisorDecision(decision) => {
+                            vec![
+                                Action::Event(UiEvent::SteerComposeCommitted {
+                                    decision_id: decision.decision_id,
+                                }),
+                                Action::User(UserAction::Refresh),
+                            ]
+                        }
+                        other => {
+                            vec![Action::Event(UiEvent::Error(format!(
+                                "unexpected supervisor steer replacement response: {other:?}"
+                            )))]
+                        }
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "supervisor steer replacement failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "supervisor steer replacement failed: {error}"
                             )))
                         }
                     },
