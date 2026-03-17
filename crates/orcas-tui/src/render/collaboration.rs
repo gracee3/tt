@@ -1,13 +1,14 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
 
 use crate::app::{AppState, CollaborationFocus};
 use crate::view_model;
 
 use super::shared::{
-    emphasis_style, focus_block_style, focus_title, metadata_style, render_panel, row_style,
+    emphasis_style, focus_block_style, focus_title, key_value_line, label_style, metadata_style,
+    render_panel_with_focus, row_style, selection_marker, status_label_style, status_text_style,
 };
 
 pub(super) fn render_view(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
@@ -46,7 +47,14 @@ pub(super) fn render_view(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             body[0],
         );
         frame.render_widget(
-            render_workstream_detail(collaboration.workstream_detail),
+            render_panel_with_focus(
+                view_model::PanelViewModel {
+                    title: collaboration.workstream_detail.title,
+                    lines: collaboration.workstream_detail.lines,
+                },
+                true,
+                true,
+            ),
             body[1],
         );
         frame.render_widget(
@@ -86,7 +94,14 @@ pub(super) fn render_view(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             left[0],
         );
         frame.render_widget(
-            render_workstream_detail(collaboration.workstream_detail),
+            render_panel_with_focus(
+                view_model::PanelViewModel {
+                    title: collaboration.workstream_detail.title,
+                    lines: collaboration.workstream_detail.lines,
+                },
+                true,
+                true,
+            ),
             left[1],
         );
         frame.render_widget(
@@ -107,35 +122,31 @@ pub(super) fn render_view(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
 fn render_collaboration_status(
     status: view_model::CollaborationStatusViewModel,
 ) -> Paragraph<'static> {
-    let mut lines = vec![Line::styled(
-        format!(
-            "focus={}  workstreams={}  work_units={}  active_assignments={}  review={}",
-            view_model::collaboration_focus_label(status.focus),
-            status.workstream_count,
-            status.work_unit_count,
-            status.active_assignment_count,
-            status.review_count
+    let lines = vec![
+        Line::styled(
+            format!(
+                "focus={}  workstreams={}  work_units={}  active_assignments={}  review={}",
+                view_model::collaboration_focus_label(status.focus),
+                status.workstream_count,
+                status.work_unit_count,
+                status.active_assignment_count,
+                status.review_count
+            ),
+            emphasis_style(),
         ),
-        emphasis_style(),
-    )];
-    lines.push(Line::styled(
-        format!(
-            "selected stream: {}",
-            status
+        key_value_line(
+            "selected stream",
+            &status
                 .selected_workstream_title
-                .unwrap_or_else(|| "-".to_string())
+                .unwrap_or_else(|| "-".to_string()),
         ),
-        metadata_style(),
-    ));
-    lines.push(Line::styled(
-        format!(
-            "selected unit: {}",
-            status
+        key_value_line(
+            "selected unit",
+            &status
                 .selected_work_unit_title
-                .unwrap_or_else(|| "-".to_string())
+                .unwrap_or_else(|| "-".to_string()),
         ),
-        metadata_style(),
-    ));
+    ];
 
     Paragraph::new(Text::from(lines))
         .block(
@@ -152,17 +163,23 @@ fn render_workstreams(
     focused: bool,
 ) -> Paragraph<'static> {
     let lines = if list.rows.is_empty() {
-        vec![Line::from("No workstreams loaded.")]
+        vec![Line::styled("No workstreams loaded.", metadata_style())]
     } else {
         list.rows
             .into_iter()
             .take(10)
             .map(|row| {
-                let prefix = if row.selected { ">" } else { " " };
-                Line::styled(
-                    format!("{prefix} {} [{}] {}", row.title, row.status, row.counts),
-                    row_style(row.selected),
-                )
+                let marker = selection_marker(row.selected, focused);
+                let status_style = status_text_style(&row.status);
+                let counts = format!(" {}", row.counts);
+                Line::from(vec![
+                    Span::styled(format!("{marker}"), row_style(row.selected, focused)),
+                    Span::styled(format!(" {} ", row.title), row_style(row.selected, focused)),
+                    Span::styled("[", metadata_style()),
+                    Span::styled(row.status.to_string(), status_style),
+                    Span::styled("]", metadata_style()),
+                    Span::styled(counts, metadata_style()),
+                ])
             })
             .collect()
     };
@@ -177,43 +194,40 @@ fn render_workstreams(
         .wrap(Wrap { trim: true })
 }
 
-fn render_workstream_detail(detail: view_model::WorkstreamDetailViewModel) -> Paragraph<'static> {
-    render_panel(
-        view_model::PanelViewModel {
-            title: detail.title,
-            lines: detail.lines,
-        },
-        true,
-    )
-}
-
 fn render_work_units(list: view_model::WorkUnitListViewModel, focused: bool) -> Paragraph<'static> {
     let lines = if list.rows.is_empty() {
-        vec![Line::from("No work units loaded.")]
+        vec![Line::styled("No work units loaded.", metadata_style())]
     } else {
         let mut lines = Vec::new();
         for row in list.rows.into_iter().take(8) {
-            let prefix = if row.selected { ">" } else { " " };
+            let marker = selection_marker(row.selected, focused);
             let review = if row.needs_supervisor_review {
                 " review"
             } else {
                 ""
             };
-            lines.push(Line::styled(
-                format!("{prefix} {} [{}]", row.title, row.status),
-                row_style(row.selected),
-            ));
-            lines.push(Line::styled(
-                format!(
-                    "  assignment={} decision={} proposal={} parse={}{}",
-                    row.current_assignment,
-                    row.latest_decision,
-                    row.proposal_status,
-                    row.latest_report_parse_result,
-                    review
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker}"), row_style(row.selected, focused)),
+                Span::styled(format!(" {} ", row.title), row_style(row.selected, focused)),
+                Span::styled("[", metadata_style()),
+                Span::styled(row.status.clone(), status_text_style(&row.status)),
+                Span::styled("]", metadata_style()),
+                Span::styled(format!(" {}", review), status_label_style()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("assignment=", label_style()),
+                Span::styled(row.current_assignment.clone(), metadata_style()),
+                Span::styled(
+                    format!("  decision={} ", row.latest_decision),
+                    metadata_style(),
                 ),
-                metadata_style(),
-            ));
+                Span::styled("proposal=", label_style()),
+                Span::styled(row.proposal_status.clone(), metadata_style()),
+                Span::styled(
+                    format!(" parse={}", row.latest_report_parse_result),
+                    metadata_style(),
+                ),
+            ]));
         }
         lines
     };
@@ -231,11 +245,12 @@ fn render_work_units(list: view_model::WorkUnitListViewModel, focused: bool) -> 
 fn render_collaboration_detail(
     detail: view_model::CollaborationDetailViewModel,
 ) -> Paragraph<'static> {
-    render_panel(
+    render_panel_with_focus(
         view_model::PanelViewModel {
             title: detail.title,
             lines: detail.lines,
         },
+        true,
         true,
     )
 }
@@ -243,11 +258,12 @@ fn render_collaboration_detail(
 fn render_collaboration_history(
     history: view_model::CollaborationHistoryViewModel,
 ) -> Paragraph<'static> {
-    render_panel(
+    render_panel_with_focus(
         view_model::PanelViewModel {
             title: history.title,
             lines: history.lines,
         },
+        false,
         false,
     )
 }

@@ -1,12 +1,15 @@
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{AppState, TopLevelView};
 use crate::view_model;
 use crate::view_model::shared::{daemon_lifecycle_label, daemon_phase_label};
 
-use super::shared::{status_style, title_case_view_label};
+use super::shared::{
+    daemon_phase_to_status_style, heading_style, key_hint_style, key_value_line, label_style,
+    metadata_style, status_line, status_style, status_text_style, title_case_view_label,
+    value_style,
+};
 
 pub(super) fn render_shell_status(state: &AppState) -> Paragraph<'static> {
     let connection = view_model::connection_status(state);
@@ -16,33 +19,43 @@ pub(super) fn render_shell_status(state: &AppState) -> Paragraph<'static> {
                 "Orcas Operator Console [{}]",
                 title_case_view_label(state.current_view)
             ),
-            Style::default().add_modifier(Modifier::BOLD),
+            heading_style(),
         ),
-        Line::styled(
-            format!(
-                "daemon lifecycle: {}",
-                daemon_lifecycle_label(state.daemon_lifecycle)
+        status_line(
+            "daemon lifecycle",
+            daemon_lifecycle_label(state.daemon_lifecycle),
+            status_text_style(daemon_lifecycle_label(state.daemon_lifecycle)),
+        ),
+        key_value_line("daemon", daemon_phase_label(connection.daemon_phase)),
+        status_line(
+            "upstream",
+            &connection.upstream_status,
+            daemon_phase_to_status_style(&connection.upstream_status),
+        ),
+        Line::from(vec![
+            Span::styled(
+                format!(
+                    "clients: {}  threads: {}",
+                    connection.client_count, connection.known_threads
+                ),
+                label_style(),
             ),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Line::from(format!(
-            "daemon: {}  upstream: {}  clients: {}  threads: {}  reconnect: {}",
-            daemon_phase_label(connection.daemon_phase),
-            connection.upstream_status,
-            connection.client_count,
-            connection.known_threads,
-            connection.reconnect_attempt
-        )),
-        Line::styled(
-            format!("socket: {}", connection.socket_path),
-            Style::default().fg(Color::DarkGray),
-        ),
+            Span::styled(
+                format!("  reconnect: {}", connection.reconnect_attempt),
+                metadata_style(),
+            ),
+        ]),
     ];
+
+    lines.push(Line::from(vec![
+        Span::styled("socket: ", label_style()),
+        Span::styled(connection.socket_path.clone(), metadata_style()),
+    ]));
 
     if let Some(detail) = connection.upstream_detail {
         lines.push(Line::styled(
             format!("upstream detail: {detail}"),
-            Style::default().fg(Color::LightYellow),
+            daemon_phase_to_status_style(&connection.upstream_status),
         ));
     } else if let Some(banner) = view_model::status_banner(state) {
         let color = status_style(banner.level);
@@ -50,16 +63,13 @@ pub(super) fn render_shell_status(state: &AppState) -> Paragraph<'static> {
         if let Some(lifecycle_error) = state.daemon_lifecycle_error.as_deref() {
             lines.push(Line::styled(
                 format!("daemon: {lifecycle_error}"),
-                Style::default().fg(Color::DarkGray),
+                metadata_style(),
             ));
         }
     } else {
         lines.push(Line::from(selection_summary(state)));
         if let Some(error) = state.daemon_lifecycle_error.as_deref() {
-            lines.push(Line::styled(
-                format!("daemon: {error}"),
-                Style::default().fg(Color::DarkGray),
-            ));
+            lines.push(Line::styled(format!("daemon: {error}"), metadata_style()));
         }
     }
 
@@ -74,32 +84,27 @@ pub(super) fn render_footer(state: &AppState) -> Paragraph<'static> {
         ));
         lines.push(Line::from(help_navigation_line(state.current_view)));
     } else {
-        lines.push(Line::styled(
-            format!(
-                "keys: 1/2/3/4 views  tab next  {}  r refresh  ? help  q quit",
-                match state.current_view {
-                    TopLevelView::Overview => "j/k no-op",
-                    TopLevelView::Threads => "j/k threads",
-                    TopLevelView::Collaboration => "j/k selection  h/l list focus",
-                    TopLevelView::Supervisor => {
-                        "m refresh models  s start daemon  x stop daemon  R restart daemon"
-                    }
-                }
-            ),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+        let mut spans = vec![
+            Span::styled("keys: ", label_style()),
+            Span::styled("1/2/3/4", key_hint_style()),
+            Span::styled(" views  ", metadata_style()),
+            Span::styled("tab", key_hint_style()),
+            Span::styled(" next  ", metadata_style()),
+        ];
+        spans.extend(key_bindings_hint(state.current_view));
+        spans.push(Span::styled(" ", metadata_style()));
+        spans.push(Span::styled("? help", key_hint_style()));
+        spans.push(Span::styled("  ", metadata_style()));
+        spans.push(Span::styled("q quit", key_hint_style()));
+        lines.push(Line::from(spans));
+        lines.push(Line::from(help_navigation_line(state.current_view)));
         if let Some(error) = state.daemon_lifecycle_error.as_deref() {
-            lines.push(Line::styled(
-                format!("daemon: {error}"),
-                Style::default().fg(Color::DarkGray),
-            ));
+            lines.push(Line::styled(format!("daemon: {error}"), metadata_style()));
         }
-        lines.push(Line::styled(
-            format!("focus: {}", title_case_view_label(state.current_view)),
-            Style::default().fg(Color::DarkGray),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled("focus: ", label_style()),
+            Span::styled(title_case_view_label(state.current_view), value_style()),
+        ]));
     }
 
     Paragraph::new(Text::from(lines))
@@ -145,4 +150,41 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
             "nav: m reload models  s start daemon  x request daemon stop  R restart daemon  r refresh  ? help  q quit"
         }
     }
+}
+
+fn key_bindings_hint(view: TopLevelView) -> Vec<Span<'static>> {
+    match view {
+        TopLevelView::Overview => action_hint("r", "refresh"),
+        TopLevelView::Threads => {
+            let mut spans = action_hint("j/k", "threads");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("r", "refresh"));
+            spans
+        }
+        TopLevelView::Collaboration => {
+            let mut spans = action_hint("h/l", "focus list");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("j/k", "selection"));
+            spans
+        }
+        TopLevelView::Supervisor => {
+            let mut spans = action_hint("m", "refresh models");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("s", "start daemon"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("x", "stop daemon"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("R", "restart daemon"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("r", "refresh"));
+            spans
+        }
+    }
+}
+
+fn action_hint(key: &str, action: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{key}"), key_hint_style()),
+        Span::styled(format!(" {action}"), label_style()),
+    ]
 }
