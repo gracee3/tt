@@ -23,6 +23,7 @@ use tracing::info;
 
 use crate::app::AppState;
 
+use super::preview::{CodexOutputPreview, render_preview_from_pty_bytes};
 use super::ring_buffer::PtyRingBuffer;
 use super::terminal::{OrcasTerminal, enter_pass_through_mode, suspend_terminal};
 
@@ -31,6 +32,9 @@ const INPUT_IDLE_SLEEP: Duration = Duration::from_millis(10);
 const DETACH_PREFIX: u8 = 0x1d;
 const DETACH_SUFFIX: u8 = b'd';
 const DETACH_SEQUENCE_TIMEOUT: Duration = Duration::from_millis(750);
+const MAX_SESSION_HISTORY_PER_THREAD: usize = 4;
+const SESSION_PREVIEW_LINES: usize = 3;
+const SESSION_PREVIEW_WIDTH: usize = 84;
 
 pub const DEFAULT_PTY_RING_BUFFER_CAPACITY: usize = 64 * 1024;
 
@@ -61,6 +65,22 @@ pub struct CodexThreadSessionSummary {
     pub session_id: CodexSessionId,
     pub thread_id: String,
     pub state: CodexSessionState,
+    pub created_at: Instant,
+    pub last_activity_at: Option<Instant>,
+    pub output_preview: CodexOutputPreview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodexThreadSessions {
+    pub thread_id: String,
+    pub sessions: Vec<CodexThreadSessionSummary>,
+}
+
+impl CodexThreadSessions {
+    #[must_use]
+    pub fn current(&self) -> Option<&CodexThreadSessionSummary> {
+        self.sessions.first()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +340,22 @@ impl CodexSession {
             _ => None,
         }
     }
+
+    #[must_use]
+    pub fn summary(&self) -> CodexThreadSessionSummary {
+        CodexThreadSessionSummary {
+            session_id: self.id,
+            thread_id: self.thread_id.clone(),
+            state: self.state.clone(),
+            created_at: self.created_at,
+            last_activity_at: self.last_activity_at,
+            output_preview: render_preview_from_pty_bytes(
+                &self.pty_output.snapshot(),
+                SESSION_PREVIEW_LINES,
+                SESSION_PREVIEW_WIDTH,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,19 +436,20 @@ impl CodexSessionManager {
             })
     }
 
-    pub fn thread_session_summaries(&self) -> HashMap<String, CodexThreadSessionSummary> {
-        let mut summaries = HashMap::new();
-        for session in self.sessions.values() {
-            summaries.insert(
-                session.thread_id.clone(),
-                CodexThreadSessionSummary {
-                    session_id: session.id,
+    pub fn thread_sessions(&self) -> HashMap<String, CodexThreadSessions> {
+        let mut histories = HashMap::new();
+        for session in self.sessions.values().rev() {
+            let entry = histories
+                .entry(session.thread_id.clone())
+                .or_insert_with(|| CodexThreadSessions {
                     thread_id: session.thread_id.clone(),
-                    state: session.state.clone(),
-                },
-            );
+                    sessions: Vec::new(),
+                });
+            if entry.sessions.len() < MAX_SESSION_HISTORY_PER_THREAD {
+                entry.sessions.push(session.summary());
+            }
         }
-        summaries
+        histories
     }
 
     pub fn drain_background_events(&mut self) -> Result<bool> {
@@ -994,7 +1031,7 @@ impl Drop for NonblockingStdinGuard {
 mod tests {
     use super::{
         CodexExit, CodexResumeDescriptor, CodexSession, CodexSessionId, CodexSessionManager,
-        CodexSessionState, DEFAULT_PTY_RING_BUFFER_CAPACITY,
+        CodexSessionState, DEFAULT_PTY_RING_BUFFER_CAPACITY, MAX_SESSION_HISTORY_PER_THREAD,
     };
     use crate::app::AppState;
     use chrono::Utc;
@@ -1165,6 +1202,38 @@ mod tests {
             manager.live_session_id_for_thread("thread-1"),
             Some(first_id)
         );
+    }
+
+    #[test]
+    fn thread_sessions_expose_recent_preview_and_bounded_history() {
+        let mut manager = CodexSessionManager::default();
+        for session_number in 0..(MAX_SESSION_HISTORY_PER_THREAD + 2) {
+            let session_id = manager.insert_session(sample_descriptor("thread-1"));
+            let session = manager.sessions.get_mut(&session_id).expect("session");
+            session
+                .mark_attached(100 + session_number as u32)
+                .expect("attach");
+            session.record_pty_output(format!("line-{session_number}\n").as_bytes());
+            if session_number % 2 == 0 {
+                session.mark_detached().expect("detach");
+            } else {
+                session
+                    .mark_exited(CodexExit {
+                        success: true,
+                        code: Some(0),
+                    })
+                    .expect("exit");
+            }
+        }
+
+        let history = manager.thread_sessions();
+        let thread_sessions = history.get("thread-1").expect("thread history");
+        assert_eq!(
+            thread_sessions.sessions.len(),
+            MAX_SESSION_HISTORY_PER_THREAD
+        );
+        assert_eq!(thread_sessions.sessions[0].output_preview.lines.len(), 1);
+        assert!(thread_sessions.sessions[0].output_preview.lines[0].starts_with("line-"));
     }
 
     fn sample_descriptor(thread_id: &str) -> CodexResumeDescriptor {

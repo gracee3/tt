@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use crate::app::AppState;
-use crate::codex::CodexSessionState;
+use crate::codex::{CodexSessionState, CodexThreadSessionSummary, CodexThreadSessions};
 use orcas_core::{
     CodexThreadAssignmentStatus, CodexThreadBootstrapState, CodexThreadSendPolicy, ipc,
 };
@@ -93,8 +95,23 @@ pub fn thread_summary(state: &AppState) -> PanelViewModel {
             "codex session: {}",
             codex_session_state_label(&session.state)
         ));
+        lines.push(format!(
+            "codex action: {}",
+            codex_action_label(&session.state)
+        ));
+        lines.push(format!(
+            "codex activity: {}",
+            session_activity_label(session.last_activity_at)
+        ));
+        if let Some(preview) = session.output_preview.lines.last() {
+            lines.push(format!(
+                "codex preview: {}",
+                abbreviate(&compact_line(preview), 88)
+            ));
+        }
     } else {
         lines.push("codex session: none".to_string());
+        lines.push("codex action: c start new Codex session".to_string());
     }
     if let Some(assignment) = thread_assignment_for_display(state, thread_id) {
         lines.push(format!(
@@ -350,15 +367,25 @@ pub fn thread_detail(state: &AppState) -> ThreadDetailViewModel {
             "Codex Session: {}",
             codex_session_state_label(&session.state)
         ));
+        lines.push(format!("  session {}", session.session_id));
         if let Some(pid) = session.state.pid() {
             lines.push(format!("  pid {pid}"));
         }
+        lines.push(format!(
+            "  created {}",
+            activity_age_label(session.created_at.elapsed())
+        ));
+        lines.push(format!(
+            "  last activity {}",
+            session_activity_label(session.last_activity_at)
+        ));
         match &session.state {
             CodexSessionState::Detached { .. } => {
-                lines.push("  actions: c reattach Codex session".to_string());
+                lines.push("  actions: c reattach live Codex session".to_string());
                 lines.push("  attached detach chord: ctrl+] d".to_string());
             }
             CodexSessionState::Attached { .. } => {
+                lines.push("  actions: c reattach existing live Codex session".to_string());
                 lines.push("  attached detach chord: ctrl+] d".to_string());
             }
             CodexSessionState::Exited { .. } | CodexSessionState::Failed { .. } => {
@@ -368,10 +395,50 @@ pub fn thread_detail(state: &AppState) -> ThreadDetailViewModel {
                 lines.push("  session is launching".to_string());
             }
         }
+        match &session.state {
+            CodexSessionState::Exited { result } => lines.push(format!(
+                "  exit status success={} code={}",
+                result.success,
+                result
+                    .code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            )),
+            CodexSessionState::Failed { error } => {
+                lines.push(format!(
+                    "  failure {}",
+                    abbreviate(&compact_line(error), 84)
+                ));
+            }
+            _ => {}
+        }
+        if session.output_preview.is_empty() {
+            lines.push("  recent PTY output: none yet".to_string());
+        } else {
+            lines.push("  recent PTY output (best effort):".to_string());
+            for preview in &session.output_preview.lines {
+                lines.push(format!("    {preview}"));
+            }
+            if session.output_preview.truncated || session.output_preview.control_sequences_removed
+            {
+                lines.push(
+                    "    note: bounded preview from PTY bytes; control sequences may be omitted"
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(history) = local_codex_sessions(state, thread_id)
+            && history.sessions.len() > 1
+        {
+            lines.push("  local session history:".to_string());
+            for prior in history.sessions.iter().skip(1).take(3) {
+                lines.push(format!("    {}", codex_session_history_entry(prior)));
+            }
+        }
         lines.push(String::new());
     } else {
         lines.push("Codex Session: none".to_string());
-        lines.push("  actions: c start Codex session".to_string());
+        lines.push("  actions: c start new Codex session".to_string());
         lines.push(String::new());
     }
 
@@ -505,11 +572,18 @@ fn thread_session_badge(state: &AppState, thread_id: &str) -> Option<String> {
     Some(codex_session_state_label(&session.state).to_string())
 }
 
+fn local_codex_sessions<'state>(
+    state: &'state AppState,
+    thread_id: &str,
+) -> Option<&'state CodexThreadSessions> {
+    state.codex_sessions.get(thread_id)
+}
+
 fn local_codex_session<'state>(
     state: &'state AppState,
     thread_id: &str,
-) -> Option<&'state crate::codex::CodexThreadSessionSummary> {
-    state.codex_sessions.get(thread_id)
+) -> Option<&'state CodexThreadSessionSummary> {
+    local_codex_sessions(state, thread_id).and_then(CodexThreadSessions::current)
 }
 
 fn codex_session_state_label(state: &CodexSessionState) -> &'static str {
@@ -520,6 +594,70 @@ fn codex_session_state_label(state: &CodexSessionState) -> &'static str {
         CodexSessionState::Exited { .. } => "exited",
         CodexSessionState::Failed { .. } => "failed",
     }
+}
+
+fn codex_action_label(state: &CodexSessionState) -> &'static str {
+    match state {
+        CodexSessionState::Launching => "c reattach when launch settles",
+        CodexSessionState::Attached { .. } | CodexSessionState::Detached { .. } => {
+            "c reattach live Codex session"
+        }
+        CodexSessionState::Exited { .. } | CodexSessionState::Failed { .. } => {
+            "c start new Codex session"
+        }
+    }
+}
+
+fn session_activity_label(last_activity_at: Option<Instant>) -> String {
+    match last_activity_at {
+        Some(last_activity_at) => format!("{} ago", activity_age_label(last_activity_at.elapsed())),
+        None => "no PTY output yet".to_string(),
+    }
+}
+
+fn activity_age_label(elapsed: Duration) -> String {
+    if elapsed < Duration::from_secs(1) {
+        "just now".to_string()
+    } else if elapsed < Duration::from_secs(60) {
+        format!("{}s", elapsed.as_secs())
+    } else if elapsed < Duration::from_secs(60 * 60) {
+        format!("{}m", elapsed.as_secs() / 60)
+    } else {
+        format!("{}h", elapsed.as_secs() / (60 * 60))
+    }
+}
+
+fn codex_session_history_entry(session: &CodexThreadSessionSummary) -> String {
+    let mut parts = vec![
+        format!("session {}", session.session_id),
+        codex_session_state_label(&session.state).to_string(),
+    ];
+    if let Some(pid) = session.state.pid() {
+        parts.push(format!("pid={pid}"));
+    }
+    if let Some(last_activity_at) = session.last_activity_at {
+        parts.push(format!(
+            "activity={} ago",
+            activity_age_label(last_activity_at.elapsed())
+        ));
+    }
+    if let CodexSessionState::Exited { result } = &session.state {
+        parts.push(format!(
+            "exit={}",
+            result
+                .code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| if result.success {
+                    "0".to_string()
+                } else {
+                    "?".to_string()
+                })
+        ));
+    }
+    if let CodexSessionState::Failed { error } = &session.state {
+        parts.push(format!("error={}", abbreviate(&compact_line(error), 32)));
+    }
+    parts.join("  ")
 }
 
 fn loaded_status_label(status: ipc::ThreadLoadedStatus) -> &'static str {

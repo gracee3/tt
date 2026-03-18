@@ -5,7 +5,10 @@ use crate::app::{
     UiEvent, UserAction,
 };
 use crate::backend::BackendCommand;
-use crate::codex::{CodexSessionId, CodexSessionState, CodexThreadSessionSummary};
+use crate::codex::{
+    CodexOutputPreview, CodexSessionId, CodexSessionState, CodexThreadSessionSummary,
+    CodexThreadSessions,
+};
 use crate::test_harness::AppHarness;
 use orcas_core::{
     Assignment, AssignmentStatus, ConnectionState, Decision, DecisionPolicy, DecisionType,
@@ -953,10 +956,16 @@ async fn detached_codex_session_surfaces_in_thread_views() {
         .inject_ui_event(UiEvent::CodexSessionsChanged {
             sessions: std::iter::once((
                 "thread-1".to_string(),
-                CodexThreadSessionSummary {
-                    session_id: CodexSessionId::from(1_u64),
+                CodexThreadSessions {
                     thread_id: "thread-1".to_string(),
-                    state: CodexSessionState::Detached { pid: 4242 },
+                    sessions: vec![CodexThreadSessionSummary {
+                        session_id: CodexSessionId::from(1_u64),
+                        thread_id: "thread-1".to_string(),
+                        state: CodexSessionState::Detached { pid: 4242 },
+                        created_at: std::time::Instant::now(),
+                        last_activity_at: None,
+                        output_preview: CodexOutputPreview::default(),
+                    }],
                 },
             ))
             .collect(),
@@ -985,7 +994,88 @@ async fn detached_codex_session_surfaces_in_thread_views() {
         detail
             .lines
             .iter()
-            .any(|line| line.contains("actions: c reattach Codex session"))
+            .any(|line| line.contains("actions: c reattach live Codex session"))
+    );
+}
+
+#[tokio::test]
+async fn codex_session_preview_and_history_surface_in_thread_detail() {
+    let now = std::time::Instant::now();
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+    harness
+        .inject_ui_event(UiEvent::CodexSessionsChanged {
+            sessions: std::iter::once((
+                "thread-1".to_string(),
+                CodexThreadSessions {
+                    thread_id: "thread-1".to_string(),
+                    sessions: vec![
+                        CodexThreadSessionSummary {
+                            session_id: CodexSessionId::from(2_u64),
+                            thread_id: "thread-1".to_string(),
+                            state: CodexSessionState::Detached { pid: 4242 },
+                            created_at: now,
+                            last_activity_at: Some(now),
+                            output_preview: CodexOutputPreview {
+                                lines: vec![
+                                    "running tests".to_string(),
+                                    "waiting for approval".to_string(),
+                                ],
+                                truncated: true,
+                                control_sequences_removed: true,
+                            },
+                        },
+                        CodexThreadSessionSummary {
+                            session_id: CodexSessionId::from(1_u64),
+                            thread_id: "thread-1".to_string(),
+                            state: CodexSessionState::Exited {
+                                result: crate::codex::session::CodexExit {
+                                    success: true,
+                                    code: Some(0),
+                                },
+                            },
+                            created_at: now,
+                            last_activity_at: Some(now),
+                            output_preview: CodexOutputPreview::default(),
+                        },
+                    ],
+                },
+            ))
+            .collect(),
+        })
+        .await;
+
+    let summary = harness.thread_summary_vm();
+    assert!(
+        summary
+            .lines
+            .iter()
+            .any(|line| line.contains("codex action: c reattach live Codex session"))
+    );
+
+    let detail = harness.thread_detail_vm();
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("recent PTY output (best effort):"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("running tests"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("local session history:"))
+    );
+    assert!(
+        detail
+            .lines
+            .iter()
+            .any(|line| line.contains("session 1  exited"))
     );
 }
 

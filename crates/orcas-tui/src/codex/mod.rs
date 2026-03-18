@@ -4,23 +4,21 @@
 //! - Orcas daemon/app-server notifications remain authoritative for thread and turn lifecycle.
 //! - Local Codex CLI session state only tracks process ownership and recent PTY bytes.
 //!
-//! This first slice implements the launch descriptor, bounded PTY ring buffer, session state model,
-//! and terminal suspend/restore scaffolding needed for suspend-and-pass-through mode. The current
-//! attached launch path intentionally hands terminal ownership directly to `codex resume ...`
-//! instead of attempting to proxy an interactive PTY inside ratatui.
-//!
-//! Future detach/reattach work can add a PTY-backed launcher that drains output into the same
-//! [`ring_buffer::PtyRingBuffer`] and transitions sessions into [`session::CodexSessionState::Detached`]
-//! without redesigning the TUI-facing model.
+//! The current slices implement PTY-backed attach, detach/reattach, and a bounded recent-output
+//! preview derived from the same PTY bytes. That preview is intentionally best-effort only. It is
+//! useful operator context, not an attempt to reconstruct ratatui screen state or infer workflow
+//! lifecycle from terminal output.
 
+pub mod preview;
 pub mod ring_buffer;
 pub mod session;
 pub mod terminal;
 
+pub use preview::{CodexOutputPreview, render_preview_from_pty_bytes};
 pub use ring_buffer::PtyRingBuffer;
 pub use session::{
     CodexResumeDescriptor, CodexResumeDescriptorError, CodexSession, CodexSessionId,
-    CodexSessionManager, CodexSessionState, CodexThreadSessionSummary,
+    CodexSessionManager, CodexSessionState, CodexThreadSessionSummary, CodexThreadSessions,
     DEFAULT_PTY_RING_BUFFER_CAPACITY,
 };
 pub use terminal::{OrcasTerminal, SuspendedOrcasTerminal, suspend_terminal};

@@ -66,6 +66,7 @@ async fn run_app(
     loop {
         sync_codex_sessions(runtime, codex_sessions)?;
         runtime.process_all().await;
+        sync_codex_sessions(runtime, codex_sessions)?;
         terminal.draw(|frame| render::render(frame, runtime.state()))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -145,7 +146,7 @@ fn sync_codex_sessions(
     codex_sessions: &mut CodexSessionManager,
 ) -> Result<()> {
     codex_sessions.drain_background_events()?;
-    let sessions = codex_sessions.thread_session_summaries();
+    let sessions = codex_sessions.thread_sessions();
     if runtime.state().codex_sessions != sessions {
         runtime.dispatch(Action::Event(
             orcas_tui::app::UiEvent::CodexSessionsChanged { sessions },

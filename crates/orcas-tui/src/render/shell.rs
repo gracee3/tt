@@ -197,7 +197,7 @@ fn help_navigation_line(view: TopLevelView) -> &'static str {
     match view {
         TopLevelView::Overview => "nav: left/right views  r refresh  ? help  q quit",
         TopLevelView::Threads => {
-            "nav: left/right views  up/down thread selection  c attach/reattach Codex  s compose steer  e edit steer  i propose interrupt  w no action  m manual refresh  a approve/send  d reject  r refresh  ? help  q quit"
+            "nav: left/right views  up/down thread selection  c attach/reattach/start Codex  s compose steer  e edit steer  i propose interrupt  w no action  m manual refresh  a approve/send  d reject  r refresh  ? help  q quit"
         }
         TopLevelView::Collaboration => {
             "nav: left/right views  tab switch workstreams/work_units  up/down move selection  r refresh  ? help  q quit"
@@ -212,7 +212,7 @@ fn help_navigation_line_compact(view: TopLevelView) -> &'static str {
     match view {
         TopLevelView::Overview => "nav: left/right  r",
         TopLevelView::Threads => {
-            "nav: left/right  up/down  c attach/reattach  ctrl+] d detach  s/e/i/w/m/a/d  r"
+            "nav: left/right  up/down  c attach/reattach/start  ctrl+] d detach  s/e/i/w/m/a/d  r"
         }
         TopLevelView::Collaboration => "nav: left/right  tab focus  up/down  r",
         TopLevelView::Supervisor => "nav: left/right  m/s/x/R  r",
@@ -239,7 +239,7 @@ fn key_bindings_hint(state: &AppState) -> Vec<Span<'static>> {
             }
             let mut spans = action_hint("up/down", "thread selection");
             spans.push(Span::styled("  ", metadata_style()));
-            spans.extend(action_hint("c", "attach/reattach Codex"));
+            spans.extend(action_hint("c", "attach/reattach/start Codex"));
             spans.push(Span::styled("  ", metadata_style()));
             spans.extend(action_hint("s", "compose steer"));
             spans.push(Span::styled("  ", metadata_style()));

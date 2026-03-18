@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::codex::CodexThreadSessionSummary;
+use crate::codex::CodexThreadSessions;
 use orcas_core::{ConnectionState, ipc};
 
 const MAX_LOG_ENTRIES: usize = 64;
@@ -84,7 +84,7 @@ pub struct AppState {
     pub models_loading: bool,
     pub thread_details: HashMap<String, ipc::ThreadView>,
     pub turn_states: HashMap<String, ipc::TurnStateView>,
-    pub codex_sessions: HashMap<String, CodexThreadSessionSummary>,
+    pub codex_sessions: HashMap<String, CodexThreadSessions>,
     pub current_view: TopLevelView,
     pub selected_thread_id: Option<String>,
     pub selected_workstream_id: Option<String>,
@@ -244,7 +244,7 @@ pub enum UiEvent {
         delta: String,
     },
     CodexSessionsChanged {
-        sessions: HashMap<String, CodexThreadSessionSummary>,
+        sessions: HashMap<String, CodexThreadSessions>,
     },
     Ignored,
     Warning(String),
