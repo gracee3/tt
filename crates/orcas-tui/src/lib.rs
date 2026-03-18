@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod codex;
 pub mod render;
 pub mod runtime;
 pub mod test_harness;

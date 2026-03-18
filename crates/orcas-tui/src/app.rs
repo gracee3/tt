@@ -147,6 +147,7 @@ pub enum UserAction {
     PromptAppend(char),
     PromptBackspace,
     SubmitPrompt,
+    ResumeSelectedThreadInCodex,
     ProposeSteerForSelectedThread,
     EditPendingSteerForSelectedThread,
     SteerComposeAppend(char),
@@ -486,6 +487,13 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 level: BannerLevel::Info,
                 message: "TUI is read-only in this pass. Use the Orcas CLI for prompt submission."
                     .to_string(),
+            });
+            Vec::new()
+        }
+        UserAction::ResumeSelectedThreadInCodex => {
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Resume in Codex is handled by the terminal host.".to_string(),
             });
             Vec::new()
         }

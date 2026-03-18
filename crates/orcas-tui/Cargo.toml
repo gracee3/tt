@@ -16,9 +16,13 @@ chrono.workspace = true
 crossterm.workspace = true
 orcas-daemon = { path = "../orcas-daemon" }
 orcas-core = { path = "../orcas-core" }
+portable-pty = "0.9.0"
 ratatui.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.2", default-features = false, features = ["fs"] }
 
 [lints]
 workspace = true

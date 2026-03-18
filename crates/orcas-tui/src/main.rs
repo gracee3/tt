@@ -10,13 +10,14 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use tracing::{debug, info};
 
 use orcas_core::{AppPaths, init_file_logger};
 use orcas_tui::app::{Action, TopLevelView, UserAction};
 use orcas_tui::backend::OrcasDaemonBackend;
+use orcas_tui::codex::{
+    CodexResumeDescriptor, CodexSessionManager, DEFAULT_PTY_RING_BUFFER_CAPACITY, OrcasTerminal,
+};
 use orcas_tui::render;
 use orcas_tui::runtime::AppRuntime;
 
@@ -45,10 +46,11 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let mut terminal = OrcasTerminal::new(backend)?;
+    let mut codex_sessions = CodexSessionManager::new(DEFAULT_PTY_RING_BUFFER_CAPACITY);
 
-    let result = run_app(&mut terminal, &mut runtime).await;
+    let result = run_app(&mut terminal, &mut runtime, &mut codex_sessions).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -57,8 +59,9 @@ async fn main() -> Result<()> {
 }
 
 async fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut OrcasTerminal,
     runtime: &mut AppRuntime<OrcasDaemonBackend>,
+    codex_sessions: &mut CodexSessionManager,
 ) -> Result<()> {
     loop {
         runtime.process_all().await;
@@ -69,7 +72,7 @@ async fn run_app(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if handle_key(runtime, key).await {
+                if handle_key(terminal, runtime, codex_sessions, key).await? {
                     break;
                 }
             }
@@ -79,23 +82,59 @@ async fn run_app(
     Ok(())
 }
 
-async fn handle_key(runtime: &mut AppRuntime<OrcasDaemonBackend>, key: KeyEvent) -> bool {
+async fn handle_key(
+    terminal: &mut OrcasTerminal,
+    runtime: &mut AppRuntime<OrcasDaemonBackend>,
+    codex_sessions: &mut CodexSessionManager,
+    key: KeyEvent,
+) -> Result<bool> {
     debug!(
         key = ?key,
         current_view = ?runtime.state().current_view,
         "received key in tui"
     );
     if key.code == KeyCode::Char('q') && runtime.state().steer_compose.is_none() {
-        return true;
+        return Ok(true);
     }
 
     let action = action_for_key(runtime.state(), key);
 
     if let Some(action) = action {
-        info!(?action, "dispatching tui action");
-        runtime.dispatch(Action::User(action));
+        if action == UserAction::ResumeSelectedThreadInCodex {
+            match CodexResumeDescriptor::for_selected_thread(runtime.state()) {
+                Ok(descriptor) => {
+                    match tokio::task::block_in_place(|| {
+                        codex_sessions.resume_attached(terminal, descriptor)
+                    }) {
+                        Ok(session_id) => {
+                            if let Some(message) = codex_sessions
+                                .session(session_id)
+                                .and_then(orcas_tui::codex::CodexSession::terminal_message)
+                            {
+                                runtime.dispatch(Action::Event(orcas_tui::app::UiEvent::Warning(
+                                    message,
+                                )));
+                            }
+                        }
+                        Err(error) => {
+                            runtime.dispatch(Action::Event(orcas_tui::app::UiEvent::Error(
+                                format!("Codex resume failed: {error}"),
+                            )));
+                        }
+                    }
+                }
+                Err(error) => {
+                    runtime.dispatch(Action::Event(orcas_tui::app::UiEvent::Warning(format!(
+                        "Cannot resume selected thread in Codex: {error}"
+                    ))));
+                }
+            }
+        } else {
+            info!(?action, "dispatching tui action");
+            runtime.dispatch(Action::User(action));
+        }
     }
-    false
+    Ok(false)
 }
 
 fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<UserAction> {
@@ -134,6 +173,7 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         KeyCode::Char('a') if in_threads_view => {
             Some(UserAction::ApproveSelectedSupervisorDecision)
         }
+        KeyCode::Char('c') if in_threads_view => Some(UserAction::ResumeSelectedThreadInCodex),
         KeyCode::Char('d') if in_threads_view => Some(UserAction::RejectSelectedSupervisorDecision),
         KeyCode::Char('s') if in_threads_view => Some(UserAction::ProposeSteerForSelectedThread),
         KeyCode::Char('e') if in_threads_view => {
@@ -239,6 +279,13 @@ mod tests {
                 key(KeyCode::Char('a'))
             ),
             Some(UserAction::ApproveSelectedSupervisorDecision)
+        );
+        assert_eq!(
+            action_for_key(
+                &state_for_view(TopLevelView::Threads),
+                key(KeyCode::Char('c'))
+            ),
+            Some(UserAction::ResumeSelectedThreadInCodex)
         );
         assert_eq!(
             action_for_key(
