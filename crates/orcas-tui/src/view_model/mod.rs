@@ -1,4 +1,5 @@
 pub mod collaboration;
+pub mod main;
 pub mod overview;
 pub mod shared;
 pub mod threads;
@@ -10,6 +11,11 @@ pub use collaboration::{
     WorkstreamListViewModel, WorkstreamRowViewModel, assignment_list, collaboration_detail,
     collaboration_history, collaboration_status, collaboration_view, work_unit_list,
     workstream_detail, workstream_list,
+};
+pub use main::{
+    HierarchyRowKind, MainFooterPromptViewModel, MainHeaderViewModel, MainHierarchyListViewModel,
+    MainHierarchyRowViewModel, MainStatusSegmentViewModel, MainViewModel, ProgramTabViewModel,
+    main_hierarchy_list, main_view,
 };
 pub use overview::{OverviewViewModel, overview_view};
 pub use shared::{

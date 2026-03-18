@@ -175,6 +175,7 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
     }
 
     let current_view = state.current_view;
+    let in_main_view = current_view == TopLevelView::Overview;
     let in_supervisor_view = current_view == TopLevelView::Supervisor;
     let in_threads_view = current_view == TopLevelView::Threads;
     match key.code {
@@ -204,8 +205,11 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         KeyCode::Char('m') if in_threads_view => Some(UserAction::ManualRefreshForSelectedThread),
         KeyCode::Down => Some(UserAction::SelectNextInView),
         KeyCode::Up => Some(UserAction::SelectPreviousInView),
+        KeyCode::Left if in_main_view => Some(UserAction::CollapseSelectedInView),
+        KeyCode::Right if in_main_view => Some(UserAction::ExpandSelectedInView),
         KeyCode::Left => Some(UserAction::ShowView(current_view.previous())),
         KeyCode::Right => Some(UserAction::ShowView(current_view.next())),
+        KeyCode::Tab if in_main_view => Some(UserAction::CycleProgramView),
         KeyCode::Tab if current_view == TopLevelView::Collaboration => {
             Some(UserAction::CycleCollaborationFocus)
         }
@@ -219,11 +223,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
-    fn left_and_right_cycle_top_level_views() {
-        assert_eq!(
-            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Right)),
-            Some(UserAction::ShowView(TopLevelView::Threads))
-        );
+    fn left_and_right_cycle_top_level_views_outside_main_surface() {
         assert_eq!(
             action_for_key(&state_for_view(TopLevelView::Threads), key(KeyCode::Right)),
             Some(UserAction::ShowView(TopLevelView::Collaboration))
@@ -236,13 +236,28 @@ mod tests {
             Some(UserAction::ShowView(TopLevelView::Threads))
         );
         assert_eq!(
-            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Left)),
-            Some(UserAction::ShowView(TopLevelView::Supervisor))
+            action_for_key(
+                &state_for_view(TopLevelView::Supervisor),
+                key(KeyCode::Right)
+            ),
+            Some(UserAction::ShowView(TopLevelView::Overview))
         );
     }
 
     #[test]
-    fn arrow_keys_drive_selection_and_tab_switches_collaboration_focus() {
+    fn arrow_keys_drive_selection_and_tab_switches_view_specific_focus() {
+        assert_eq!(
+            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Left)),
+            Some(UserAction::CollapseSelectedInView)
+        );
+        assert_eq!(
+            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Right)),
+            Some(UserAction::ExpandSelectedInView)
+        );
+        assert_eq!(
+            action_for_key(&state_for_view(TopLevelView::Overview), key(KeyCode::Tab)),
+            Some(UserAction::CycleProgramView)
+        );
         assert_eq!(
             action_for_key(&state_for_view(TopLevelView::Threads), key(KeyCode::Down)),
             Some(UserAction::SelectNextInView)

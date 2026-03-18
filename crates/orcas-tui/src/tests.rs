@@ -1,8 +1,8 @@
 use chrono::Utc;
 
 use crate::app::{
-    BannerLevel, CollaborationFocus, DaemonConnectionPhase, DaemonLifecycleState, TopLevelView,
-    UiEvent, UserAction,
+    BannerLevel, CollaborationFocus, DaemonConnectionPhase, DaemonLifecycleState,
+    MainHierarchySelection, ProgramView, TopLevelView, UiEvent, UserAction,
 };
 use crate::backend::BackendCommand;
 use crate::codex::{
@@ -10,6 +10,7 @@ use crate::codex::{
     CodexThreadSessions,
 };
 use crate::test_harness::AppHarness;
+use crate::view_model;
 use orcas_core::{
     Assignment, AssignmentStatus, ConnectionState, Decision, DecisionPolicy, DecisionType,
     DraftAssignment, ProposedDecision, RecentPrimaryHistory, Report, ReportConfidence,
@@ -626,6 +627,28 @@ fn sample_snapshot() -> ipc::StateSnapshot {
 fn sample_disconnected_snapshot() -> ipc::StateSnapshot {
     let mut snapshot = sample_snapshot();
     snapshot.daemon.upstream.status = "disconnected".to_string();
+    snapshot
+}
+
+fn sample_main_surface_snapshot() -> ipc::StateSnapshot {
+    let mut snapshot = sample_snapshot();
+    snapshot.collaboration.codex_thread_assignments = vec![
+        sample_codex_assignment_summary(
+            "thread-1",
+            orcas_core::CodexThreadAssignmentStatus::Active,
+        ),
+        ipc::CodexThreadAssignmentSummary {
+            work_unit_id: "wu-2".to_string(),
+            assignment_id: "cta-2".to_string(),
+            codex_thread_id: "thread-2".to_string(),
+            status: orcas_core::CodexThreadAssignmentStatus::Active,
+            notes: Some("follow event state".to_string()),
+            ..sample_codex_assignment_summary(
+                "thread-2",
+                orcas_core::CodexThreadAssignmentStatus::Active,
+            )
+        },
+    ];
     snapshot
 }
 
@@ -3491,8 +3514,9 @@ async fn compact_layout_keeps_focus_selection_and_state_labels_visible_across_si
     harness.dispatch(UserAction::Refresh).await;
 
     let expanded = harness.render_text(160, 42);
-    assert!(expanded.contains("Connection"), "{expanded}");
-    assert!(expanded.contains("Recent Events"), "{expanded}");
+    assert!(expanded.contains("Status"), "{expanded}");
+    assert!(expanded.contains("Hierarchy"), "{expanded}");
+    assert!(expanded.contains("Composer"), "{expanded}");
 
     for (width, height) in [(120, 40), (100, 30), (80, 24)] {
         harness
@@ -3500,12 +3524,16 @@ async fn compact_layout_keeps_focus_selection_and_state_labels_visible_across_si
             .await;
         let overview = harness.render_text(width, height);
         assert!(
-            overview.contains("Connection"),
-            "missing overview connection panel at {width}x{height}\n{overview}"
+            overview.contains("Status"),
+            "missing main-status header at {width}x{height}\n{overview}"
         );
         assert!(
-            overview.contains("Active Work"),
-            "missing overview active-work panel at {width}x{height}\n{overview}"
+            overview.contains("Hierarchy"),
+            "missing main hierarchy at {width}x{height}\n{overview}"
+        );
+        assert!(
+            overview.contains("Composer"),
+            "missing main composer area at {width}x{height}\n{overview}"
         );
 
         harness
@@ -3538,6 +3566,168 @@ async fn compact_layout_keeps_focus_selection_and_state_labels_visible_across_si
             "missing selected work-unit detail at {width}x{height}\n{collaboration}"
         );
     }
+}
+
+#[tokio::test]
+async fn main_surface_renders_expected_three_row_structure() {
+    let mut harness = AppHarness::new(sample_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let rendered = harness.render_text(160, 42);
+    assert!(rendered.contains("Status"), "{rendered}");
+    assert!(rendered.contains("Program"), "{rendered}");
+    assert!(rendered.contains("Updates"), "{rendered}");
+    assert!(rendered.contains("Hierarchy"), "{rendered}");
+    assert!(rendered.contains("Composer"), "{rendered}");
+}
+
+#[tokio::test]
+async fn main_hierarchy_groups_workstream_work_unit_and_thread_rows() {
+    let harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    let hierarchy = harness.main_hierarchy_vm();
+    assert!(hierarchy.rows.iter().any(|row| {
+        row.kind == view_model::HierarchyRowKind::Workstream
+            && row.label == "Collaboration hardening"
+            && row.depth == 0
+    }));
+    assert!(hierarchy.rows.iter().any(|row| {
+        row.kind == view_model::HierarchyRowKind::WorkUnit
+            && row.label == "Snapshot wiring"
+            && row.depth == 1
+    }));
+    assert!(hierarchy.rows.iter().any(|row| {
+        row.kind == view_model::HierarchyRowKind::Thread
+            && row.label == "thread-1"
+            && row.depth == 2
+    }));
+    assert!(hierarchy.rows.iter().any(|row| {
+        row.kind == view_model::HierarchyRowKind::Thread
+            && row.label == "thread-2"
+            && row.depth == 2
+    }));
+}
+
+#[tokio::test]
+async fn main_hierarchy_expand_and_collapse_change_visible_rows_correctly() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    let initial_rows = harness.main_hierarchy_vm().rows;
+    assert!(initial_rows.iter().any(|row| row.label == "thread-1"));
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    assert_eq!(
+        harness.state().main_view.selected,
+        Some(MainHierarchySelection::WorkUnit {
+            workstream_id: "ws-1".to_string(),
+            work_unit_id: "wu-1".to_string(),
+        })
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    let collapsed_rows = harness.main_hierarchy_vm().rows;
+    assert!(!collapsed_rows.iter().any(|row| row.label == "thread-1"));
+
+    harness.dispatch(UserAction::ExpandSelectedInView).await;
+    let expanded_rows = harness.main_hierarchy_vm().rows;
+    assert!(expanded_rows.iter().any(|row| row.label == "thread-1"));
+}
+
+#[tokio::test]
+async fn main_selection_updates_detail_panel_by_row_kind() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let initial = harness.main_vm();
+    assert!(initial.detail_panel.title.contains("Selected Thread"));
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    let work_unit = harness.main_vm();
+    assert!(work_unit.detail_panel.title.contains("Work Unit wu-1"));
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    let collapsed_work_unit = harness.main_vm();
+    assert!(
+        collapsed_work_unit
+            .detail_panel
+            .title
+            .contains("Work Unit wu-1")
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    let workstream = harness.main_vm();
+    assert!(workstream.detail_panel.title.contains("Workstream"));
+}
+
+#[tokio::test]
+async fn main_header_and_footer_surface_runtime_summary_and_prompt_region() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+    harness
+        .inject_ui_event(UiEvent::ReconnectScheduled {
+            attempt: 3,
+            delay_ms: 500,
+        })
+        .await;
+
+    let main = harness.main_vm();
+    assert_eq!(harness.state().main_view.program_view, ProgramView::Main);
+    assert!(
+        main.header
+            .status_segments
+            .iter()
+            .any(|segment| segment.label == "reconnect" && segment.value == "3")
+    );
+    assert!(
+        main.footer_prompt
+            .prompt_lines
+            .iter()
+            .any(|line| line.contains("read-only"))
+    );
+}
+
+#[tokio::test]
+async fn snapshot_refresh_keeps_main_selection_stable() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    assert_eq!(
+        harness.state().main_view.selected,
+        Some(MainHierarchySelection::WorkUnit {
+            workstream_id: "ws-1".to_string(),
+            work_unit_id: "wu-1".to_string(),
+        })
+    );
+
+    harness
+        .replace_snapshot(sample_main_surface_snapshot())
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    assert_eq!(
+        harness.state().main_view.selected,
+        Some(MainHierarchySelection::WorkUnit {
+            workstream_id: "ws-1".to_string(),
+            work_unit_id: "wu-1".to_string(),
+        })
+    );
+    let rendered = harness.render_text(160, 42);
+    assert!(rendered.contains("Hierarchy"), "{rendered}");
 }
 
 #[tokio::test]

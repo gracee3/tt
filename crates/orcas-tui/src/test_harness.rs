@@ -125,6 +125,14 @@ impl AppHarness {
         view_model::overview_view(self.runtime.state())
     }
 
+    pub fn main_vm(&self) -> view_model::MainViewModel {
+        view_model::main_view(self.runtime.state())
+    }
+
+    pub fn main_hierarchy_vm(&self) -> view_model::MainHierarchyListViewModel {
+        view_model::main_hierarchy_list(self.runtime.state())
+    }
+
     pub fn connection_vm(&self) -> view_model::ConnectionStatusViewModel {
         view_model::connection_status(self.runtime.state())
     }

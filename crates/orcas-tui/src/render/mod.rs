@@ -1,4 +1,5 @@
 mod collaboration;
+mod main;
 mod overview;
 mod shared;
 mod shell;
@@ -11,6 +12,11 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use crate::app::{AppState, TopLevelView};
 
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+    if state.current_view == TopLevelView::Overview {
+        main::render_surface(frame, state);
+        return;
+    }
+
     let compact = frame.area().width < 130 || frame.area().height < 34;
     let status_height = if compact { 5 } else { 6 };
     let footer_height = if state.show_help || frame.area().height >= 28 {

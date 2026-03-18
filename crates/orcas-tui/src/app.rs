@@ -1,9 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::codex::CodexThreadSessions;
 use orcas_core::{ConnectionState, ipc};
 
 const MAX_LOG_ENTRIES: usize = 64;
+const MAIN_HIERARCHY_SCROLL_WINDOW: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TopLevelView {
@@ -51,6 +52,48 @@ impl CollaborationFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgramView {
+    #[default]
+    Main,
+    Review,
+}
+
+impl ProgramView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Main => Self::Review,
+            Self::Review => Self::Main,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainHierarchySelection {
+    Workstream {
+        workstream_id: String,
+    },
+    WorkUnit {
+        workstream_id: String,
+        work_unit_id: String,
+    },
+    Thread {
+        workstream_id: String,
+        work_unit_id: String,
+        thread_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MainViewState {
+    pub program_view: ProgramView,
+    pub selected: Option<MainHierarchySelection>,
+    pub expanded_workstreams: BTreeSet<String>,
+    pub expanded_work_units: BTreeSet<String>,
+    pub scroll_offset: usize,
+    pub initialized: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaemonConnectionPhase {
     #[default]
     Disconnected,
@@ -86,6 +129,7 @@ pub struct AppState {
     pub turn_states: HashMap<String, ipc::TurnStateView>,
     pub codex_sessions: HashMap<String, CodexThreadSessions>,
     pub current_view: TopLevelView,
+    pub main_view: MainViewState,
     pub selected_thread_id: Option<String>,
     pub selected_workstream_id: Option<String>,
     pub selected_work_unit_id: Option<String>,
@@ -138,9 +182,13 @@ pub enum UserAction {
     ToggleHelp,
     CycleView,
     ShowView(TopLevelView),
+    CycleProgramView,
+    ShowProgramView(ProgramView),
     CycleCollaborationFocus,
     SelectNextInView,
     SelectPreviousInView,
+    ExpandSelectedInView,
+    CollapseSelectedInView,
     SelectNextThread,
     SelectPreviousThread,
     SelectThread(String),
@@ -472,6 +520,18 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 Vec::new()
             }
         }
+        UserAction::CycleProgramView => {
+            if state.current_view == TopLevelView::Overview {
+                state.main_view.program_view = state.main_view.program_view.next();
+            }
+            Vec::new()
+        }
+        UserAction::ShowProgramView(view) => {
+            if state.current_view == TopLevelView::Overview {
+                state.main_view.program_view = view;
+            }
+            Vec::new()
+        }
         UserAction::CycleCollaborationFocus => {
             if state.current_view == TopLevelView::Collaboration {
                 state.collaboration_focus = state.collaboration_focus.next();
@@ -480,6 +540,8 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
         }
         UserAction::SelectNextInView => select_relative_in_view(state, 1),
         UserAction::SelectPreviousInView => select_relative_in_view(state, -1),
+        UserAction::ExpandSelectedInView => expand_selected_in_view(state),
+        UserAction::CollapseSelectedInView => collapse_selected_in_view(state),
         UserAction::SelectNextThread => select_relative_thread(state, 1),
         UserAction::SelectPreviousThread => select_relative_thread(state, -1),
         UserAction::SelectThread(thread_id) => select_thread(state, thread_id),
@@ -815,6 +877,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 effects.push(Effect::AttachThread { thread_id });
             }
             reconcile_collaboration_selection(state);
+            reconcile_main_view(state);
             effects.extend(load_selected_work_unit_detail_if_needed(state));
             effects.push(Effect::LoadActiveTurns);
             state.banner = None;
@@ -866,6 +929,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             }) {
                 effects.push(Effect::AttachThread { thread_id });
             }
+            reconcile_main_view(state);
             state.banner = None;
         }
         UiEvent::ThreadAttached(response) => {
@@ -882,6 +946,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                     message: format!("Live attach unavailable: {reason}"),
                 });
             }
+            reconcile_main_view(state);
         }
         UiEvent::ActiveTurnsLoaded(turns) => {
             state.turn_states.retain(|_, turn| !turn.attachable);
@@ -1012,6 +1077,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                     effects.push(Effect::AttachThread { thread_id });
                 }
             }
+            reconcile_main_view(state);
         }
         UiEvent::ThreadUpdated(thread) => {
             let thread_id = thread.id.clone();
@@ -1027,16 +1093,19 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             {
                 effects.push(Effect::LoadThread { thread_id });
             }
+            reconcile_main_view(state);
         }
         UiEvent::WorkstreamLifecycle { workstream, .. } => {
             upsert_workstream_summary(&mut state.collaboration.workstreams, workstream);
             reconcile_collaboration_selection(state);
+            reconcile_main_view(state);
             effects.extend(load_selected_work_unit_detail_if_needed(state));
         }
         UiEvent::WorkUnitLifecycle { work_unit, .. } => {
             let selected = state.selected_work_unit_id.as_deref() == Some(work_unit.id.as_str());
             upsert_work_unit_summary(&mut state.collaboration.work_units, work_unit);
             reconcile_collaboration_selection(state);
+            reconcile_main_view(state);
             if selected {
                 effects.extend(load_selected_work_unit_detail(state));
             } else {
@@ -1047,6 +1116,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             let selected =
                 state.selected_work_unit_id.as_deref() == Some(assignment.work_unit_id.as_str());
             upsert_assignment_summary(&mut state.collaboration.assignments, assignment);
+            reconcile_main_view(state);
             if selected {
                 effects.extend(load_selected_work_unit_detail(state));
             }
@@ -1056,17 +1126,20 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 &mut state.collaboration.codex_thread_assignments,
                 assignment,
             );
+            reconcile_main_view(state);
         }
         UiEvent::SupervisorDecisionLifecycle { decision, .. } => {
             upsert_supervisor_turn_decision_summary(
                 &mut state.collaboration.supervisor_turn_decisions,
                 decision,
             );
+            reconcile_main_view(state);
         }
         UiEvent::ReportRecorded(report) => {
             let selected =
                 state.selected_work_unit_id.as_deref() == Some(report.work_unit_id.as_str());
             upsert_report_summary(&mut state.collaboration.reports, report);
+            reconcile_main_view(state);
             if selected {
                 effects.extend(load_selected_work_unit_detail(state));
             }
@@ -1075,6 +1148,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             let selected =
                 state.selected_work_unit_id.as_deref() == Some(decision.work_unit_id.as_str());
             upsert_decision_summary(&mut state.collaboration.decisions, decision);
+            reconcile_main_view(state);
             if selected {
                 effects.extend(load_selected_work_unit_detail(state));
             }
@@ -1086,6 +1160,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         } => {
             let selected = state.selected_work_unit_id.as_deref() == Some(work_unit.id.as_str());
             upsert_work_unit_summary(&mut state.collaboration.work_units, work_unit);
+            reconcile_main_view(state);
             if selected {
                 effects.extend(load_selected_work_unit_detail(state));
             } else {
@@ -1098,6 +1173,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state
                 .work_unit_details
                 .insert(detail.work_unit.id.clone(), detail);
+            reconcile_main_view(state);
         }
         UiEvent::TurnUpdated { thread_id, turn } => {
             ensure_thread_detail(state, &thread_id);
@@ -1142,6 +1218,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         }
         UiEvent::CodexSessionsChanged { sessions } => {
             state.codex_sessions = sessions;
+            reconcile_main_view(state);
         }
         UiEvent::Ignored => {}
         UiEvent::Warning(message) => {
@@ -1200,7 +1277,7 @@ fn select_thread(state: &mut AppState, thread_id: String) -> Vec<Effect> {
 
 fn select_relative_in_view(state: &mut AppState, delta: isize) -> Vec<Effect> {
     match state.current_view {
-        TopLevelView::Overview => Vec::new(),
+        TopLevelView::Overview => select_relative_main_hierarchy(state, delta),
         TopLevelView::Threads => select_relative_thread(state, delta),
         TopLevelView::Collaboration => match state.collaboration_focus {
             CollaborationFocus::Workstreams => select_relative_workstream(state, delta),
@@ -1208,6 +1285,426 @@ fn select_relative_in_view(state: &mut AppState, delta: isize) -> Vec<Effect> {
         },
         TopLevelView::Supervisor => Vec::new(),
     }
+}
+
+fn expand_selected_in_view(state: &mut AppState) -> Vec<Effect> {
+    match state.current_view {
+        TopLevelView::Overview => expand_selected_main_hierarchy(state),
+        _ => Vec::new(),
+    }
+}
+
+fn collapse_selected_in_view(state: &mut AppState) -> Vec<Effect> {
+    match state.current_view {
+        TopLevelView::Overview => collapse_selected_main_hierarchy(state),
+        _ => Vec::new(),
+    }
+}
+
+fn reconcile_main_view(state: &mut AppState) {
+    state
+        .main_view
+        .expanded_workstreams
+        .retain(|workstream_id| {
+            state
+                .collaboration
+                .workstreams
+                .iter()
+                .any(|workstream| workstream.id == *workstream_id)
+        });
+    state.main_view.expanded_work_units.retain(|work_unit_id| {
+        state
+            .collaboration
+            .work_units
+            .iter()
+            .any(|work_unit| work_unit.id == *work_unit_id)
+    });
+
+    if !state.main_view.initialized {
+        state.main_view.expanded_workstreams.extend(
+            state
+                .collaboration
+                .workstreams
+                .iter()
+                .map(|workstream| workstream.id.clone()),
+        );
+        state.main_view.expanded_work_units.extend(
+            state
+                .collaboration
+                .work_units
+                .iter()
+                .map(|work_unit| work_unit.id.clone()),
+        );
+        state.main_view.initialized = true;
+    }
+
+    let visible_rows = visible_main_hierarchy_rows(state);
+    if visible_rows.is_empty() {
+        state.main_view.selected = None;
+        state.main_view.scroll_offset = 0;
+        return;
+    }
+
+    let selection = state
+        .main_view
+        .selected
+        .clone()
+        .filter(|selected| visible_rows.contains(selected))
+        .or_else(|| preferred_main_selection(state))
+        .unwrap_or_else(|| visible_rows[0].clone());
+    restore_main_selection(state, selection);
+}
+
+fn preferred_main_selection(state: &AppState) -> Option<MainHierarchySelection> {
+    selection_from_thread_id(state, state.selected_thread_id.as_deref())
+        .or_else(|| selection_from_work_unit_id(state, state.selected_work_unit_id.as_deref()))
+        .or_else(|| selection_from_workstream_id(state, state.selected_workstream_id.as_deref()))
+        .or_else(|| selection_from_thread_id(state, state.session.active_thread_id.as_deref()))
+}
+
+fn selection_from_workstream_id(
+    state: &AppState,
+    workstream_id: Option<&str>,
+) -> Option<MainHierarchySelection> {
+    let workstream_id = workstream_id?;
+    state
+        .collaboration
+        .workstreams
+        .iter()
+        .any(|workstream| workstream.id == workstream_id)
+        .then(|| MainHierarchySelection::Workstream {
+            workstream_id: workstream_id.to_string(),
+        })
+}
+
+fn selection_from_work_unit_id(
+    state: &AppState,
+    work_unit_id: Option<&str>,
+) -> Option<MainHierarchySelection> {
+    let work_unit = state
+        .collaboration
+        .work_units
+        .iter()
+        .find(|work_unit| Some(work_unit.id.as_str()) == work_unit_id)?;
+    Some(MainHierarchySelection::WorkUnit {
+        workstream_id: work_unit.workstream_id.clone(),
+        work_unit_id: work_unit.id.clone(),
+    })
+}
+
+fn selection_from_thread_id(
+    state: &AppState,
+    thread_id: Option<&str>,
+) -> Option<MainHierarchySelection> {
+    let thread_id = thread_id?;
+    let assignment = state
+        .collaboration
+        .codex_thread_assignments
+        .iter()
+        .find(|assignment| assignment.codex_thread_id == thread_id)?;
+    Some(MainHierarchySelection::Thread {
+        workstream_id: assignment.workstream_id.clone(),
+        work_unit_id: assignment.work_unit_id.clone(),
+        thread_id: assignment.codex_thread_id.clone(),
+    })
+}
+
+fn visible_main_hierarchy_rows(state: &AppState) -> Vec<MainHierarchySelection> {
+    let mut rows = Vec::new();
+    for workstream in &state.collaboration.workstreams {
+        rows.push(MainHierarchySelection::Workstream {
+            workstream_id: workstream.id.clone(),
+        });
+        if !state
+            .main_view
+            .expanded_workstreams
+            .contains(workstream.id.as_str())
+        {
+            continue;
+        }
+
+        for work_unit in state
+            .collaboration
+            .work_units
+            .iter()
+            .filter(|work_unit| work_unit.workstream_id == workstream.id)
+        {
+            rows.push(MainHierarchySelection::WorkUnit {
+                workstream_id: workstream.id.clone(),
+                work_unit_id: work_unit.id.clone(),
+            });
+            if !state
+                .main_view
+                .expanded_work_units
+                .contains(work_unit.id.as_str())
+            {
+                continue;
+            }
+
+            for thread_id in thread_ids_for_work_unit(state, &work_unit.id) {
+                rows.push(MainHierarchySelection::Thread {
+                    workstream_id: workstream.id.clone(),
+                    work_unit_id: work_unit.id.clone(),
+                    thread_id,
+                });
+            }
+        }
+    }
+    rows
+}
+
+fn thread_ids_for_work_unit(state: &AppState, work_unit_id: &str) -> Vec<String> {
+    let mut thread_ids = state
+        .collaboration
+        .codex_thread_assignments
+        .iter()
+        .filter(|assignment| assignment.work_unit_id == work_unit_id)
+        .map(|assignment| assignment.codex_thread_id.clone())
+        .collect::<Vec<_>>();
+    thread_ids.sort_by(|left, right| {
+        thread_updated_at(state, right)
+            .cmp(&thread_updated_at(state, left))
+            .then_with(|| left.cmp(right))
+    });
+    thread_ids.dedup();
+    thread_ids
+}
+
+fn thread_updated_at(state: &AppState, thread_id: &str) -> i64 {
+    state
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .map(|thread| thread.updated_at)
+        .unwrap_or_default()
+}
+
+fn select_relative_main_hierarchy(state: &mut AppState, delta: isize) -> Vec<Effect> {
+    let visible_rows = visible_main_hierarchy_rows(state);
+    if visible_rows.is_empty() {
+        state.main_view.selected = None;
+        state.main_view.scroll_offset = 0;
+        return Vec::new();
+    }
+
+    let current_index = state
+        .main_view
+        .selected
+        .as_ref()
+        .and_then(|selected| visible_rows.iter().position(|row| row == selected))
+        .unwrap_or(0);
+    let next_index = if delta.is_negative() {
+        current_index.saturating_sub(delta.unsigned_abs())
+    } else {
+        (current_index + delta as usize).min(visible_rows.len().saturating_sub(1))
+    };
+    set_main_selection(state, visible_rows[next_index].clone())
+}
+
+fn expand_selected_main_hierarchy(state: &mut AppState) -> Vec<Effect> {
+    let Some(selected) = state.main_view.selected.clone() else {
+        return Vec::new();
+    };
+    match selected {
+        MainHierarchySelection::Workstream { workstream_id } => {
+            state
+                .main_view
+                .expanded_workstreams
+                .insert(workstream_id.clone());
+            set_main_selection(state, MainHierarchySelection::Workstream { workstream_id })
+        }
+        MainHierarchySelection::WorkUnit {
+            workstream_id,
+            work_unit_id,
+        } => {
+            state
+                .main_view
+                .expanded_workstreams
+                .insert(workstream_id.clone());
+            state
+                .main_view
+                .expanded_work_units
+                .insert(work_unit_id.clone());
+            set_main_selection(
+                state,
+                MainHierarchySelection::WorkUnit {
+                    workstream_id,
+                    work_unit_id,
+                },
+            )
+        }
+        MainHierarchySelection::Thread { .. } => Vec::new(),
+    }
+}
+
+fn collapse_selected_main_hierarchy(state: &mut AppState) -> Vec<Effect> {
+    let Some(selected) = state.main_view.selected.clone() else {
+        return Vec::new();
+    };
+    match selected {
+        MainHierarchySelection::Workstream { workstream_id } => {
+            state
+                .main_view
+                .expanded_workstreams
+                .remove(workstream_id.as_str());
+            set_main_selection(state, MainHierarchySelection::Workstream { workstream_id })
+        }
+        MainHierarchySelection::WorkUnit {
+            workstream_id,
+            work_unit_id,
+        } => {
+            if state
+                .main_view
+                .expanded_work_units
+                .remove(work_unit_id.as_str())
+            {
+                set_main_selection(
+                    state,
+                    MainHierarchySelection::WorkUnit {
+                        workstream_id,
+                        work_unit_id,
+                    },
+                )
+            } else {
+                set_main_selection(state, MainHierarchySelection::Workstream { workstream_id })
+            }
+        }
+        MainHierarchySelection::Thread {
+            workstream_id,
+            work_unit_id,
+            ..
+        } => set_main_selection(
+            state,
+            MainHierarchySelection::WorkUnit {
+                workstream_id,
+                work_unit_id,
+            },
+        ),
+    }
+}
+
+fn set_main_selection(state: &mut AppState, selection: MainHierarchySelection) -> Vec<Effect> {
+    apply_main_selection(state, selection, true, true)
+}
+
+fn restore_main_selection(state: &mut AppState, selection: MainHierarchySelection) {
+    let _ = apply_main_selection(state, selection, false, false);
+}
+
+fn apply_main_selection(
+    state: &mut AppState,
+    selection: MainHierarchySelection,
+    sync_legacy: bool,
+    load_effects: bool,
+) -> Vec<Effect> {
+    expand_main_selection_ancestors(state, &selection);
+    state.main_view.selected = Some(selection.clone());
+    if sync_legacy {
+        sync_legacy_selection_from_main(state, &selection);
+    }
+    let visible_rows = visible_main_hierarchy_rows(state);
+    if let Some(selected_index) = visible_rows.iter().position(|row| row == &selection) {
+        adjust_main_scroll(state, selected_index, visible_rows.len());
+    } else {
+        state.main_view.scroll_offset = 0;
+    }
+
+    if !load_effects {
+        return Vec::new();
+    }
+
+    match selection {
+        MainHierarchySelection::Thread { thread_id, .. } => select_thread(state, thread_id),
+        MainHierarchySelection::WorkUnit { .. } => load_selected_work_unit_detail_if_needed(state),
+        MainHierarchySelection::Workstream { .. } => {
+            load_selected_work_unit_detail_if_needed(state)
+        }
+    }
+}
+
+fn expand_main_selection_ancestors(state: &mut AppState, selection: &MainHierarchySelection) {
+    match selection {
+        MainHierarchySelection::Workstream { .. } => {}
+        MainHierarchySelection::WorkUnit { workstream_id, .. } => {
+            state
+                .main_view
+                .expanded_workstreams
+                .insert(workstream_id.clone());
+        }
+        MainHierarchySelection::Thread {
+            workstream_id,
+            work_unit_id,
+            ..
+        } => {
+            state
+                .main_view
+                .expanded_workstreams
+                .insert(workstream_id.clone());
+            state
+                .main_view
+                .expanded_work_units
+                .insert(work_unit_id.clone());
+        }
+    }
+}
+
+fn sync_legacy_selection_from_main(state: &mut AppState, selection: &MainHierarchySelection) {
+    match selection {
+        MainHierarchySelection::Workstream { workstream_id } => {
+            state.selected_workstream_id = Some(workstream_id.clone());
+            let selected_belongs_to_workstream =
+                state
+                    .selected_work_unit_id
+                    .as_ref()
+                    .is_some_and(|selected_work_unit_id| {
+                        state.collaboration.work_units.iter().any(|work_unit| {
+                            work_unit.id == *selected_work_unit_id
+                                && work_unit.workstream_id == *workstream_id
+                        })
+                    });
+            if !selected_belongs_to_workstream {
+                state.selected_work_unit_id = state
+                    .collaboration
+                    .work_units
+                    .iter()
+                    .find(|work_unit| work_unit.workstream_id == *workstream_id)
+                    .map(|work_unit| work_unit.id.clone());
+            }
+        }
+        MainHierarchySelection::WorkUnit {
+            workstream_id,
+            work_unit_id,
+        } => {
+            state.selected_workstream_id = Some(workstream_id.clone());
+            state.selected_work_unit_id = Some(work_unit_id.clone());
+            state.selected_thread_id = thread_ids_for_work_unit(state, work_unit_id)
+                .into_iter()
+                .next()
+                .or_else(|| state.selected_thread_id.clone());
+        }
+        MainHierarchySelection::Thread {
+            workstream_id,
+            work_unit_id,
+            thread_id,
+        } => {
+            state.selected_workstream_id = Some(workstream_id.clone());
+            state.selected_work_unit_id = Some(work_unit_id.clone());
+            state.selected_thread_id = Some(thread_id.clone());
+        }
+    }
+}
+
+fn adjust_main_scroll(state: &mut AppState, selected_index: usize, row_count: usize) {
+    if selected_index < state.main_view.scroll_offset {
+        state.main_view.scroll_offset = selected_index;
+    } else {
+        let visible_end = state.main_view.scroll_offset + MAIN_HIERARCHY_SCROLL_WINDOW;
+        if selected_index >= visible_end {
+            state.main_view.scroll_offset = selected_index + 1 - MAIN_HIERARCHY_SCROLL_WINDOW;
+        }
+    }
+    let max_offset = row_count.saturating_sub(MAIN_HIERARCHY_SCROLL_WINDOW);
+    state.main_view.scroll_offset = state.main_view.scroll_offset.min(max_offset);
 }
 
 fn reconcile_thread_selection(state: &mut AppState, preferred_thread_id: Option<&str>) {
