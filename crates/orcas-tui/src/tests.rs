@@ -3761,8 +3761,9 @@ async fn review_surface_renders_queue_detail_and_header_counts() {
     assert!(rendered.contains("Review Queue"), "{rendered}");
     assert!(rendered.contains("Review Summary"), "{rendered}");
     assert!(rendered.contains("Review Actions"), "{rendered}");
-    assert!(rendered.contains("pending_decisions=1"), "{rendered}");
-    assert!(rendered.contains("open_proposals=1"), "{rendered}");
+    assert!(rendered.contains("mode=sectioned"), "{rendered}");
+    assert!(rendered.contains("decisions=1"), "{rendered}");
+    assert!(rendered.contains("proposals=1"), "{rendered}");
     assert!(rendered.contains("failures=1"), "{rendered}");
 }
 
@@ -3804,6 +3805,19 @@ async fn review_queue_contains_decision_proposal_failure_and_review_rows() {
             .rows
             .iter()
             .any(|row| row.kind == view_model::ReviewRowKind::ReviewRequired)
+    );
+    assert_eq!(
+        review
+            .sections
+            .iter()
+            .map(|section| section.label.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "Open Decisions",
+            "Open Proposals",
+            "Failures",
+            "Review Required",
+        ]
     );
 }
 
@@ -3894,6 +3908,265 @@ async fn review_selection_survives_snapshot_refresh() {
     );
     let rendered = harness.render_text(160, 42);
     assert!(rendered.contains("Review Queue"), "{rendered}");
+}
+
+#[tokio::test]
+async fn actionable_review_decision_exposes_approve_and_reject_affordances() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let review = harness.review_vm();
+    assert_eq!(
+        review.footer.actions,
+        vec![
+            view_model::ReviewActionViewModel {
+                key: "a".to_string(),
+                label: "approve and send".to_string(),
+            },
+            view_model::ReviewActionViewModel {
+                key: "d".to_string(),
+                label: "reject".to_string(),
+            },
+        ]
+    );
+    assert!(review.footer.hint_line.contains("a approve"));
+    assert!(review.footer.hint_line.contains("d reject"));
+}
+
+#[tokio::test]
+async fn approve_from_review_updates_queue_detail_and_header_state() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    harness
+        .dispatch(UserAction::ApproveSelectedSupervisorDecision)
+        .await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| {
+        matches!(
+            command,
+            BackendCommand::ApproveSupervisorDecision { decision_id }
+                if decision_id == "std-1"
+        )
+    }));
+    assert_eq!(
+        harness.state().review_view.selected,
+        Some(ReviewSelection::Proposal {
+            work_unit_id: "wu-1".to_string(),
+            proposal_id: "proposal-1".to_string(),
+        })
+    );
+    assert_eq!(harness.review_queue_vm().rows.len(), 3);
+    assert!(
+        harness
+            .review_vm()
+            .header
+            .summary_lines
+            .iter()
+            .any(|line| line.contains("decisions=0"))
+    );
+    assert_eq!(
+        harness
+            .state()
+            .collaboration
+            .supervisor_turn_decisions
+            .iter()
+            .find(|decision| decision.decision_id == "std-1")
+            .map(|decision| decision.status),
+        Some(orcas_core::SupervisorTurnDecisionStatus::Sent)
+    );
+    assert!(harness.review_vm().detail_panel.title.contains("Proposal"));
+}
+
+#[tokio::test]
+async fn reject_from_review_updates_queue_detail_and_header_state() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    harness
+        .dispatch(UserAction::RejectSelectedSupervisorDecision)
+        .await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| {
+        matches!(
+            command,
+            BackendCommand::RejectSupervisorDecision { decision_id }
+                if decision_id == "std-1"
+        )
+    }));
+    assert_eq!(
+        harness.state().review_view.selected,
+        Some(ReviewSelection::Proposal {
+            work_unit_id: "wu-1".to_string(),
+            proposal_id: "proposal-1".to_string(),
+        })
+    );
+    assert_eq!(harness.review_queue_vm().rows.len(), 3);
+    assert!(
+        harness
+            .review_vm()
+            .header
+            .summary_lines
+            .iter()
+            .any(|line| line.contains("decisions=0"))
+    );
+    assert_eq!(
+        harness
+            .state()
+            .collaboration
+            .supervisor_turn_decisions
+            .iter()
+            .find(|decision| decision.decision_id == "std-1")
+            .map(|decision| decision.status),
+        Some(orcas_core::SupervisorTurnDecisionStatus::Rejected)
+    );
+    assert!(harness.review_vm().detail_panel.title.contains("Proposal"));
+}
+
+#[tokio::test]
+async fn non_actionable_review_rows_do_not_expose_invalid_actions() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+
+    let review = harness.review_vm();
+    assert!(review.footer.actions.is_empty());
+    assert!(!review.footer.hint_line.contains("a approve"));
+    assert!(!review.footer.hint_line.contains("d reject"));
+}
+
+#[tokio::test]
+async fn review_mutation_failure_preserves_selection_and_surfaces_feedback() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.fail_next_command("backend exploded").await;
+
+    harness
+        .dispatch(UserAction::ApproveSelectedSupervisorDecision)
+        .await;
+
+    assert_eq!(
+        harness.state().review_view.selected,
+        Some(ReviewSelection::Decision {
+            decision_id: "std-1".to_string(),
+        })
+    );
+    assert_eq!(
+        harness.state().banner.as_ref().map(|banner| banner.level),
+        Some(BannerLevel::Error)
+    );
+    assert!(
+        harness
+            .state()
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.message.contains("supervisor approve failed"))
+    );
+    assert!(
+        harness
+            .review_vm()
+            .header
+            .summary_lines
+            .iter()
+            .any(|line| line.contains("decisions=1"))
+    );
+}
+
+#[tokio::test]
+async fn review_queue_sections_render_expected_categories() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let rendered = harness.render_text(160, 42);
+    assert!(rendered.contains("Review Queue [sectioned]"), "{rendered}");
+    assert!(rendered.contains("Open Decisions"), "{rendered}");
+    assert!(rendered.contains("Open Proposals"), "{rendered}");
+    assert!(rendered.contains("Failures"), "{rendered}");
+    assert!(rendered.contains("Review Required"), "{rendered}");
+}
+
+#[tokio::test]
+async fn proposal_detail_fallback_is_informative_without_cached_detail() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+
+    let review = harness.review_vm();
+    assert!(review.detail_panel.title.contains("Proposal"));
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("Detailed proposal pack is not cached yet"))
+    );
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("decision: continue"))
+    );
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("operator_read: supervisor has an open proposal context"))
+    );
 }
 
 #[tokio::test]

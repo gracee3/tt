@@ -134,9 +134,8 @@ fn render_summary(lines: Vec<String>) -> Paragraph<'static> {
 fn render_queue(queue: view_model::ReviewQueueViewModel, area: Rect) -> Paragraph<'static> {
     let visible_rows = area.height.saturating_sub(2) as usize;
     let total_rows = queue.rows.len();
-    let offset = queue
-        .scroll_offset
-        .min(total_rows.saturating_sub(visible_rows));
+    let display_offset = display_row_offset_for_scroll(&queue)
+        .min(queue.display_rows.len().saturating_sub(visible_rows.max(1)));
 
     let lines = if queue.rows.is_empty() {
         vec![Line::styled(
@@ -145,36 +144,43 @@ fn render_queue(queue: view_model::ReviewQueueViewModel, area: Rect) -> Paragrap
         )]
     } else {
         queue
-            .rows
+            .display_rows
             .into_iter()
-            .skip(offset)
+            .skip(display_offset)
             .take(visible_rows.max(1))
-            .map(|row| {
-                let mut spans = vec![
-                    Span::styled(
-                        selection_marker(row.selected, true),
-                        selection_marker_style(row.selected, true),
-                    ),
+            .map(|row| match row {
+                view_model::ReviewQueueDisplayRowViewModel::Section(section) => Line::from(vec![
+                    Span::styled(section.label, label_style()),
                     Span::styled(" ", metadata_style()),
-                    Span::styled(review_kind_label(row.kind), metadata_style()),
-                    Span::styled(" ", metadata_style()),
-                    Span::styled(row.label, row_style(row.selected, true)),
-                ];
-                for badge in row.badges {
-                    if badge == "-" || badge.is_empty() {
-                        continue;
+                    Span::styled(format!("[{}]", section.count), status_text_style("count")),
+                ]),
+                view_model::ReviewQueueDisplayRowViewModel::Row(row) => {
+                    let mut spans = vec![
+                        Span::styled(
+                            selection_marker(row.selected, true),
+                            selection_marker_style(row.selected, true),
+                        ),
+                        Span::styled(" ", metadata_style()),
+                        Span::styled(review_kind_label(row.kind), metadata_style()),
+                        Span::styled(" ", metadata_style()),
+                        Span::styled(row.label, row_style(row.selected, true)),
+                    ];
+                    for badge in row.badges {
+                        if badge == "-" || badge.is_empty() {
+                            continue;
+                        }
+                        spans.push(Span::styled(" ", metadata_style()));
+                        spans.push(Span::styled(
+                            format!("[{}]", badge),
+                            status_text_style(&badge),
+                        ));
                     }
-                    spans.push(Span::styled(" ", metadata_style()));
-                    spans.push(Span::styled(
-                        format!("[{}]", badge),
-                        status_text_style(&badge),
-                    ));
+                    if let Some(secondary) = row.secondary {
+                        spans.push(Span::styled(" ", metadata_style()));
+                        spans.push(Span::styled(secondary, metadata_style()));
+                    }
+                    Line::from(spans)
                 }
-                if let Some(secondary) = row.secondary {
-                    spans.push(Span::styled(" ", metadata_style()));
-                    spans.push(Span::styled(secondary, metadata_style()));
-                }
-                Line::from(spans)
             })
             .collect::<Vec<_>>()
     };
@@ -184,7 +190,8 @@ fn render_queue(queue: view_model::ReviewQueueViewModel, area: Rect) -> Paragrap
             Block::default()
                 .title(Line::styled(
                     format!(
-                        "Review Queue {}",
+                        "Review Queue [{}] {}",
+                        queue.organization_label,
                         queue
                             .selected_index
                             .map(|index| format!("({}/{})", index + 1, total_rows.max(1)))
@@ -198,21 +205,53 @@ fn render_queue(queue: view_model::ReviewQueueViewModel, area: Rect) -> Paragrap
         .wrap(Wrap { trim: true })
 }
 
+fn display_row_offset_for_scroll(queue: &view_model::ReviewQueueViewModel) -> usize {
+    let mut item_rows_seen = 0usize;
+    for (display_index, row) in queue.display_rows.iter().enumerate() {
+        if item_rows_seen >= queue.scroll_offset {
+            return display_index;
+        }
+        if matches!(row, view_model::ReviewQueueDisplayRowViewModel::Row(_)) {
+            item_rows_seen += 1;
+        }
+    }
+    0
+}
+
 fn render_footer(footer: view_model::ReviewFooterViewModel) -> Paragraph<'static> {
-    let mut lines = footer
-        .lines
+    let view_model::ReviewFooterViewModel {
+        title,
+        lines: footer_lines,
+        actions,
+        hint_line,
+    } = footer;
+    let mut lines = footer_lines
         .into_iter()
         .map(|line| Line::styled(line, value_style()))
         .collect::<Vec<_>>();
+    if !actions.is_empty() {
+        lines.push(Line::styled(String::new(), metadata_style()));
+        let mut action_spans = vec![Span::styled("actions: ", label_style())];
+        for (index, action) in actions.into_iter().enumerate() {
+            if index > 0 {
+                action_spans.push(Span::styled("  ", metadata_style()));
+            }
+            action_spans.push(Span::styled(
+                format!("[{}] {}", action.key, action.label),
+                key_hint_style(),
+            ));
+        }
+        lines.push(Line::from(action_spans));
+    }
     lines.push(Line::styled(String::new(), metadata_style()));
     lines.push(Line::from(vec![
         Span::styled("keys: ", label_style()),
-        Span::styled(footer.hint_line, key_hint_style()),
+        Span::styled(hint_line, key_hint_style()),
     ]));
     Paragraph::new(Text::from(lines))
         .block(
             Block::default()
-                .title(Line::styled(footer.title, panel_title_style(true)))
+                .title(Line::styled(title, panel_title_style(true)))
                 .borders(Borders::ALL)
                 .border_style(focus_block_style(true)),
         )

@@ -117,6 +117,7 @@ pub struct MainViewState {
 pub struct ReviewViewState {
     pub selected: Option<ReviewSelection>,
     pub scroll_offset: usize,
+    pub selection_anchor: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -818,37 +819,33 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
             vec![Effect::ManualRefreshDecision { assignment_id }]
         }
         UserAction::ApproveSelectedSupervisorDecision => {
-            let Some(decision_id) = selected_thread_pending_supervisor_decision(state)
-                .map(|decision| decision.decision_id.clone())
-            else {
+            let Some(decision_id) = selected_supervisor_decision_id_for_review_action(state) else {
                 state.banner = Some(StatusBanner {
                     level: BannerLevel::Warning,
-                    message: "Selected thread has no pending supervisor proposal.".to_string(),
+                    message: selected_supervisor_decision_action_unavailable_message(state),
                 });
                 return Vec::new();
             };
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
                 message: format!(
-                    "Approving and sending supervisor proposal {}...",
+                    "Approving and sending supervisor decision {}...",
                     decision_id
                 ),
             });
             vec![Effect::ApproveSupervisorDecision { decision_id }]
         }
         UserAction::RejectSelectedSupervisorDecision => {
-            let Some(decision_id) = selected_thread_pending_supervisor_decision(state)
-                .map(|decision| decision.decision_id.clone())
-            else {
+            let Some(decision_id) = selected_supervisor_decision_id_for_review_action(state) else {
                 state.banner = Some(StatusBanner {
                     level: BannerLevel::Warning,
-                    message: "Selected thread has no pending supervisor proposal.".to_string(),
+                    message: selected_supervisor_decision_action_unavailable_message(state),
                 });
                 return Vec::new();
             };
             state.banner = Some(StatusBanner {
                 level: BannerLevel::Info,
-                message: format!("Rejecting supervisor proposal {}...", decision_id),
+                message: format!("Rejecting supervisor decision {}...", decision_id),
             });
             vec![Effect::RejectSupervisorDecision { decision_id }]
         }
@@ -1419,6 +1416,7 @@ fn reconcile_review_view(state: &mut AppState) {
     if visible_rows.is_empty() {
         state.review_view.selected = None;
         state.review_view.scroll_offset = 0;
+        state.review_view.selection_anchor = 0;
         return;
     }
 
@@ -1427,6 +1425,13 @@ fn reconcile_review_view(state: &mut AppState) {
         .selected
         .clone()
         .filter(|selected| visible_rows.contains(selected))
+        .or_else(|| {
+            let anchored_index = state
+                .review_view
+                .selection_anchor
+                .min(visible_rows.len().saturating_sub(1));
+            visible_rows.get(anchored_index).cloned()
+        })
         .unwrap_or_else(|| visible_rows[0].clone());
     restore_review_selection(state, selection);
 }
@@ -1836,8 +1841,10 @@ fn apply_review_selection(
     state.review_view.selected = Some(selection.clone());
     let visible_rows = review_queue_selections(state);
     if let Some(selected_index) = visible_rows.iter().position(|row| row == &selection) {
+        state.review_view.selection_anchor = selected_index;
         adjust_review_scroll(state, selected_index, visible_rows.len());
     } else {
+        state.review_view.selection_anchor = 0;
         state.review_view.scroll_offset = 0;
     }
 
@@ -2555,6 +2562,56 @@ fn selected_thread_pending_supervisor_decision(
                 .cmp(&right.created_at)
                 .then_with(|| left.decision_id.cmp(&right.decision_id))
         })
+}
+
+fn selected_review_pending_supervisor_decision(
+    state: &AppState,
+) -> Option<&ipc::SupervisorTurnDecisionSummary> {
+    if state.current_view != TopLevelView::Overview
+        || state.main_view.program_view != ProgramView::Review
+    {
+        return None;
+    }
+
+    let ReviewSelection::Decision { decision_id } = state.review_view.selected.as_ref()? else {
+        return None;
+    };
+
+    state
+        .collaboration
+        .supervisor_turn_decisions
+        .iter()
+        .find(|decision| {
+            decision.decision_id == *decision_id
+                && decision.status == orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman
+        })
+}
+
+fn selected_supervisor_decision_id_for_review_action(state: &AppState) -> Option<String> {
+    if state.current_view == TopLevelView::Overview
+        && state.main_view.program_view == ProgramView::Review
+    {
+        return selected_review_pending_supervisor_decision(state)
+            .map(|decision| decision.decision_id.clone());
+    }
+
+    selected_thread_pending_supervisor_decision(state).map(|decision| decision.decision_id.clone())
+}
+
+fn selected_supervisor_decision_action_unavailable_message(state: &AppState) -> String {
+    if state.current_view == TopLevelView::Overview
+        && state.main_view.program_view == ProgramView::Review
+    {
+        return match state.review_view.selected.as_ref() {
+            Some(ReviewSelection::Decision { .. }) => {
+                "Selected review decision is not awaiting human approval.".to_string()
+            }
+            Some(_) => "Selected review item has no approve/reject action yet.".to_string(),
+            None => "No review item selected.".to_string(),
+        };
+    }
+
+    "Selected thread has no pending supervisor decision.".to_string()
 }
 
 fn selected_thread_pending_steer_decision(

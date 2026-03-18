@@ -46,15 +46,38 @@ pub struct ReviewQueueRowViewModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewQueueViewModel {
     pub rows: Vec<ReviewQueueRowViewModel>,
+    pub display_rows: Vec<ReviewQueueDisplayRowViewModel>,
+    pub sections: Vec<ReviewQueueSectionViewModel>,
     pub scroll_offset: usize,
     pub selected_index: Option<usize>,
+    pub organization_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewFooterViewModel {
     pub title: String,
     pub lines: Vec<String>,
+    pub actions: Vec<ReviewActionViewModel>,
     pub hint_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewActionViewModel {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewQueueDisplayRowViewModel {
+    Section(ReviewQueueSectionViewModel),
+    Row(ReviewQueueRowViewModel),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueueSectionViewModel {
+    pub kind: ReviewRowKind,
+    pub label: String,
+    pub count: usize,
 }
 
 pub fn review_view(state: &AppState) -> ReviewViewModel {
@@ -71,6 +94,8 @@ pub fn review_queue(state: &AppState) -> ReviewQueueViewModel {
         .into_iter()
         .map(|selection| review_queue_row(state, selection))
         .collect::<Vec<_>>();
+    let sections = review_queue_sections(&rows);
+    let display_rows = review_queue_display_rows(&rows, &sections);
     let selected_index = state
         .review_view
         .selected
@@ -78,8 +103,11 @@ pub fn review_queue(state: &AppState) -> ReviewQueueViewModel {
         .and_then(|selected| rows.iter().position(|row| &row.selection == selected));
     ReviewQueueViewModel {
         rows,
+        display_rows,
+        sections,
         scroll_offset: state.review_view.scroll_offset,
         selected_index,
+        organization_label: "sectioned".to_string(),
     }
 }
 
@@ -123,7 +151,7 @@ fn review_header(state: &AppState) -> ReviewHeaderViewModel {
         .count();
 
     let mut summary_lines = vec![format!(
-        "queue={} pending_decisions={} open_proposals={} failures={} needs_human={}",
+        "mode=sectioned  queue={}  decisions={}  proposals={}  failures={}  needs_human={}",
         review_queue_selections(state).len(),
         pending_decisions,
         open_proposals,
@@ -336,35 +364,28 @@ fn proposal_detail_panel(
     let workstream = work_unit
         .map(|work_unit| workstream_summary(state, &work_unit.workstream_id))
         .flatten();
+    let proposal_summary = work_unit.and_then(|work_unit| work_unit.proposal.as_ref());
     let Some(record) = proposal_record(state, work_unit_id, proposal_id) else {
-        return PanelViewModel {
-            title: format!(
-                "Proposal {}",
-                work_unit
-                    .map(|work_unit| work_unit.title.as_str())
-                    .unwrap_or(work_unit_id)
-            ),
-            lines: vec![
-                "Loading detailed proposal context...".to_string(),
-                format!("work_unit: {work_unit_id}"),
-                format!("proposal: {proposal_id}"),
-            ],
-        };
+        return proposal_summary_fallback_panel(
+            work_unit,
+            workstream,
+            proposal_summary,
+            proposal_id,
+            "Detailed proposal pack is not cached yet; using snapshot summary.".to_string(),
+        );
     };
     let Some(proposal) = record
         .proposal
         .as_ref()
         .or(record.approved_proposal.as_ref())
     else {
-        return PanelViewModel {
-            title: format!(
-                "Proposal {}",
-                work_unit
-                    .map(|work_unit| work_unit.title.as_str())
-                    .unwrap_or(work_unit_id)
-            ),
-            lines: vec!["Proposal payload is unavailable.".to_string()],
-        };
+        return proposal_summary_fallback_panel(
+            work_unit,
+            workstream,
+            proposal_summary,
+            proposal_id,
+            "Detailed proposal payload is unavailable; using snapshot summary.".to_string(),
+        );
     };
 
     let mut lines = vec![
@@ -557,20 +578,14 @@ fn failure_detail_panel(state: &AppState, work_unit_id: &str, proposal_id: &str)
     let workstream = work_unit
         .map(|work_unit| workstream_summary(state, &work_unit.workstream_id))
         .flatten();
+    let proposal_summary = work_unit.and_then(|work_unit| work_unit.proposal.as_ref());
     let Some(record) = proposal_record(state, work_unit_id, proposal_id) else {
-        return PanelViewModel {
-            title: format!(
-                "Failure {}",
-                work_unit
-                    .map(|work_unit| work_unit.title.clone())
-                    .unwrap_or_else(|| work_unit_id.to_string())
-            ),
-            lines: vec![
-                "Loading failure context...".to_string(),
-                format!("work_unit: {work_unit_id}"),
-                format!("proposal: {proposal_id}"),
-            ],
-        };
+        return failure_summary_fallback_panel(
+            work_unit,
+            workstream,
+            proposal_summary,
+            proposal_id,
+        );
     };
     let failure = record.generation_failure.as_ref();
     let mut lines = vec![
@@ -721,31 +736,87 @@ fn review_required_detail_panel(
 }
 
 fn review_footer(state: &AppState) -> ReviewFooterViewModel {
-    let lines = match state.review_view.selected.as_ref() {
-        Some(ReviewSelection::Decision { .. }) => vec![
-            "Selected item is a supervisor decision awaiting human review.".to_string(),
-            "This surface is read-mostly in this pass; approval and rejection remain scaffolded context."
-                .to_string(),
-        ],
-        Some(ReviewSelection::Proposal { .. }) => vec![
-            "Selected item is an open supervisor proposal.".to_string(),
-            "Approval-edit and approve/reject actions can land here in the next slice.".to_string(),
-        ],
-        Some(ReviewSelection::Failure { .. }) => vec![
-            "Selected item is a proposal generation failure.".to_string(),
-            "Use this detail to triage why generation failed before retrying elsewhere.".to_string(),
-        ],
-        Some(ReviewSelection::ReviewRequired { .. }) => vec![
-            "Selected item is a report that still needs supervisor/human review.".to_string(),
-            "This area is reserved for future review notes and disposition actions.".to_string(),
-        ],
-        None => vec!["No review item selected.".to_string()],
+    let (lines, actions, hint_line) = match state.review_view.selected.as_ref() {
+        Some(ReviewSelection::Decision { decision_id }) => {
+            let actionable = decision_summary(state, decision_id).is_some_and(|decision| {
+                decision.status == orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman
+            });
+            if actionable {
+                (
+                    vec![
+                        "Selected item is a supervisor decision awaiting human review."
+                            .to_string(),
+                        "Approve sends the pending decision through the existing stable daemon path; reject closes it without sending."
+                            .to_string(),
+                    ],
+                    vec![
+                        ReviewActionViewModel {
+                            key: "a".to_string(),
+                            label: "approve and send".to_string(),
+                        },
+                        ReviewActionViewModel {
+                            key: "d".to_string(),
+                            label: "reject".to_string(),
+                        },
+                    ],
+                    "up/down move  a approve  d reject  tab switch tabs  r refresh  ? help"
+                        .to_string(),
+                )
+            } else {
+                (
+                    vec![
+                        "Selected item is a supervisor decision with a resolved or non-actionable status."
+                            .to_string(),
+                        "Use the detail pane to confirm outcome, linkage, and whether the thread or work unit still needs follow-up."
+                            .to_string(),
+                    ],
+                    Vec::new(),
+                    "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+                )
+            }
+        }
+        Some(ReviewSelection::Proposal { .. }) => (
+            vec![
+                "Selected item is an open supervisor proposal.".to_string(),
+                "Use the detail pane to review summary, timing, and decision type; proposal mutation remains in the existing workflow."
+                    .to_string(),
+            ],
+            Vec::new(),
+            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+        ),
+        Some(ReviewSelection::Failure { .. }) => (
+            vec![
+                "Selected item is a proposal generation failure.".to_string(),
+                "Use the failure stage and source linkage to decide whether to retry generation or inspect the originating work context."
+                    .to_string(),
+            ],
+            Vec::new(),
+            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+        ),
+        Some(ReviewSelection::ReviewRequired { .. }) => (
+            vec![
+                "Selected item is a report that still needs supervisor/human review.".to_string(),
+                "Use the summary, findings, and questions to judge whether this needs human follow-up, proposal generation, or a return to live operations."
+                    .to_string(),
+            ],
+            Vec::new(),
+            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+        ),
+        None => (
+            vec![
+                "No review item selected.".to_string(),
+                "Pick a queue row to inspect review context and available actions.".to_string(),
+            ],
+            Vec::new(),
+            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+        ),
     };
 
     ReviewFooterViewModel {
         title: "Review Actions".to_string(),
         lines,
-        hint_line: "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+        actions,
+        hint_line,
     }
 }
 
@@ -808,6 +879,179 @@ fn proposal_record<'a>(
 
 fn thread_summary<'a>(state: &'a AppState, thread_id: &str) -> Option<&'a ipc::ThreadSummary> {
     state.threads.iter().find(|thread| thread.id == thread_id)
+}
+
+fn review_queue_sections(rows: &[ReviewQueueRowViewModel]) -> Vec<ReviewQueueSectionViewModel> {
+    let mut sections = Vec::new();
+    for kind in [
+        ReviewRowKind::Decision,
+        ReviewRowKind::Proposal,
+        ReviewRowKind::Failure,
+        ReviewRowKind::ReviewRequired,
+    ] {
+        let count = rows.iter().filter(|row| row.kind == kind).count();
+        if count == 0 {
+            continue;
+        }
+        sections.push(ReviewQueueSectionViewModel {
+            kind,
+            label: review_section_label(kind).to_string(),
+            count,
+        });
+    }
+    sections
+}
+
+fn review_queue_display_rows(
+    rows: &[ReviewQueueRowViewModel],
+    sections: &[ReviewQueueSectionViewModel],
+) -> Vec<ReviewQueueDisplayRowViewModel> {
+    let mut display_rows = Vec::new();
+    for section in sections {
+        display_rows.push(ReviewQueueDisplayRowViewModel::Section(section.clone()));
+        display_rows.extend(
+            rows.iter()
+                .filter(|row| row.kind == section.kind)
+                .cloned()
+                .map(ReviewQueueDisplayRowViewModel::Row),
+        );
+    }
+    display_rows
+}
+
+fn proposal_summary_fallback_panel(
+    work_unit: Option<&ipc::WorkUnitSummary>,
+    workstream: Option<&ipc::WorkstreamSummary>,
+    proposal_summary: Option<&ipc::WorkUnitProposalSummary>,
+    proposal_id: &str,
+    context_line: String,
+) -> PanelViewModel {
+    let title = format!(
+        "Proposal {}",
+        work_unit
+            .map(|work_unit| work_unit.title.as_str())
+            .unwrap_or(proposal_id)
+    );
+    let mut lines = vec![
+        format!(
+            "workstream: {}",
+            workstream
+                .map(|workstream| workstream.title.clone())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "work_unit: {}",
+            work_unit
+                .map(|work_unit| work_unit.title.clone())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "status: {}",
+            proposal_summary
+                .map(|proposal| proposal_status_label(proposal.latest_status).to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+        format!(
+            "decision: {}",
+            proposal_summary
+                .and_then(|proposal| {
+                    proposal
+                        .open_proposed_decision_type
+                        .or(proposal.latest_proposed_decision_type)
+                })
+                .map(decision_type_label)
+                .unwrap_or("-")
+        ),
+        format!(
+            "created: {}",
+            proposal_summary
+                .map(|proposal| timestamp_label(proposal.latest_created_at))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "reviewed: {}",
+            proposal_summary
+                .and_then(|proposal| proposal.latest_reviewed_at)
+                .map(timestamp_label)
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "approval_edits: {}",
+            proposal_summary
+                .map(|proposal| proposal.latest_has_approval_edits.to_string())
+                .unwrap_or_else(|| "false".to_string())
+        ),
+        context_line,
+    ];
+    if let Some(proposal_summary) = proposal_summary {
+        lines.push(format!(
+            "operator_read: supervisor has {} proposal context for this work unit.",
+            if proposal_summary.has_open_proposal {
+                "an open"
+            } else {
+                "historical"
+            }
+        ));
+    } else {
+        lines.push("operator_read: proposal exists in the queue, but only minimal snapshot context is currently available.".to_string());
+    }
+    PanelViewModel { title, lines }
+}
+
+fn failure_summary_fallback_panel(
+    work_unit: Option<&ipc::WorkUnitSummary>,
+    workstream: Option<&ipc::WorkstreamSummary>,
+    proposal_summary: Option<&ipc::WorkUnitProposalSummary>,
+    proposal_id: &str,
+) -> PanelViewModel {
+    PanelViewModel {
+        title: format!(
+            "Failure {}",
+            work_unit
+                .map(|work_unit| work_unit.title.clone())
+                .unwrap_or_else(|| proposal_id.to_string())
+        ),
+        lines: vec![
+            format!(
+                "workstream: {}",
+                workstream
+                    .map(|workstream| workstream.title.clone())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "work_unit: {}",
+                work_unit
+                    .map(|work_unit| work_unit.title.clone())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "status: {}",
+                proposal_summary
+                    .map(|proposal| proposal_status_label(proposal.latest_status).to_string())
+                    .unwrap_or_else(|| "generation_failed".to_string())
+            ),
+            format!(
+                "failure_stage: {}",
+                proposal_summary
+                    .and_then(|proposal| proposal.latest_failure_stage)
+                    .map(proposal_failure_stage_label)
+                    .unwrap_or("generation_failed")
+            ),
+            "detail: detailed failure payload is not cached yet; triaging from snapshot summary."
+                .to_string(),
+            "operator_read: inspect the originating work unit or source report before retrying proposal generation."
+                .to_string(),
+        ],
+    }
+}
+
+fn review_section_label(kind: ReviewRowKind) -> &'static str {
+    match kind {
+        ReviewRowKind::Decision => "Open Decisions",
+        ReviewRowKind::Proposal => "Open Proposals",
+        ReviewRowKind::Failure => "Failures",
+        ReviewRowKind::ReviewRequired => "Review Required",
+    }
 }
 
 fn decision_type_label(decision_type: orcas_core::DecisionType) -> &'static str {

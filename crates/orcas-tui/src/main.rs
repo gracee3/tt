@@ -177,6 +177,8 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
     let current_view = state.current_view;
     let in_main_view =
         current_view == TopLevelView::Overview && state.main_view.program_view == ProgramView::Main;
+    let in_review_view = current_view == TopLevelView::Overview
+        && state.main_view.program_view == ProgramView::Review;
     let in_supervisor_view = current_view == TopLevelView::Supervisor;
     let in_threads_view = current_view == TopLevelView::Threads;
     let in_overview_program = current_view == TopLevelView::Overview;
@@ -191,11 +193,13 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         KeyCode::Char('s') if in_supervisor_view => Some(UserAction::StartDaemon),
         KeyCode::Char('x') if in_supervisor_view => Some(UserAction::StopDaemon),
         KeyCode::Char('R') if in_supervisor_view => Some(UserAction::RestartDaemon),
-        KeyCode::Char('a') if in_threads_view => {
+        KeyCode::Char('a') if in_threads_view || in_review_view => {
             Some(UserAction::ApproveSelectedSupervisorDecision)
         }
         KeyCode::Char('c') if in_threads_view => Some(UserAction::ResumeSelectedThreadInCodex),
-        KeyCode::Char('d') if in_threads_view => Some(UserAction::RejectSelectedSupervisorDecision),
+        KeyCode::Char('d') if in_threads_view || in_review_view => {
+            Some(UserAction::RejectSelectedSupervisorDecision)
+        }
         KeyCode::Char('s') if in_threads_view => Some(UserAction::ProposeSteerForSelectedThread),
         KeyCode::Char('e') if in_threads_view => {
             Some(UserAction::EditPendingSteerForSelectedThread)
@@ -387,6 +391,31 @@ mod tests {
                 key(KeyCode::Char('m'))
             ),
             Some(UserAction::ManualRefreshForSelectedThread)
+        );
+    }
+
+    #[test]
+    fn review_view_maps_supervisor_review_actions() {
+        assert_eq!(
+            action_for_key(
+                &state_for_overview_program(ProgramView::Review),
+                key(KeyCode::Char('a'))
+            ),
+            Some(UserAction::ApproveSelectedSupervisorDecision)
+        );
+        assert_eq!(
+            action_for_key(
+                &state_for_overview_program(ProgramView::Review),
+                key(KeyCode::Char('d'))
+            ),
+            Some(UserAction::RejectSelectedSupervisorDecision)
+        );
+        assert_eq!(
+            action_for_key(
+                &state_for_overview_program(ProgramView::Review),
+                key(KeyCode::Char('c'))
+            ),
+            None
         );
     }
 
