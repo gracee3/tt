@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::codex::CodexThreadSessions;
-use orcas_core::{ConnectionState, ipc};
+use orcas_core::{ConnectionState, WorkUnitStatus, WorkstreamStatus, authority, ipc};
 
 const MAX_LOG_ENTRIES: usize = 64;
 const MAIN_HIERARCHY_SCROLL_WINDOW: usize = 12;
@@ -107,10 +107,105 @@ pub enum ReviewSelection {
 pub struct MainViewState {
     pub program_view: ProgramView,
     pub selected: Option<MainHierarchySelection>,
+    pub pending_selection: Option<MainHierarchySelection>,
     pub expanded_workstreams: BTreeSet<String>,
     pub expanded_work_units: BTreeSet<String>,
     pub scroll_offset: usize,
     pub initialized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FooterFieldState {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl FooterFieldState {
+    pub fn new(value: impl Into<String>) -> Self {
+        let value = value.into();
+        let cursor = value.len();
+        Self { value, cursor }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkstreamFooterForm {
+    pub workstream_id: Option<String>,
+    pub expected_revision: Option<authority::Revision>,
+    pub active_field: usize,
+    pub title: FooterFieldState,
+    pub root_dir: FooterFieldState,
+    pub status: WorkstreamStatus,
+    pub priority: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkUnitFooterForm {
+    pub workstream_id: String,
+    pub work_unit_id: Option<String>,
+    pub expected_revision: Option<authority::Revision>,
+    pub active_field: usize,
+    pub title: FooterFieldState,
+    pub task_statement: String,
+    pub status: WorkUnitStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackedThreadFooterForm {
+    pub work_unit_id: String,
+    pub tracked_thread_id: Option<String>,
+    pub expected_revision: Option<authority::Revision>,
+    pub active_field: usize,
+    pub title: FooterFieldState,
+    pub root_dir: FooterFieldState,
+    pub notes: Option<String>,
+    pub backend_kind: authority::TrackedThreadBackendKind,
+    pub upstream_thread_id: Option<String>,
+    pub binding_state: authority::TrackedThreadBindingState,
+    pub preferred_model: Option<String>,
+    pub last_seen_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteFooterState {
+    pub target: authority::DeleteTarget,
+    pub label: String,
+    pub expected_revision: authority::Revision,
+    pub confirmation_token: authority::DeleteToken,
+    pub requires_typed_confirmation: bool,
+    pub active_field: usize,
+    pub typed_confirmation: FooterFieldState,
+    pub affected_work_units: u64,
+    pub affected_tracked_threads: u64,
+    pub has_upstream_bindings: bool,
+    pub fallback_selection: Option<MainHierarchySelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainFooterState {
+    Inspect,
+    CreateWorkstream(WorkstreamFooterForm),
+    EditWorkstream(WorkstreamFooterForm),
+    CreateWorkUnit(WorkUnitFooterForm),
+    EditWorkUnit(WorkUnitFooterForm),
+    CreateTrackedThread(TrackedThreadFooterForm),
+    EditTrackedThread(TrackedThreadFooterForm),
+    ConfirmDelete(DeleteFooterState),
+}
+
+impl Default for MainFooterState {
+    fn default() -> Self {
+        Self::Inspect
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuthorityMainState {
+    pub hierarchy: authority::HierarchySnapshot,
+    pub workstream_details: HashMap<String, ipc::AuthorityWorkstreamGetResponse>,
+    pub work_unit_details: HashMap<String, ipc::AuthorityWorkunitGetResponse>,
+    pub tracked_thread_details: HashMap<String, ipc::AuthorityTrackedThreadGetResponse>,
+    pub footer: MainFooterState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -149,6 +244,7 @@ pub struct AppState {
     pub reconnect_attempt: u32,
     pub session: ipc::SessionState,
     pub collaboration: ipc::CollaborationSnapshot,
+    pub authority_main: AuthorityMainState,
     pub threads: Vec<ipc::ThreadSummary>,
     pub daemon_models: Vec<ipc::ModelSummary>,
     pub models_loading: bool,
@@ -220,6 +316,20 @@ pub enum UserAction {
     SelectNextThread,
     SelectPreviousThread,
     SelectThread(String),
+    CreateWorkstream,
+    CreateWorkUnitForSelection,
+    CreateTrackedThreadForSelection,
+    EditSelectedMainEntity,
+    DeleteSelectedMainEntity,
+    MainFooterAppend(char),
+    MainFooterBackspace,
+    MainFooterDelete,
+    MainFooterMoveLeft,
+    MainFooterMoveRight,
+    MainFooterNextField,
+    MainFooterPreviousField,
+    SubmitMainFooter,
+    CancelMainFooter,
     EnterPromptMode,
     ExitPromptMode,
     PromptAppend(char),
@@ -254,6 +364,20 @@ pub enum UiEvent {
     },
     ConnectionLost(String),
     ThreadLoaded(ipc::ThreadView),
+    AuthorityHierarchyLoaded(authority::HierarchySnapshot),
+    AuthorityWorkstreamDetailLoaded(ipc::AuthorityWorkstreamGetResponse),
+    AuthorityWorkUnitDetailLoaded(ipc::AuthorityWorkunitGetResponse),
+    AuthorityTrackedThreadDetailLoaded(ipc::AuthorityTrackedThreadGetResponse),
+    AuthorityDeletePlanLoaded(authority::DeletePlan),
+    AuthorityWorkstreamCreated(authority::WorkstreamRecord),
+    AuthorityWorkstreamEdited(authority::WorkstreamRecord),
+    AuthorityWorkstreamDeleted(authority::WorkstreamRecord),
+    AuthorityWorkUnitCreated(authority::WorkUnitRecord),
+    AuthorityWorkUnitEdited(authority::WorkUnitRecord),
+    AuthorityWorkUnitDeleted(authority::WorkUnitRecord),
+    AuthorityTrackedThreadCreated(authority::TrackedThreadRecord),
+    AuthorityTrackedThreadEdited(authority::TrackedThreadRecord),
+    AuthorityTrackedThreadDeleted(authority::TrackedThreadRecord),
     ThreadAttached(ipc::ThreadAttachResponse),
     ActiveTurnsLoaded(Vec<ipc::TurnStateView>),
     TurnStateLoaded(ipc::TurnAttachResponse),
@@ -390,6 +514,46 @@ impl UiEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
     RefreshSnapshot,
+    LoadAuthorityHierarchy,
+    LoadAuthorityWorkstreamDetail {
+        workstream_id: String,
+    },
+    LoadAuthorityWorkUnitDetail {
+        work_unit_id: String,
+    },
+    LoadAuthorityTrackedThreadDetail {
+        tracked_thread_id: String,
+    },
+    LoadAuthorityDeletePlan {
+        target: authority::DeleteTarget,
+    },
+    CreateAuthorityWorkstream {
+        command: authority::CreateWorkstream,
+    },
+    EditAuthorityWorkstream {
+        command: authority::EditWorkstream,
+    },
+    DeleteAuthorityWorkstream {
+        command: authority::DeleteWorkstream,
+    },
+    CreateAuthorityWorkUnit {
+        command: authority::CreateWorkUnit,
+    },
+    EditAuthorityWorkUnit {
+        command: authority::EditWorkUnit,
+    },
+    DeleteAuthorityWorkUnit {
+        command: authority::DeleteWorkUnit,
+    },
+    CreateAuthorityTrackedThread {
+        command: authority::CreateTrackedThread,
+    },
+    EditAuthorityTrackedThread {
+        command: authority::EditTrackedThread,
+    },
+    DeleteAuthorityTrackedThread {
+        command: authority::DeleteTrackedThread,
+    },
     SubscribeEvents,
     ScheduleReconnect,
     LoadActiveTurns,
@@ -441,7 +605,7 @@ pub enum Effect {
 
 pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
     match action {
-        Action::Start => vec![Effect::RefreshSnapshot],
+        Action::Start => vec![Effect::RefreshSnapshot, Effect::LoadAuthorityHierarchy],
         Action::User(user_action) => reduce_user_action(state, user_action),
         Action::Event(event) => reduce_event(state, event),
     }
@@ -450,7 +614,7 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
 fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
     match action {
         UserAction::Refresh => {
-            let mut effects = vec![Effect::RefreshSnapshot];
+            let mut effects = vec![Effect::RefreshSnapshot, Effect::LoadAuthorityHierarchy];
             if state.current_view == TopLevelView::Supervisor {
                 state.models_loading = true;
                 effects.push(Effect::LoadModels);
@@ -577,6 +741,119 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
         UserAction::SelectNextThread => select_relative_thread(state, 1),
         UserAction::SelectPreviousThread => select_relative_thread(state, -1),
         UserAction::SelectThread(thread_id) => select_thread(state, thread_id),
+        UserAction::CreateWorkstream => {
+            state.authority_main.footer =
+                MainFooterState::CreateWorkstream(default_workstream_form());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Creating a new workstream. Tab moves fields, Ctrl+S submits.".to_string(),
+            });
+            Vec::new()
+        }
+        UserAction::CreateWorkUnitForSelection => {
+            let Some(workstream_id) = selected_main_workstream_id(state) else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a workstream to create a work unit.".to_string(),
+                });
+                return Vec::new();
+            };
+            state.authority_main.footer =
+                MainFooterState::CreateWorkUnit(default_work_unit_form(workstream_id));
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Creating a work unit under the selected workstream.".to_string(),
+            });
+            Vec::new()
+        }
+        UserAction::CreateTrackedThreadForSelection => {
+            let Some(work_unit_id) = selected_main_work_unit_id(state) else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a work unit to create a tracked thread.".to_string(),
+                });
+                return Vec::new();
+            };
+            state.authority_main.footer =
+                MainFooterState::CreateTrackedThread(default_tracked_thread_form(work_unit_id));
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Creating a tracked thread under the selected work unit.".to_string(),
+            });
+            Vec::new()
+        }
+        UserAction::EditSelectedMainEntity => open_main_footer_for_edit(state),
+        UserAction::DeleteSelectedMainEntity => {
+            let Some(target) = selected_main_delete_target(state) else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a workstream, work unit, or tracked thread to delete."
+                        .to_string(),
+                });
+                return Vec::new();
+            };
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: "Loading delete confirmation…".to_string(),
+            });
+            vec![Effect::LoadAuthorityDeletePlan { target }]
+        }
+        UserAction::MainFooterAppend(ch) => {
+            if let Some(field) = active_main_footer_field_mut(state) {
+                footer_field_insert(field, ch);
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::MainFooterBackspace => {
+            if let Some(field) = active_main_footer_field_mut(state) {
+                footer_field_backspace(field);
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::MainFooterDelete => {
+            if let Some(field) = active_main_footer_field_mut(state) {
+                footer_field_delete(field);
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::MainFooterMoveLeft => {
+            if let Some(field) = active_main_footer_field_mut(state) {
+                footer_field_move_left(field);
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::MainFooterMoveRight => {
+            if let Some(field) = active_main_footer_field_mut(state) {
+                footer_field_move_right(field);
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::MainFooterNextField => {
+            cycle_main_footer_field(state, 1);
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::MainFooterPreviousField => {
+            cycle_main_footer_field(state, -1);
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::SubmitMainFooter => submit_main_footer(state),
+        UserAction::CancelMainFooter => {
+            if !matches!(state.authority_main.footer, MainFooterState::Inspect) {
+                state.authority_main.footer = MainFooterState::Inspect;
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Info,
+                    message: "Cancelled footer action.".to_string(),
+                });
+            }
+            Vec::new()
+        }
         UserAction::EnterPromptMode
         | UserAction::ExitPromptMode
         | UserAction::PromptAppend(_)
@@ -908,6 +1185,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             reconcile_main_view(state);
             effects.extend(load_selected_work_unit_detail_if_needed(state));
             effects.push(Effect::LoadActiveTurns);
+            effects.push(Effect::LoadAuthorityHierarchy);
             state.banner = None;
         }
         UiEvent::ReconnectScheduled { attempt, delay_ms } => {
@@ -959,6 +1237,189 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             }
             reconcile_main_view(state);
             state.banner = None;
+        }
+        UiEvent::AuthorityHierarchyLoaded(hierarchy) => {
+            state.authority_main.hierarchy = hierarchy;
+            if state.main_view.expanded_workstreams.is_empty()
+                && state.main_view.expanded_work_units.is_empty()
+            {
+                state.main_view.expanded_workstreams.extend(
+                    state
+                        .authority_main
+                        .hierarchy
+                        .workstreams
+                        .iter()
+                        .map(|workstream| workstream.workstream.id.to_string()),
+                );
+                state.main_view.expanded_work_units.extend(
+                    state
+                        .authority_main
+                        .hierarchy
+                        .workstreams
+                        .iter()
+                        .flat_map(|workstream| {
+                            workstream
+                                .work_units
+                                .iter()
+                                .map(|work_unit| work_unit.work_unit.id.to_string())
+                        }),
+                );
+            }
+            reconcile_main_view(state);
+            effects.extend(load_selected_main_detail_if_needed(state));
+        }
+        UiEvent::AuthorityWorkstreamDetailLoaded(detail) => {
+            state
+                .authority_main
+                .workstream_details
+                .insert(detail.workstream.id.to_string(), detail);
+            reconcile_main_view(state);
+        }
+        UiEvent::AuthorityWorkUnitDetailLoaded(detail) => {
+            state
+                .authority_main
+                .work_unit_details
+                .insert(detail.work_unit.id.to_string(), detail);
+            reconcile_main_view(state);
+        }
+        UiEvent::AuthorityTrackedThreadDetailLoaded(detail) => {
+            state
+                .authority_main
+                .tracked_thread_details
+                .insert(detail.tracked_thread.id.to_string(), detail);
+            reconcile_main_view(state);
+        }
+        UiEvent::AuthorityDeletePlanLoaded(delete_plan) => {
+            let Some(target) = delete_target_from_aggregate_key(&delete_plan.target.aggregate_key)
+            else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Error,
+                    message: "Delete plan target could not be decoded.".to_string(),
+                });
+                return effects;
+            };
+            state.authority_main.footer = MainFooterState::ConfirmDelete(DeleteFooterState {
+                fallback_selection: delete_fallback_for_target(state, &target),
+                target,
+                label: delete_plan.target.label.clone(),
+                expected_revision: delete_plan.expected_revision,
+                confirmation_token: delete_plan.confirmation_token,
+                requires_typed_confirmation: delete_plan.requires_typed_confirmation,
+                active_field: 0,
+                typed_confirmation: FooterFieldState::new(String::new()),
+                affected_work_units: delete_plan.affected_work_units,
+                affected_tracked_threads: delete_plan.affected_tracked_threads,
+                has_upstream_bindings: delete_plan.has_upstream_bindings,
+            });
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Warning,
+                message: format!("Confirm delete for `{}`.", delete_plan.target.label),
+            });
+        }
+        UiEvent::AuthorityWorkstreamCreated(workstream)
+        | UiEvent::AuthorityWorkstreamEdited(workstream) => {
+            state.authority_main.footer = MainFooterState::Inspect;
+            state.main_view.pending_selection = Some(MainHierarchySelection::Workstream {
+                workstream_id: workstream.id.to_string(),
+            });
+            state
+                .authority_main
+                .workstream_details
+                .remove(workstream.id.as_str());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Saved workstream `{}`.", workstream.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
+            effects.push(Effect::LoadAuthorityWorkstreamDetail {
+                workstream_id: workstream.id.to_string(),
+            });
+        }
+        UiEvent::AuthorityWorkstreamDeleted(workstream) => {
+            let fallback = selected_main_delete_fallback(state);
+            state.authority_main.footer = MainFooterState::Inspect;
+            state
+                .authority_main
+                .workstream_details
+                .remove(workstream.id.as_str());
+            state.main_view.pending_selection = fallback;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Deleted workstream `{}`.", workstream.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
+        }
+        UiEvent::AuthorityWorkUnitCreated(work_unit)
+        | UiEvent::AuthorityWorkUnitEdited(work_unit) => {
+            state.authority_main.footer = MainFooterState::Inspect;
+            state.main_view.pending_selection = Some(MainHierarchySelection::WorkUnit {
+                workstream_id: work_unit.workstream_id.to_string(),
+                work_unit_id: work_unit.id.to_string(),
+            });
+            state
+                .authority_main
+                .work_unit_details
+                .remove(work_unit.id.as_str());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Saved work unit `{}`.", work_unit.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
+            effects.push(Effect::LoadAuthorityWorkUnitDetail {
+                work_unit_id: work_unit.id.to_string(),
+            });
+        }
+        UiEvent::AuthorityWorkUnitDeleted(work_unit) => {
+            let fallback = selected_main_delete_fallback(state);
+            state.authority_main.footer = MainFooterState::Inspect;
+            state
+                .authority_main
+                .work_unit_details
+                .remove(work_unit.id.as_str());
+            state.main_view.pending_selection = fallback;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Deleted work unit `{}`.", work_unit.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
+        }
+        UiEvent::AuthorityTrackedThreadCreated(tracked_thread)
+        | UiEvent::AuthorityTrackedThreadEdited(tracked_thread) => {
+            let parent_workstream_id =
+                workstream_id_for_work_unit(state, tracked_thread.work_unit_id.as_str())
+                    .unwrap_or_default();
+            state.authority_main.footer = MainFooterState::Inspect;
+            state.main_view.pending_selection = Some(MainHierarchySelection::Thread {
+                workstream_id: parent_workstream_id,
+                work_unit_id: tracked_thread.work_unit_id.to_string(),
+                thread_id: tracked_thread.id.to_string(),
+            });
+            state
+                .authority_main
+                .tracked_thread_details
+                .remove(tracked_thread.id.as_str());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Saved tracked thread `{}`.", tracked_thread.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
+            effects.push(Effect::LoadAuthorityTrackedThreadDetail {
+                tracked_thread_id: tracked_thread.id.to_string(),
+            });
+        }
+        UiEvent::AuthorityTrackedThreadDeleted(tracked_thread) => {
+            let fallback = selected_main_delete_fallback(state);
+            state.authority_main.footer = MainFooterState::Inspect;
+            state
+                .authority_main
+                .tracked_thread_details
+                .remove(tracked_thread.id.as_str());
+            state.main_view.pending_selection = fallback;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Deleted tracked thread `{}` locally.", tracked_thread.title),
+            });
+            effects.push(Effect::LoadAuthorityHierarchy);
         }
         UiEvent::ThreadAttached(response) => {
             if let Some(thread) = response.thread {
@@ -1361,33 +1822,47 @@ fn reconcile_main_view(state: &mut AppState) {
         .expanded_workstreams
         .retain(|workstream_id| {
             state
-                .collaboration
+                .authority_main
+                .hierarchy
                 .workstreams
                 .iter()
-                .any(|workstream| workstream.id == *workstream_id)
+                .any(|workstream| workstream.workstream.id.as_str() == workstream_id)
         });
     state.main_view.expanded_work_units.retain(|work_unit_id| {
         state
-            .collaboration
-            .work_units
+            .authority_main
+            .hierarchy
+            .workstreams
             .iter()
-            .any(|work_unit| work_unit.id == *work_unit_id)
+            .any(|workstream| {
+                workstream
+                    .work_units
+                    .iter()
+                    .any(|work_unit| work_unit.work_unit.id.as_str() == work_unit_id)
+            })
     });
 
     if !state.main_view.initialized {
         state.main_view.expanded_workstreams.extend(
             state
-                .collaboration
+                .authority_main
+                .hierarchy
                 .workstreams
                 .iter()
-                .map(|workstream| workstream.id.clone()),
+                .map(|workstream| workstream.workstream.id.to_string()),
         );
         state.main_view.expanded_work_units.extend(
             state
-                .collaboration
-                .work_units
+                .authority_main
+                .hierarchy
+                .workstreams
                 .iter()
-                .map(|work_unit| work_unit.id.clone()),
+                .flat_map(|workstream| {
+                    workstream
+                        .work_units
+                        .iter()
+                        .map(|work_unit| work_unit.work_unit.id.to_string())
+                }),
         );
         state.main_view.initialized = true;
     }
@@ -1402,11 +1877,19 @@ fn reconcile_main_view(state: &mut AppState) {
 
     let selection = state
         .main_view
-        .selected
+        .pending_selection
         .clone()
         .filter(|selected| visible_rows.contains(selected))
+        .or_else(|| {
+            state
+                .main_view
+                .selected
+                .clone()
+                .filter(|selected| visible_rows.contains(selected))
+        })
         .or_else(|| preferred_main_selection(state))
         .unwrap_or_else(|| visible_rows[0].clone());
+    state.main_view.pending_selection = None;
     restore_main_selection(state, selection);
     reconcile_review_view(state);
 }
@@ -1537,127 +2020,120 @@ fn review_selection_sort_key(selection: &ReviewSelection) -> String {
 }
 
 fn preferred_main_selection(state: &AppState) -> Option<MainHierarchySelection> {
-    selection_from_thread_id(state, state.selected_thread_id.as_deref())
-        .or_else(|| selection_from_work_unit_id(state, state.selected_work_unit_id.as_deref()))
-        .or_else(|| selection_from_workstream_id(state, state.selected_workstream_id.as_deref()))
-        .or_else(|| selection_from_thread_id(state, state.session.active_thread_id.as_deref()))
-}
-
-fn selection_from_workstream_id(
-    state: &AppState,
-    workstream_id: Option<&str>,
-) -> Option<MainHierarchySelection> {
-    let workstream_id = workstream_id?;
-    state
-        .collaboration
-        .workstreams
-        .iter()
-        .any(|workstream| workstream.id == workstream_id)
-        .then(|| MainHierarchySelection::Workstream {
-            workstream_id: workstream_id.to_string(),
+    selection_from_upstream_thread(state, state.selected_thread_id.as_deref())
+        .or_else(|| {
+            selection_from_upstream_thread(state, state.session.active_thread_id.as_deref())
+        })
+        .or_else(|| state.main_view.selected.clone())
+        .or_else(|| {
+            state
+                .authority_main
+                .hierarchy
+                .workstreams
+                .iter()
+                .find_map(|workstream| {
+                    workstream.work_units.iter().find_map(|work_unit| {
+                        work_unit.tracked_threads.first().map(|tracked_thread| {
+                            MainHierarchySelection::Thread {
+                                workstream_id: workstream.workstream.id.to_string(),
+                                work_unit_id: work_unit.work_unit.id.to_string(),
+                                thread_id: tracked_thread.id.to_string(),
+                            }
+                        })
+                    })
+                })
+        })
+        .or_else(|| {
+            state
+                .authority_main
+                .hierarchy
+                .workstreams
+                .iter()
+                .find_map(|workstream| {
+                    workstream.work_units.first().map(|work_unit| {
+                        MainHierarchySelection::WorkUnit {
+                            workstream_id: workstream.workstream.id.to_string(),
+                            work_unit_id: work_unit.work_unit.id.to_string(),
+                        }
+                    })
+                })
+        })
+        .or_else(|| {
+            state
+                .authority_main
+                .hierarchy
+                .workstreams
+                .first()
+                .map(|workstream| MainHierarchySelection::Workstream {
+                    workstream_id: workstream.workstream.id.to_string(),
+                })
         })
 }
 
-fn selection_from_work_unit_id(
+fn selection_from_upstream_thread(
     state: &AppState,
-    work_unit_id: Option<&str>,
+    upstream_thread_id: Option<&str>,
 ) -> Option<MainHierarchySelection> {
-    let work_unit = state
-        .collaboration
-        .work_units
+    let upstream_thread_id = upstream_thread_id?;
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
         .iter()
-        .find(|work_unit| Some(work_unit.id.as_str()) == work_unit_id)?;
-    Some(MainHierarchySelection::WorkUnit {
-        workstream_id: work_unit.workstream_id.clone(),
-        work_unit_id: work_unit.id.clone(),
-    })
-}
-
-fn selection_from_thread_id(
-    state: &AppState,
-    thread_id: Option<&str>,
-) -> Option<MainHierarchySelection> {
-    let thread_id = thread_id?;
-    let assignment = state
-        .collaboration
-        .codex_thread_assignments
-        .iter()
-        .find(|assignment| assignment.codex_thread_id == thread_id)?;
-    Some(MainHierarchySelection::Thread {
-        workstream_id: assignment.workstream_id.clone(),
-        work_unit_id: assignment.work_unit_id.clone(),
-        thread_id: assignment.codex_thread_id.clone(),
-    })
+        .find_map(|workstream| {
+            workstream.work_units.iter().find_map(|work_unit| {
+                work_unit.tracked_threads.iter().find_map(|tracked_thread| {
+                    (tracked_thread.upstream_thread_id.as_deref() == Some(upstream_thread_id)).then(
+                        || MainHierarchySelection::Thread {
+                            workstream_id: workstream.workstream.id.to_string(),
+                            work_unit_id: work_unit.work_unit.id.to_string(),
+                            thread_id: tracked_thread.id.to_string(),
+                        },
+                    )
+                })
+            })
+        })
 }
 
 fn visible_main_hierarchy_rows(state: &AppState) -> Vec<MainHierarchySelection> {
     let mut rows = Vec::new();
-    for workstream in &state.collaboration.workstreams {
+    for workstream in &state.authority_main.hierarchy.workstreams {
+        let workstream_id = workstream.workstream.id.to_string();
         rows.push(MainHierarchySelection::Workstream {
-            workstream_id: workstream.id.clone(),
+            workstream_id: workstream_id.clone(),
         });
         if !state
             .main_view
             .expanded_workstreams
-            .contains(workstream.id.as_str())
+            .contains(workstream_id.as_str())
         {
             continue;
         }
 
-        for work_unit in state
-            .collaboration
-            .work_units
-            .iter()
-            .filter(|work_unit| work_unit.workstream_id == workstream.id)
-        {
+        for work_unit in &workstream.work_units {
+            let work_unit_id = work_unit.work_unit.id.to_string();
             rows.push(MainHierarchySelection::WorkUnit {
-                workstream_id: workstream.id.clone(),
-                work_unit_id: work_unit.id.clone(),
+                workstream_id: workstream_id.clone(),
+                work_unit_id: work_unit_id.clone(),
             });
             if !state
                 .main_view
                 .expanded_work_units
-                .contains(work_unit.id.as_str())
+                .contains(work_unit_id.as_str())
             {
                 continue;
             }
 
-            for thread_id in thread_ids_for_work_unit(state, &work_unit.id) {
+            for tracked_thread in &work_unit.tracked_threads {
                 rows.push(MainHierarchySelection::Thread {
-                    workstream_id: workstream.id.clone(),
-                    work_unit_id: work_unit.id.clone(),
-                    thread_id,
+                    workstream_id: workstream_id.clone(),
+                    work_unit_id: work_unit_id.clone(),
+                    thread_id: tracked_thread.id.to_string(),
                 });
             }
         }
     }
     rows
-}
-
-fn thread_ids_for_work_unit(state: &AppState, work_unit_id: &str) -> Vec<String> {
-    let mut thread_ids = state
-        .collaboration
-        .codex_thread_assignments
-        .iter()
-        .filter(|assignment| assignment.work_unit_id == work_unit_id)
-        .map(|assignment| assignment.codex_thread_id.clone())
-        .collect::<Vec<_>>();
-    thread_ids.sort_by(|left, right| {
-        thread_updated_at(state, right)
-            .cmp(&thread_updated_at(state, left))
-            .then_with(|| left.cmp(right))
-    });
-    thread_ids.dedup();
-    thread_ids
-}
-
-fn thread_updated_at(state: &AppState, thread_id: &str) -> i64 {
-    state
-        .threads
-        .iter()
-        .find(|thread| thread.id == thread_id)
-        .map(|thread| thread.updated_at)
-        .unwrap_or_default()
 }
 
 fn select_relative_main_hierarchy(state: &mut AppState, delta: isize) -> Vec<Effect> {
@@ -1825,11 +2301,9 @@ fn apply_main_selection(
     }
 
     match selection {
-        MainHierarchySelection::Thread { thread_id, .. } => select_thread(state, thread_id),
-        MainHierarchySelection::WorkUnit { .. } => load_selected_work_unit_detail_if_needed(state),
-        MainHierarchySelection::Workstream { .. } => {
-            load_selected_work_unit_detail_if_needed(state)
-        }
+        MainHierarchySelection::Thread { .. }
+        | MainHierarchySelection::WorkUnit { .. }
+        | MainHierarchySelection::Workstream { .. } => load_selected_main_detail_if_needed(state),
     }
 }
 
@@ -1892,24 +2366,9 @@ fn sync_legacy_selection_from_main(state: &mut AppState, selection: &MainHierarc
     match selection {
         MainHierarchySelection::Workstream { workstream_id } => {
             state.selected_workstream_id = Some(workstream_id.clone());
-            let selected_belongs_to_workstream =
-                state
-                    .selected_work_unit_id
-                    .as_ref()
-                    .is_some_and(|selected_work_unit_id| {
-                        state.collaboration.work_units.iter().any(|work_unit| {
-                            work_unit.id == *selected_work_unit_id
-                                && work_unit.workstream_id == *workstream_id
-                        })
-                    });
-            if !selected_belongs_to_workstream {
-                state.selected_work_unit_id = state
-                    .collaboration
-                    .work_units
-                    .iter()
-                    .find(|work_unit| work_unit.workstream_id == *workstream_id)
-                    .map(|work_unit| work_unit.id.clone());
-            }
+            state.selected_work_unit_id =
+                first_authority_work_unit_for_workstream(state, workstream_id)
+                    .map(|work_unit| work_unit.work_unit.id.to_string());
         }
         MainHierarchySelection::WorkUnit {
             workstream_id,
@@ -1917,9 +2376,7 @@ fn sync_legacy_selection_from_main(state: &mut AppState, selection: &MainHierarc
         } => {
             state.selected_workstream_id = Some(workstream_id.clone());
             state.selected_work_unit_id = Some(work_unit_id.clone());
-            state.selected_thread_id = thread_ids_for_work_unit(state, work_unit_id)
-                .into_iter()
-                .next()
+            state.selected_thread_id = first_upstream_thread_for_work_unit(state, work_unit_id)
                 .or_else(|| state.selected_thread_id.clone());
         }
         MainHierarchySelection::Thread {
@@ -1929,7 +2386,8 @@ fn sync_legacy_selection_from_main(state: &mut AppState, selection: &MainHierarc
         } => {
             state.selected_workstream_id = Some(workstream_id.clone());
             state.selected_work_unit_id = Some(work_unit_id.clone());
-            state.selected_thread_id = Some(thread_id.clone());
+            state.selected_thread_id = tracked_thread_upstream_binding(state, thread_id)
+                .or_else(|| state.selected_thread_id.clone());
         }
     }
 }
@@ -2125,6 +2583,852 @@ fn load_work_unit_detail_if_needed_for(state: &AppState, work_unit_id: &str) -> 
         vec![Effect::LoadWorkUnitDetail {
             work_unit_id: work_unit_id.to_string(),
         }]
+    }
+}
+
+fn load_selected_main_detail_if_needed(state: &AppState) -> Vec<Effect> {
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::Workstream { workstream_id }) => {
+            if state
+                .authority_main
+                .workstream_details
+                .contains_key(workstream_id)
+            {
+                Vec::new()
+            } else {
+                vec![Effect::LoadAuthorityWorkstreamDetail {
+                    workstream_id: workstream_id.clone(),
+                }]
+            }
+        }
+        Some(MainHierarchySelection::WorkUnit { work_unit_id, .. }) => {
+            if state
+                .authority_main
+                .work_unit_details
+                .contains_key(work_unit_id)
+            {
+                Vec::new()
+            } else {
+                vec![Effect::LoadAuthorityWorkUnitDetail {
+                    work_unit_id: work_unit_id.clone(),
+                }]
+            }
+        }
+        Some(MainHierarchySelection::Thread { thread_id, .. }) => {
+            if state
+                .authority_main
+                .tracked_thread_details
+                .contains_key(thread_id)
+            {
+                Vec::new()
+            } else {
+                vec![Effect::LoadAuthorityTrackedThreadDetail {
+                    tracked_thread_id: thread_id.clone(),
+                }]
+            }
+        }
+        None => Vec::new(),
+    }
+}
+
+fn selected_main_workstream_id(state: &AppState) -> Option<String> {
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::Workstream { workstream_id })
+        | Some(MainHierarchySelection::WorkUnit { workstream_id, .. })
+        | Some(MainHierarchySelection::Thread { workstream_id, .. }) => Some(workstream_id.clone()),
+        None => None,
+    }
+}
+
+fn selected_main_work_unit_id(state: &AppState) -> Option<String> {
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::WorkUnit { work_unit_id, .. })
+        | Some(MainHierarchySelection::Thread { work_unit_id, .. }) => Some(work_unit_id.clone()),
+        _ => None,
+    }
+}
+
+fn selected_main_delete_target(state: &AppState) -> Option<authority::DeleteTarget> {
+    match state.main_view.selected.as_ref()? {
+        MainHierarchySelection::Workstream { workstream_id } => {
+            Some(authority::DeleteTarget::Workstream {
+                workstream_id: authority::WorkstreamId::parse(workstream_id.clone()).ok()?,
+            })
+        }
+        MainHierarchySelection::WorkUnit { work_unit_id, .. } => {
+            Some(authority::DeleteTarget::WorkUnit {
+                work_unit_id: authority::WorkUnitId::parse(work_unit_id.clone()).ok()?,
+            })
+        }
+        MainHierarchySelection::Thread { thread_id, .. } => {
+            Some(authority::DeleteTarget::TrackedThread {
+                tracked_thread_id: authority::TrackedThreadId::parse(thread_id.clone()).ok()?,
+            })
+        }
+    }
+}
+
+fn selected_main_delete_fallback(state: &AppState) -> Option<MainHierarchySelection> {
+    match &state.authority_main.footer {
+        MainFooterState::ConfirmDelete(delete) => delete.fallback_selection.clone(),
+        _ => None,
+    }
+}
+
+fn delete_fallback_for_target(
+    state: &AppState,
+    target: &authority::DeleteTarget,
+) -> Option<MainHierarchySelection> {
+    let rows = visible_main_hierarchy_rows(state);
+    let selected = match target {
+        authority::DeleteTarget::Workstream { workstream_id } => {
+            MainHierarchySelection::Workstream {
+                workstream_id: workstream_id.to_string(),
+            }
+        }
+        authority::DeleteTarget::WorkUnit { work_unit_id } => {
+            let workstream_id = workstream_id_for_work_unit(state, work_unit_id.as_str())?;
+            MainHierarchySelection::WorkUnit {
+                workstream_id,
+                work_unit_id: work_unit_id.to_string(),
+            }
+        }
+        authority::DeleteTarget::TrackedThread { tracked_thread_id } => {
+            let work_unit_id = work_unit_id_for_tracked_thread(state, tracked_thread_id.as_str())?;
+            let workstream_id = workstream_id_for_work_unit(state, &work_unit_id)?;
+            MainHierarchySelection::Thread {
+                workstream_id,
+                work_unit_id,
+                thread_id: tracked_thread_id.to_string(),
+            }
+        }
+    };
+    let selected_index = rows.iter().position(|row| row == &selected)?;
+    rows.iter()
+        .skip(selected_index + 1)
+        .chain(rows.iter().take(selected_index).rev())
+        .find(|candidate| !selection_is_deleted_by_target(candidate, target))
+        .cloned()
+}
+
+fn selection_is_deleted_by_target(
+    selection: &MainHierarchySelection,
+    target: &authority::DeleteTarget,
+) -> bool {
+    match (selection, target) {
+        (
+            MainHierarchySelection::Workstream { workstream_id },
+            authority::DeleteTarget::Workstream {
+                workstream_id: target_id,
+            },
+        ) => workstream_id == target_id.as_str(),
+        (
+            MainHierarchySelection::WorkUnit {
+                workstream_id,
+                work_unit_id,
+            },
+            authority::DeleteTarget::Workstream {
+                workstream_id: target_id,
+            },
+        ) => workstream_id == target_id.as_str() || work_unit_id == target_id.as_str(),
+        (
+            MainHierarchySelection::Thread {
+                workstream_id,
+                work_unit_id,
+                ..
+            },
+            authority::DeleteTarget::Workstream {
+                workstream_id: target_id,
+            },
+        ) => workstream_id == target_id.as_str() || work_unit_id == target_id.as_str(),
+        (
+            MainHierarchySelection::WorkUnit { work_unit_id, .. },
+            authority::DeleteTarget::WorkUnit {
+                work_unit_id: target_id,
+            },
+        ) => work_unit_id == target_id.as_str(),
+        (
+            MainHierarchySelection::Thread {
+                work_unit_id,
+                thread_id,
+                ..
+            },
+            authority::DeleteTarget::WorkUnit {
+                work_unit_id: target_id,
+            },
+        ) => work_unit_id == target_id.as_str() || thread_id == target_id.as_str(),
+        (
+            MainHierarchySelection::Thread { thread_id, .. },
+            authority::DeleteTarget::TrackedThread { tracked_thread_id },
+        ) => thread_id == tracked_thread_id.as_str(),
+        _ => false,
+    }
+}
+
+fn delete_target_from_aggregate_key(
+    aggregate_key: &authority::AggregateKey,
+) -> Option<authority::DeleteTarget> {
+    match aggregate_key.aggregate_type {
+        authority::AggregateType::Workstream => Some(authority::DeleteTarget::Workstream {
+            workstream_id: authority::WorkstreamId::parse(aggregate_key.aggregate_id.clone())
+                .ok()?,
+        }),
+        authority::AggregateType::WorkUnit => Some(authority::DeleteTarget::WorkUnit {
+            work_unit_id: authority::WorkUnitId::parse(aggregate_key.aggregate_id.clone()).ok()?,
+        }),
+        authority::AggregateType::TrackedThread => Some(authority::DeleteTarget::TrackedThread {
+            tracked_thread_id: authority::TrackedThreadId::parse(
+                aggregate_key.aggregate_id.clone(),
+            )
+            .ok()?,
+        }),
+    }
+}
+
+fn default_workstream_form() -> WorkstreamFooterForm {
+    WorkstreamFooterForm {
+        workstream_id: None,
+        expected_revision: None,
+        active_field: 0,
+        title: FooterFieldState::new(String::new()),
+        root_dir: FooterFieldState::new(String::new()),
+        status: WorkstreamStatus::Active,
+        priority: "normal".to_string(),
+    }
+}
+
+fn default_work_unit_form(workstream_id: String) -> WorkUnitFooterForm {
+    WorkUnitFooterForm {
+        workstream_id,
+        work_unit_id: None,
+        expected_revision: None,
+        active_field: 0,
+        title: FooterFieldState::new(String::new()),
+        task_statement: String::new(),
+        status: WorkUnitStatus::Ready,
+    }
+}
+
+fn default_tracked_thread_form(work_unit_id: String) -> TrackedThreadFooterForm {
+    TrackedThreadFooterForm {
+        work_unit_id,
+        tracked_thread_id: None,
+        expected_revision: None,
+        active_field: 0,
+        title: FooterFieldState::new(String::new()),
+        root_dir: FooterFieldState::new(String::new()),
+        notes: None,
+        backend_kind: authority::TrackedThreadBackendKind::Codex,
+        upstream_thread_id: None,
+        binding_state: authority::TrackedThreadBindingState::Unbound,
+        preferred_model: None,
+        last_seen_turn_id: None,
+    }
+}
+
+fn open_main_footer_for_edit(state: &mut AppState) -> Vec<Effect> {
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::Workstream { workstream_id }) => {
+            let workstream = state
+                .authority_main
+                .workstream_details
+                .get(workstream_id)
+                .map(|detail| detail.workstream.clone())
+                .or_else(|| {
+                    state
+                        .authority_main
+                        .hierarchy
+                        .workstreams
+                        .iter()
+                        .find(|node| node.workstream.id.as_str() == workstream_id)
+                        .map(|node| authority_workstream_record_from_summary(&node.workstream))
+                });
+            let Some(workstream) = workstream else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Workstream detail is still loading.".to_string(),
+                });
+                return load_selected_main_detail_if_needed(state);
+            };
+            state.authority_main.footer = MainFooterState::EditWorkstream(WorkstreamFooterForm {
+                workstream_id: Some(workstream.id.to_string()),
+                expected_revision: Some(workstream.revision),
+                active_field: 0,
+                title: FooterFieldState::new(workstream.title),
+                root_dir: FooterFieldState::new(workstream.objective),
+                status: workstream.status,
+                priority: workstream.priority,
+            });
+        }
+        Some(MainHierarchySelection::WorkUnit {
+            workstream_id,
+            work_unit_id,
+        }) => {
+            let work_unit = state
+                .authority_main
+                .work_unit_details
+                .get(work_unit_id)
+                .map(|detail| detail.work_unit.clone())
+                .or_else(|| find_authority_work_unit_record(state, work_unit_id));
+            let Some(work_unit) = work_unit else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Work unit detail is still loading.".to_string(),
+                });
+                return load_selected_main_detail_if_needed(state);
+            };
+            state.authority_main.footer = MainFooterState::EditWorkUnit(WorkUnitFooterForm {
+                workstream_id: workstream_id.clone(),
+                work_unit_id: Some(work_unit.id.to_string()),
+                expected_revision: Some(work_unit.revision),
+                active_field: 0,
+                title: FooterFieldState::new(work_unit.title),
+                task_statement: work_unit.task_statement,
+                status: work_unit.status,
+            });
+        }
+        Some(MainHierarchySelection::Thread {
+            work_unit_id,
+            thread_id,
+            ..
+        }) => {
+            let tracked_thread = state
+                .authority_main
+                .tracked_thread_details
+                .get(thread_id)
+                .map(|detail| detail.tracked_thread.clone())
+                .or_else(|| find_authority_tracked_thread_record(state, thread_id));
+            let Some(tracked_thread) = tracked_thread else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Tracked thread detail is still loading.".to_string(),
+                });
+                return load_selected_main_detail_if_needed(state);
+            };
+            state.authority_main.footer =
+                MainFooterState::EditTrackedThread(TrackedThreadFooterForm {
+                    work_unit_id: work_unit_id.clone(),
+                    tracked_thread_id: Some(tracked_thread.id.to_string()),
+                    expected_revision: Some(tracked_thread.revision),
+                    active_field: 0,
+                    title: FooterFieldState::new(tracked_thread.title),
+                    root_dir: FooterFieldState::new(
+                        tracked_thread.preferred_cwd.unwrap_or_default(),
+                    ),
+                    notes: tracked_thread.notes,
+                    backend_kind: tracked_thread.backend_kind,
+                    upstream_thread_id: tracked_thread.upstream_thread_id,
+                    binding_state: tracked_thread.binding_state,
+                    preferred_model: tracked_thread.preferred_model,
+                    last_seen_turn_id: tracked_thread.last_seen_turn_id,
+                });
+        }
+        None => {
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Warning,
+                message: "No Main hierarchy row is selected.".to_string(),
+            });
+        }
+    }
+    Vec::new()
+}
+
+fn active_main_footer_field_mut(state: &mut AppState) -> Option<&mut FooterFieldState> {
+    match &mut state.authority_main.footer {
+        MainFooterState::Inspect => None,
+        MainFooterState::CreateWorkstream(form) | MainFooterState::EditWorkstream(form) => {
+            match form.active_field {
+                0 => Some(&mut form.title),
+                1 => Some(&mut form.root_dir),
+                _ => None,
+            }
+        }
+        MainFooterState::CreateWorkUnit(form) | MainFooterState::EditWorkUnit(form) => {
+            match form.active_field {
+                0 => Some(&mut form.title),
+                _ => None,
+            }
+        }
+        MainFooterState::CreateTrackedThread(form) | MainFooterState::EditTrackedThread(form) => {
+            match form.active_field {
+                0 => Some(&mut form.title),
+                1 => Some(&mut form.root_dir),
+                _ => None,
+            }
+        }
+        MainFooterState::ConfirmDelete(delete) => Some(&mut delete.typed_confirmation),
+    }
+}
+
+fn cycle_main_footer_field(state: &mut AppState, delta: isize) {
+    let field_count = match &state.authority_main.footer {
+        MainFooterState::Inspect => 0,
+        MainFooterState::CreateWorkstream(_) | MainFooterState::EditWorkstream(_) => 2,
+        MainFooterState::CreateWorkUnit(_) | MainFooterState::EditWorkUnit(_) => 1,
+        MainFooterState::CreateTrackedThread(_) | MainFooterState::EditTrackedThread(_) => 2,
+        MainFooterState::ConfirmDelete(_) => 1,
+    };
+    if field_count <= 1 {
+        return;
+    }
+    let next_index = |current: usize| {
+        if delta.is_negative() {
+            current
+                .saturating_sub(delta.unsigned_abs())
+                .min(field_count - 1)
+        } else {
+            (current + delta as usize).min(field_count - 1)
+        }
+    };
+    match &mut state.authority_main.footer {
+        MainFooterState::CreateWorkstream(form) | MainFooterState::EditWorkstream(form) => {
+            form.active_field = next_index(form.active_field);
+        }
+        MainFooterState::CreateWorkUnit(form) | MainFooterState::EditWorkUnit(form) => {
+            form.active_field = next_index(form.active_field);
+        }
+        MainFooterState::CreateTrackedThread(form) | MainFooterState::EditTrackedThread(form) => {
+            form.active_field = next_index(form.active_field);
+        }
+        MainFooterState::ConfirmDelete(delete) => {
+            delete.active_field = next_index(delete.active_field);
+        }
+        MainFooterState::Inspect => {}
+    }
+}
+
+fn submit_main_footer(state: &mut AppState) -> Vec<Effect> {
+    let footer = state.authority_main.footer.clone();
+    match footer {
+        MainFooterState::Inspect => Vec::new(),
+        MainFooterState::CreateWorkstream(form) => {
+            let title = form.title.value.trim().to_string();
+            let root_dir = form.root_dir.value.trim().to_string();
+            if title.is_empty() || root_dir.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Workstream title and root directory are required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::CreateAuthorityWorkstream {
+                command: authority::CreateWorkstream {
+                    metadata: tui_command_metadata(),
+                    workstream_id: authority::WorkstreamId::new(),
+                    title,
+                    objective: root_dir,
+                    status: form.status,
+                    priority: form.priority,
+                },
+            }]
+        }
+        MainFooterState::EditWorkstream(form) => {
+            let Some(workstream_id) = form.workstream_id.clone() else {
+                return Vec::new();
+            };
+            let Some(expected_revision) = form.expected_revision else {
+                return Vec::new();
+            };
+            let title = form.title.value.trim().to_string();
+            let root_dir = form.root_dir.value.trim().to_string();
+            if title.is_empty() || root_dir.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Workstream title and root directory are required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::EditAuthorityWorkstream {
+                command: authority::EditWorkstream {
+                    metadata: tui_command_metadata(),
+                    workstream_id: authority::WorkstreamId::parse(workstream_id)
+                        .expect("selection id"),
+                    expected_revision,
+                    changes: authority::WorkstreamPatch {
+                        title: Some(title),
+                        objective: Some(root_dir),
+                        status: None,
+                        priority: None,
+                    },
+                },
+            }]
+        }
+        MainFooterState::CreateWorkUnit(form) => {
+            let title = form.title.value.trim().to_string();
+            if title.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Work unit title is required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::CreateAuthorityWorkUnit {
+                command: authority::CreateWorkUnit {
+                    metadata: tui_command_metadata(),
+                    work_unit_id: authority::WorkUnitId::new(),
+                    workstream_id: authority::WorkstreamId::parse(form.workstream_id)
+                        .expect("selected workstream id"),
+                    title: title.clone(),
+                    task_statement: if form.task_statement.trim().is_empty() {
+                        title
+                    } else {
+                        form.task_statement
+                    },
+                    status: form.status,
+                },
+            }]
+        }
+        MainFooterState::EditWorkUnit(form) => {
+            let Some(work_unit_id) = form.work_unit_id.clone() else {
+                return Vec::new();
+            };
+            let Some(expected_revision) = form.expected_revision else {
+                return Vec::new();
+            };
+            let title = form.title.value.trim().to_string();
+            if title.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Work unit title is required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::EditAuthorityWorkUnit {
+                command: authority::EditWorkUnit {
+                    metadata: tui_command_metadata(),
+                    work_unit_id: authority::WorkUnitId::parse(work_unit_id)
+                        .expect("selected work unit id"),
+                    expected_revision,
+                    changes: authority::WorkUnitPatch {
+                        title: Some(title),
+                        task_statement: None,
+                        status: None,
+                    },
+                },
+            }]
+        }
+        MainFooterState::CreateTrackedThread(form) => {
+            let title = form.title.value.trim().to_string();
+            let root_dir = form.root_dir.value.trim().to_string();
+            if title.is_empty() || root_dir.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Tracked thread name and root directory are required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::CreateAuthorityTrackedThread {
+                command: authority::CreateTrackedThread {
+                    metadata: tui_command_metadata(),
+                    tracked_thread_id: authority::TrackedThreadId::new(),
+                    work_unit_id: authority::WorkUnitId::parse(form.work_unit_id)
+                        .expect("selected work unit id"),
+                    title,
+                    notes: form.notes,
+                    backend_kind: form.backend_kind,
+                    upstream_thread_id: form.upstream_thread_id,
+                    preferred_cwd: Some(root_dir),
+                    preferred_model: form.preferred_model,
+                },
+            }]
+        }
+        MainFooterState::EditTrackedThread(form) => {
+            let Some(tracked_thread_id) = form.tracked_thread_id.clone() else {
+                return Vec::new();
+            };
+            let Some(expected_revision) = form.expected_revision else {
+                return Vec::new();
+            };
+            let title = form.title.value.trim().to_string();
+            let root_dir = form.root_dir.value.trim().to_string();
+            if title.is_empty() || root_dir.is_empty() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Tracked thread name and root directory are required.".to_string(),
+                });
+                return Vec::new();
+            }
+            vec![Effect::EditAuthorityTrackedThread {
+                command: authority::EditTrackedThread {
+                    metadata: tui_command_metadata(),
+                    tracked_thread_id: authority::TrackedThreadId::parse(tracked_thread_id)
+                        .expect("selected tracked thread id"),
+                    expected_revision,
+                    changes: authority::TrackedThreadPatch {
+                        title: Some(title),
+                        notes: None,
+                        backend_kind: None,
+                        upstream_thread_id: None,
+                        binding_state: None,
+                        preferred_cwd: Some(Some(root_dir)),
+                        preferred_model: None,
+                        last_seen_turn_id: None,
+                    },
+                },
+            }]
+        }
+        MainFooterState::ConfirmDelete(delete) => {
+            if delete.requires_typed_confirmation
+                && delete.typed_confirmation.value.trim() != delete.label
+            {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: format!("Type `{}` to confirm delete.", delete.label),
+                });
+                return Vec::new();
+            }
+            match delete.target {
+                authority::DeleteTarget::Workstream { workstream_id } => {
+                    vec![Effect::DeleteAuthorityWorkstream {
+                        command: authority::DeleteWorkstream {
+                            metadata: tui_command_metadata(),
+                            workstream_id,
+                            expected_revision: delete.expected_revision,
+                            delete_token: delete.confirmation_token,
+                        },
+                    }]
+                }
+                authority::DeleteTarget::WorkUnit { work_unit_id } => {
+                    vec![Effect::DeleteAuthorityWorkUnit {
+                        command: authority::DeleteWorkUnit {
+                            metadata: tui_command_metadata(),
+                            work_unit_id,
+                            expected_revision: delete.expected_revision,
+                            delete_token: delete.confirmation_token,
+                        },
+                    }]
+                }
+                authority::DeleteTarget::TrackedThread { tracked_thread_id } => {
+                    vec![Effect::DeleteAuthorityTrackedThread {
+                        command: authority::DeleteTrackedThread {
+                            metadata: tui_command_metadata(),
+                            tracked_thread_id,
+                            expected_revision: delete.expected_revision,
+                            delete_token: delete.confirmation_token,
+                        },
+                    }]
+                }
+            }
+        }
+    }
+}
+
+fn tui_command_metadata() -> authority::CommandMetadata {
+    authority::CommandMetadata::new(
+        authority::OriginNodeId::parse("orcas-tui").expect("static origin node id"),
+        authority::CommandActor::parse("tui_operator").expect("static command actor"),
+    )
+}
+
+fn footer_field_insert(field: &mut FooterFieldState, ch: char) {
+    field.value.insert(field.cursor, ch);
+    field.cursor += ch.len_utf8();
+}
+
+fn footer_field_backspace(field: &mut FooterFieldState) {
+    if field.cursor == 0 {
+        return;
+    }
+    let previous = previous_char_boundary(&field.value, field.cursor);
+    field.value.drain(previous..field.cursor);
+    field.cursor = previous;
+}
+
+fn footer_field_delete(field: &mut FooterFieldState) {
+    if field.cursor >= field.value.len() {
+        return;
+    }
+    let next = next_char_boundary(&field.value, field.cursor);
+    field.value.drain(field.cursor..next);
+}
+
+fn footer_field_move_left(field: &mut FooterFieldState) {
+    if field.cursor == 0 {
+        return;
+    }
+    field.cursor = previous_char_boundary(&field.value, field.cursor);
+}
+
+fn footer_field_move_right(field: &mut FooterFieldState) {
+    if field.cursor >= field.value.len() {
+        return;
+    }
+    field.cursor = next_char_boundary(&field.value, field.cursor);
+}
+
+fn first_authority_work_unit_for_workstream<'a>(
+    state: &'a AppState,
+    workstream_id: &str,
+) -> Option<&'a authority::WorkUnitNode> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            (workstream.workstream.id.as_str() == workstream_id)
+                .then(|| workstream.work_units.first())
+                .flatten()
+        })
+}
+
+fn first_upstream_thread_for_work_unit(state: &AppState, work_unit_id: &str) -> Option<String> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            workstream.work_units.iter().find_map(|work_unit| {
+                (work_unit.work_unit.id.as_str() == work_unit_id)
+                    .then(|| {
+                        work_unit
+                            .tracked_threads
+                            .iter()
+                            .find_map(|tracked_thread| tracked_thread.upstream_thread_id.clone())
+                    })
+                    .flatten()
+            })
+        })
+}
+
+fn tracked_thread_upstream_binding(state: &AppState, tracked_thread_id: &str) -> Option<String> {
+    state
+        .authority_main
+        .tracked_thread_details
+        .get(tracked_thread_id)
+        .and_then(|detail| detail.tracked_thread.upstream_thread_id.clone())
+        .or_else(|| {
+            state
+                .authority_main
+                .hierarchy
+                .workstreams
+                .iter()
+                .find_map(|workstream| {
+                    workstream.work_units.iter().find_map(|work_unit| {
+                        work_unit.tracked_threads.iter().find_map(|tracked_thread| {
+                            (tracked_thread.id.as_str() == tracked_thread_id)
+                                .then(|| tracked_thread.upstream_thread_id.clone())
+                                .flatten()
+                        })
+                    })
+                })
+        })
+}
+
+fn workstream_id_for_work_unit(state: &AppState, work_unit_id: &str) -> Option<String> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            workstream
+                .work_units
+                .iter()
+                .any(|work_unit| work_unit.work_unit.id.as_str() == work_unit_id)
+                .then(|| workstream.workstream.id.to_string())
+        })
+}
+
+fn work_unit_id_for_tracked_thread(state: &AppState, tracked_thread_id: &str) -> Option<String> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            workstream.work_units.iter().find_map(|work_unit| {
+                work_unit
+                    .tracked_threads
+                    .iter()
+                    .any(|tracked_thread| tracked_thread.id.as_str() == tracked_thread_id)
+                    .then(|| work_unit.work_unit.id.to_string())
+            })
+        })
+}
+
+fn find_authority_work_unit_record(
+    state: &AppState,
+    work_unit_id: &str,
+) -> Option<authority::WorkUnitRecord> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            workstream.work_units.iter().find_map(|work_unit| {
+                (work_unit.work_unit.id.as_str() == work_unit_id).then(|| {
+                    authority::WorkUnitRecord {
+                        id: work_unit.work_unit.id.clone(),
+                        workstream_id: workstream.workstream.id.clone(),
+                        title: work_unit.work_unit.title.clone(),
+                        task_statement: work_unit.work_unit.title.clone(),
+                        status: work_unit.work_unit.status,
+                        revision: work_unit.work_unit.revision,
+                        origin_node_id: authority::OriginNodeId::parse("orcas-tui")
+                            .expect("static origin node id"),
+                        created_at: work_unit.work_unit.updated_at,
+                        updated_at: work_unit.work_unit.updated_at,
+                        deleted_at: work_unit.work_unit.deleted_at,
+                    }
+                })
+            })
+        })
+}
+
+fn find_authority_tracked_thread_record(
+    state: &AppState,
+    tracked_thread_id: &str,
+) -> Option<authority::TrackedThreadRecord> {
+    state
+        .authority_main
+        .hierarchy
+        .workstreams
+        .iter()
+        .find_map(|workstream| {
+            workstream.work_units.iter().find_map(|work_unit| {
+                work_unit.tracked_threads.iter().find_map(|tracked_thread| {
+                    (tracked_thread.id.as_str() == tracked_thread_id).then(|| {
+                        authority::TrackedThreadRecord {
+                            id: tracked_thread.id.clone(),
+                            work_unit_id: work_unit.work_unit.id.clone(),
+                            title: tracked_thread.title.clone(),
+                            notes: None,
+                            backend_kind: tracked_thread.backend_kind,
+                            upstream_thread_id: tracked_thread.upstream_thread_id.clone(),
+                            binding_state: tracked_thread.binding_state,
+                            preferred_cwd: None,
+                            preferred_model: None,
+                            last_seen_turn_id: None,
+                            revision: tracked_thread.revision,
+                            origin_node_id: authority::OriginNodeId::parse("orcas-tui")
+                                .expect("static origin node id"),
+                            created_at: tracked_thread.updated_at,
+                            updated_at: tracked_thread.updated_at,
+                            deleted_at: tracked_thread.deleted_at,
+                        }
+                    })
+                })
+            })
+        })
+}
+
+fn authority_workstream_record_from_summary(
+    summary: &authority::WorkstreamSummary,
+) -> authority::WorkstreamRecord {
+    authority::WorkstreamRecord {
+        id: summary.id.clone(),
+        title: summary.title.clone(),
+        objective: summary.objective.clone(),
+        status: summary.status,
+        priority: summary.priority.clone(),
+        revision: summary.revision,
+        origin_node_id: authority::OriginNodeId::parse("orcas-tui").expect("static origin node id"),
+        created_at: summary.updated_at,
+        updated_at: summary.updated_at,
+        deleted_at: summary.deleted_at,
     }
 }
 
@@ -2778,6 +4082,11 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
     let timestamp = chrono::Utc::now();
     let (kind, message, thread_id, turn_id) = match event {
         UiEvent::SnapshotLoaded(_) => return None,
+        UiEvent::AuthorityHierarchyLoaded(_) => return None,
+        UiEvent::AuthorityWorkstreamDetailLoaded(_)
+        | UiEvent::AuthorityWorkUnitDetailLoaded(_)
+        | UiEvent::AuthorityTrackedThreadDetailLoaded(_)
+        | UiEvent::AuthorityDeletePlanLoaded(_) => return None,
         UiEvent::WorkUnitDetailLoaded(_) => return None,
         UiEvent::Ignored => return None,
         UiEvent::CodexSessionsChanged { .. } => return None,
@@ -2792,6 +4101,60 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
             "thread",
             format!("loaded thread {}", thread.summary.id),
             Some(thread.summary.id.clone()),
+            None,
+        ),
+        UiEvent::AuthorityWorkstreamCreated(workstream) => (
+            "authority_workstream",
+            format!("created workstream {}", workstream.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityWorkstreamEdited(workstream) => (
+            "authority_workstream",
+            format!("edited workstream {}", workstream.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityWorkstreamDeleted(workstream) => (
+            "authority_workstream",
+            format!("deleted workstream {}", workstream.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityWorkUnitCreated(work_unit) => (
+            "authority_work_unit",
+            format!("created work unit {}", work_unit.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityWorkUnitEdited(work_unit) => (
+            "authority_work_unit",
+            format!("edited work unit {}", work_unit.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityWorkUnitDeleted(work_unit) => (
+            "authority_work_unit",
+            format!("deleted work unit {}", work_unit.id),
+            None,
+            None,
+        ),
+        UiEvent::AuthorityTrackedThreadCreated(tracked_thread) => (
+            "authority_tracked_thread",
+            format!("created tracked thread {}", tracked_thread.id),
+            tracked_thread.upstream_thread_id.clone(),
+            None,
+        ),
+        UiEvent::AuthorityTrackedThreadEdited(tracked_thread) => (
+            "authority_tracked_thread",
+            format!("edited tracked thread {}", tracked_thread.id),
+            tracked_thread.upstream_thread_id.clone(),
+            None,
+        ),
+        UiEvent::AuthorityTrackedThreadDeleted(tracked_thread) => (
+            "authority_tracked_thread",
+            format!("deleted tracked thread {}", tracked_thread.id),
+            tracked_thread.upstream_thread_id.clone(),
             None,
         ),
         UiEvent::ThreadAttached(response) => (

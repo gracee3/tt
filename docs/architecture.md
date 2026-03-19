@@ -47,3 +47,7 @@ Orcas follows a small set of consistent rules:
 3. Deterministic state where possible: workflow records are explicit and persisted rather than inferred from UI state.
 4. Inspectability: snapshots, events, and runtime metadata are available to clients instead of being hidden inside a transcript.
 5. Minimal external surface: the daemon listens on a local socket rather than a public network port.
+
+## Current Direction
+
+The next persistence pass moves Orcas from the current JSON snapshot store to a SQLite-backed local-authority model with explicit commands, canonical events, and read projections for the TUI. The design for that pass lives in [Local-Authority MVP Backend Design](design/local-authority-mvp-backend.md), with the tracked-thread semantics captured in [ADR 0001](adr/0001-tracked-thread-is-a-local-binding-record.md).

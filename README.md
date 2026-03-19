@@ -90,7 +90,7 @@ meta:    ${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.json
 
 ## Read more
 
-For a fuller technical picture, see [Architecture](docs/architecture.md), [Collaboration](docs/collaboration.md), [Installation](docs/install.md), [Configuration](docs/configuration.md), and [Operations](docs/operations.md).
+For a fuller technical picture, see [Architecture](docs/architecture.md), [Collaboration](docs/collaboration.md), [Local-Authority MVP Backend Design](docs/design/local-authority-mvp-backend.md), [Installation](docs/install.md), [Configuration](docs/configuration.md), and [Operations](docs/operations.md).
 
 ## License
 

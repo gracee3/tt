@@ -310,6 +310,432 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 completion.schedule_reconnect = true;
                 completion
             }
+            effect @ Effect::LoadAuthorityHierarchy => {
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetAuthorityHierarchy {
+                        include_deleted: false,
+                    },
+                    |response| match response {
+                        BackendCommandResult::AuthorityHierarchy(hierarchy) => {
+                            vec![Action::Event(UiEvent::AuthorityHierarchyLoaded(hierarchy))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority hierarchy response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "authority hierarchy load failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "authority hierarchy load failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::LoadAuthorityWorkstreamDetail { workstream_id } => {
+                let effect = Effect::LoadAuthorityWorkstreamDetail {
+                    workstream_id: workstream_id.clone(),
+                };
+                let parsed_workstream_id =
+                    match orcas_core::authority::WorkstreamId::parse(workstream_id.clone()) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return EffectCompletion::failure(
+                                effect,
+                                Action::Event(UiEvent::Error(format!(
+                                    "authority workstream id parse failed: {error}"
+                                ))),
+                            );
+                        }
+                    };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetAuthorityWorkstream {
+                        workstream_id: parsed_workstream_id,
+                    },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkstreamDetail(detail) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkstreamDetailLoaded(
+                                detail,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority workstream response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "authority workstream load failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "authority workstream load failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::LoadAuthorityWorkUnitDetail { work_unit_id } => {
+                let effect = Effect::LoadAuthorityWorkUnitDetail {
+                    work_unit_id: work_unit_id.clone(),
+                };
+                let parsed_work_unit_id =
+                    match orcas_core::authority::WorkUnitId::parse(work_unit_id.clone()) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return EffectCompletion::failure(
+                                effect,
+                                Action::Event(UiEvent::Error(format!(
+                                    "authority work unit id parse failed: {error}"
+                                ))),
+                            );
+                        }
+                    };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetAuthorityWorkUnit {
+                        work_unit_id: parsed_work_unit_id,
+                    },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkUnitDetail(detail) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkUnitDetailLoaded(
+                                detail,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority work unit response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "authority work unit load failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "authority work unit load failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::LoadAuthorityTrackedThreadDetail { tracked_thread_id } => {
+                let effect = Effect::LoadAuthorityTrackedThreadDetail {
+                    tracked_thread_id: tracked_thread_id.clone(),
+                };
+                let parsed_tracked_thread_id = match orcas_core::authority::TrackedThreadId::parse(
+                    tracked_thread_id.clone(),
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return EffectCompletion::failure(
+                            effect,
+                            Action::Event(UiEvent::Error(format!(
+                                "authority tracked thread id parse failed: {error}"
+                            ))),
+                        );
+                    }
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetAuthorityTrackedThread {
+                        tracked_thread_id: parsed_tracked_thread_id,
+                    },
+                    |response| match response {
+                        BackendCommandResult::AuthorityTrackedThreadDetail(detail) => {
+                            vec![Action::Event(UiEvent::AuthorityTrackedThreadDetailLoaded(
+                                detail,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority tracked thread response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "authority tracked thread load failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "authority tracked thread load failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::LoadAuthorityDeletePlan { target } => {
+                let effect = Effect::LoadAuthorityDeletePlan {
+                    target: target.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetAuthorityDeletePlan { target },
+                    |response| match response {
+                        BackendCommandResult::AuthorityDeletePlan(plan) => {
+                            vec![Action::Event(UiEvent::AuthorityDeletePlanLoaded(plan))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority delete plan response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        if Self::is_disconnect_error(&error) {
+                            Action::Event(UiEvent::ConnectionLost(format!(
+                                "authority delete plan failed: {error}"
+                            )))
+                        } else {
+                            Action::Event(UiEvent::Error(format!(
+                                "authority delete plan failed: {error}"
+                            )))
+                        }
+                    },
+                )
+                .await
+            }
+            Effect::CreateAuthorityWorkstream { command } => {
+                let effect = Effect::CreateAuthorityWorkstream {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::CreateAuthorityWorkstream { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkstream(workstream) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkstreamCreated(
+                                workstream,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority workstream create response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority workstream create failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::EditAuthorityWorkstream { command } => {
+                let effect = Effect::EditAuthorityWorkstream {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::EditAuthorityWorkstream { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkstream(workstream) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkstreamEdited(
+                                workstream,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority workstream edit response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority workstream edit failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::DeleteAuthorityWorkstream { command } => {
+                let effect = Effect::DeleteAuthorityWorkstream {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::DeleteAuthorityWorkstream { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkstream(workstream) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkstreamDeleted(
+                                workstream,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority workstream delete response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority workstream delete failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::CreateAuthorityWorkUnit { command } => {
+                let effect = Effect::CreateAuthorityWorkUnit {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::CreateAuthorityWorkUnit { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkUnit(work_unit) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkUnitCreated(work_unit))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority work unit create response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority work unit create failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::EditAuthorityWorkUnit { command } => {
+                let effect = Effect::EditAuthorityWorkUnit {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::EditAuthorityWorkUnit { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkUnit(work_unit) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkUnitEdited(work_unit))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority work unit edit response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority work unit edit failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::DeleteAuthorityWorkUnit { command } => {
+                let effect = Effect::DeleteAuthorityWorkUnit {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::DeleteAuthorityWorkUnit { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityWorkUnit(work_unit) => {
+                            vec![Action::Event(UiEvent::AuthorityWorkUnitDeleted(work_unit))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority work unit delete response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority work unit delete failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::CreateAuthorityTrackedThread { command } => {
+                let effect = Effect::CreateAuthorityTrackedThread {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::CreateAuthorityTrackedThread { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityTrackedThread(tracked_thread) => {
+                            vec![Action::Event(UiEvent::AuthorityTrackedThreadCreated(
+                                tracked_thread,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority tracked thread create response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority tracked thread create failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::EditAuthorityTrackedThread { command } => {
+                let effect = Effect::EditAuthorityTrackedThread {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::EditAuthorityTrackedThread { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityTrackedThread(tracked_thread) => {
+                            vec![Action::Event(UiEvent::AuthorityTrackedThreadEdited(
+                                tracked_thread,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority tracked thread edit response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority tracked thread edit failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
+            Effect::DeleteAuthorityTrackedThread { command } => {
+                let effect = Effect::DeleteAuthorityTrackedThread {
+                    command: command.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::DeleteAuthorityTrackedThread { command },
+                    |response| match response {
+                        BackendCommandResult::AuthorityTrackedThread(tracked_thread) => {
+                            vec![Action::Event(UiEvent::AuthorityTrackedThreadDeleted(
+                                tracked_thread,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected authority tracked thread delete response: {other:?}"
+                        )))],
+                    },
+                    |error| {
+                        Action::Event(UiEvent::Error(format!(
+                            "authority tracked thread delete failed: {error}"
+                        )))
+                    },
+                )
+                .await
+            }
             effect @ Effect::LoadActiveTurns => {
                 Self::run_backend_effect(
                     backend,

@@ -325,6 +325,142 @@ impl OrcasIpcClient {
         self.request(ipc::methods::WORKUNIT_GET, params).await
     }
 
+    pub async fn authority_hierarchy_get(
+        &self,
+        params: &ipc::AuthorityHierarchyGetRequest,
+    ) -> OrcasResult<ipc::AuthorityHierarchyGetResponse> {
+        self.request(ipc::methods::AUTHORITY_HIERARCHY_GET, params)
+            .await
+    }
+
+    pub async fn authority_delete_plan(
+        &self,
+        params: &ipc::AuthorityDeletePlanRequest,
+    ) -> OrcasResult<ipc::AuthorityDeletePlanResponse> {
+        self.request(ipc::methods::AUTHORITY_DELETE_PLAN, params)
+            .await
+    }
+
+    pub async fn authority_workstream_create(
+        &self,
+        params: &ipc::AuthorityWorkstreamCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamCreateResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKSTREAM_CREATE, params)
+            .await
+    }
+
+    pub async fn authority_workstream_edit(
+        &self,
+        params: &ipc::AuthorityWorkstreamEditRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamEditResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKSTREAM_EDIT, params)
+            .await
+    }
+
+    pub async fn authority_workstream_delete(
+        &self,
+        params: &ipc::AuthorityWorkstreamDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamDeleteResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKSTREAM_DELETE, params)
+            .await
+    }
+
+    pub async fn authority_workstream_list(
+        &self,
+        params: &ipc::AuthorityWorkstreamListRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamListResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKSTREAM_LIST, params)
+            .await
+    }
+
+    pub async fn authority_workstream_get(
+        &self,
+        params: &ipc::AuthorityWorkstreamGetRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamGetResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKSTREAM_GET, params)
+            .await
+    }
+
+    pub async fn authority_workunit_create(
+        &self,
+        params: &ipc::AuthorityWorkunitCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitCreateResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKUNIT_CREATE, params)
+            .await
+    }
+
+    pub async fn authority_workunit_edit(
+        &self,
+        params: &ipc::AuthorityWorkunitEditRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitEditResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKUNIT_EDIT, params)
+            .await
+    }
+
+    pub async fn authority_workunit_delete(
+        &self,
+        params: &ipc::AuthorityWorkunitDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitDeleteResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKUNIT_DELETE, params)
+            .await
+    }
+
+    pub async fn authority_workunit_list(
+        &self,
+        params: &ipc::AuthorityWorkunitListRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitListResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKUNIT_LIST, params)
+            .await
+    }
+
+    pub async fn authority_workunit_get(
+        &self,
+        params: &ipc::AuthorityWorkunitGetRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitGetResponse> {
+        self.request(ipc::methods::AUTHORITY_WORKUNIT_GET, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_create(
+        &self,
+        params: &ipc::AuthorityTrackedThreadCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadCreateResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_CREATE, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_edit(
+        &self,
+        params: &ipc::AuthorityTrackedThreadEditRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadEditResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_EDIT, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_delete(
+        &self,
+        params: &ipc::AuthorityTrackedThreadDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadDeleteResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_DELETE, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_list(
+        &self,
+        params: &ipc::AuthorityTrackedThreadListRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadListResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_LIST, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_get(
+        &self,
+        params: &ipc::AuthorityTrackedThreadGetRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadGetResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_GET, params)
+            .await
+    }
+
     pub async fn assignment_start(
         &self,
         params: &ipc::AssignmentStartRequest,

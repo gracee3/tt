@@ -37,6 +37,10 @@ struct GlobalOptions {
 
 #[derive(Debug, Subcommand)]
 enum TopCommand {
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
     Supervisor {
         #[command(subcommand)]
         command: SupervisorCommand,
@@ -46,10 +50,6 @@ enum TopCommand {
 #[derive(Debug, Subcommand)]
 enum SupervisorCommand {
     Doctor,
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonCommand,
-    },
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
@@ -573,14 +573,14 @@ async fn main() -> Result<()> {
     let service = SupervisorService::load(&overrides).await?;
 
     match cli.command {
+        TopCommand::Daemon { command } => match command {
+            DaemonCommand::Start => service.daemon_start(overrides.force_spawn).await?,
+            DaemonCommand::Status => service.daemon_status().await?,
+            DaemonCommand::Restart => service.daemon_restart().await?,
+            DaemonCommand::Stop => service.daemon_stop().await?,
+        },
         TopCommand::Supervisor { command } => match command {
             SupervisorCommand::Doctor => service.doctor().await?,
-            SupervisorCommand::Daemon { command } => match command {
-                DaemonCommand::Start => service.daemon_start(overrides.force_spawn).await?,
-                DaemonCommand::Status => service.daemon_status().await?,
-                DaemonCommand::Restart => service.daemon_restart().await?,
-                DaemonCommand::Stop => service.daemon_stop().await?,
-            },
             SupervisorCommand::Models { command } => match command {
                 ModelsCommand::List => service.models_list().await?,
             },
@@ -839,6 +839,18 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parses_top_level_daemon_status_command() {
+        let cli = Cli::parse_from(["orcas", "daemon", "status"]);
+
+        match cli.command {
+            TopCommand::Daemon {
+                command: DaemonCommand::Status,
+            } => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
 
     #[test]
     fn parses_codex_decision_propose_steer_command() {

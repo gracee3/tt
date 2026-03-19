@@ -6,6 +6,8 @@ Orcas keeps collaboration state local and authoritative. The daemon owns the wor
 
 This document describes the current collaboration model and the concrete IPC surface that supports it. The architecture overview explains the broader runtime split; this page focuses on the workflow objects, the request/response surface, and the event flow that frontends consume.
 
+The planned local-backend evolution for workstream, work unit, and tracked-thread CRUD is documented in [Local-Authority MVP Backend Design](design/local-authority-mvp-backend.md). The MVP thread semantics decision is captured in [ADR 0001](adr/0001-tracked-thread-is-a-local-binding-record.md).
+
 ## Collaboration Model
 
 Orcas models work as a small set of explicit records.

@@ -1,14 +1,11 @@
-use crate::app::{AppState, MainHierarchySelection, ProgramView};
-use crate::view_model::{
-    PanelViewModel, collaboration_detail, connection_status, event_log, status_banner,
-    thread_summary, workstream_detail,
+use crate::app::{
+    AppState, DeleteFooterState, FooterFieldState, MainFooterState, MainHierarchySelection,
+    ProgramView, TrackedThreadFooterForm, WorkUnitFooterForm, WorkstreamFooterForm,
 };
-use orcas_core::{
-    AssignmentStatus, CodexThreadAssignmentStatus, ReportParseResult, SupervisorProposalStatus,
-    WorkUnitStatus, WorkstreamStatus, ipc,
-};
+use crate::view_model::{PanelViewModel, connection_status, event_log, status_banner};
+use orcas_core::{ReportParseResult, WorkUnitStatus, WorkstreamStatus, authority};
 
-use super::shared::{abbreviate, compact_line, lifecycle_label};
+use super::shared::{abbreviate, compact_line};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainViewModel {
@@ -162,111 +159,110 @@ fn main_header(state: &AppState) -> MainHeaderViewModel {
 
 fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
     let mut rows = Vec::new();
-    for workstream in &state.collaboration.workstreams {
-        let work_units = state
-            .collaboration
-            .work_units
-            .iter()
-            .filter(|work_unit| work_unit.workstream_id == workstream.id)
-            .collect::<Vec<_>>();
+    for workstream in &state.authority_main.hierarchy.workstreams {
+        let workstream_id = workstream.workstream.id.to_string();
         rows.push(MainHierarchyRowViewModel {
             kind: HierarchyRowKind::Workstream,
             selection: MainHierarchySelection::Workstream {
-                workstream_id: workstream.id.clone(),
+                workstream_id: workstream_id.clone(),
             },
             depth: 0,
-            label: workstream.title.clone(),
+            label: workstream.workstream.title.clone(),
             badges: vec![
-                workstream_status_label(workstream.status),
-                workstream.priority.clone(),
+                workstream_status_label(workstream.workstream.status),
+                workstream.workstream.priority.clone(),
             ],
-            secondary: Some(format!("units={}", work_units.len())),
+            secondary: Some(format!("units={}", workstream.work_units.len())),
             selected: state.main_view.selected.as_ref()
                 == Some(&MainHierarchySelection::Workstream {
-                    workstream_id: workstream.id.clone(),
+                    workstream_id: workstream_id.clone(),
                 }),
             expanded: state
                 .main_view
                 .expanded_workstreams
-                .contains(workstream.id.as_str()),
-            collapsible: !work_units.is_empty(),
+                .contains(workstream_id.as_str()),
+            collapsible: !workstream.work_units.is_empty(),
         });
 
         if !state
             .main_view
             .expanded_workstreams
-            .contains(workstream.id.as_str())
+            .contains(workstream_id.as_str())
         {
             continue;
         }
 
-        for work_unit in work_units {
-            let thread_ids = thread_ids_for_work_unit(state, &work_unit.id);
+        for work_unit in &workstream.work_units {
+            let work_unit_id = work_unit.work_unit.id.to_string();
             rows.push(MainHierarchyRowViewModel {
                 kind: HierarchyRowKind::WorkUnit,
                 selection: MainHierarchySelection::WorkUnit {
-                    workstream_id: workstream.id.clone(),
-                    work_unit_id: work_unit.id.clone(),
+                    workstream_id: workstream_id.clone(),
+                    work_unit_id: work_unit_id.clone(),
                 },
                 depth: 1,
-                label: work_unit.title.clone(),
+                label: work_unit.work_unit.title.clone(),
                 badges: vec![
-                    work_unit_status_label(work_unit.status),
-                    assignment_badge(state, work_unit),
-                    proposal_badge(work_unit),
+                    work_unit_status_label(work_unit.work_unit.status),
+                    format!("threads={}", work_unit.tracked_threads.len()),
                 ],
-                secondary: Some(format!(
-                    "deps={} threads={}",
-                    work_unit.dependency_count,
-                    thread_ids.len()
-                )),
+                secondary: None,
                 selected: state.main_view.selected.as_ref()
                     == Some(&MainHierarchySelection::WorkUnit {
-                        workstream_id: workstream.id.clone(),
-                        work_unit_id: work_unit.id.clone(),
+                        workstream_id: workstream_id.clone(),
+                        work_unit_id: work_unit_id.clone(),
                     }),
                 expanded: state
                     .main_view
                     .expanded_work_units
-                    .contains(work_unit.id.as_str()),
-                collapsible: !thread_ids.is_empty(),
+                    .contains(work_unit_id.as_str()),
+                collapsible: !work_unit.tracked_threads.is_empty(),
             });
 
             if !state
                 .main_view
                 .expanded_work_units
-                .contains(work_unit.id.as_str())
+                .contains(work_unit_id.as_str())
             {
                 continue;
             }
 
-            for thread_id in thread_ids {
-                let thread = state
-                    .threads
-                    .iter()
-                    .find(|thread| thread.id == thread_id)
-                    .cloned()
-                    .unwrap_or_else(|| placeholder_thread(thread_id.clone()));
+            for tracked_thread in &work_unit.tracked_threads {
+                let upstream = tracked_thread
+                    .upstream_thread_id
+                    .as_deref()
+                    .and_then(|thread_id| {
+                        state.threads.iter().find(|thread| thread.id == thread_id)
+                    });
                 rows.push(MainHierarchyRowViewModel {
                     kind: HierarchyRowKind::Thread,
                     selection: MainHierarchySelection::Thread {
-                        workstream_id: workstream.id.clone(),
-                        work_unit_id: work_unit.id.clone(),
-                        thread_id: thread.id.clone(),
+                        workstream_id: workstream_id.clone(),
+                        work_unit_id: work_unit_id.clone(),
+                        thread_id: tracked_thread.id.to_string(),
                     },
                     depth: 2,
-                    label: thread.name.clone().unwrap_or_else(|| thread.id.clone()),
+                    label: tracked_thread.title.clone(),
                     badges: vec![
-                        thread_turn_badge(state, &thread),
-                        thread_loaded_badge(thread.loaded_status),
-                        thread_monitor_badge(thread.monitor_state),
+                        tracked_thread_binding_label(tracked_thread.binding_state),
+                        tracked_thread_backend_label(tracked_thread.backend_kind),
                     ],
-                    secondary: Some(abbreviate(&compact_line(&thread.preview), 48)),
+                    secondary: Some(
+                        upstream
+                            .map(|thread| abbreviate(&compact_line(&thread.preview), 48))
+                            .unwrap_or_else(|| {
+                                tracked_thread
+                                    .upstream_thread_id
+                                    .as_ref()
+                                    .map(|thread_id| format!("upstream {thread_id}"))
+                                    .unwrap_or_else(|| "local only".to_string())
+                            }),
+                    ),
                     selected: state.main_view.selected.as_ref()
                         == Some(&MainHierarchySelection::Thread {
-                            workstream_id: workstream.id.clone(),
-                            work_unit_id: work_unit.id.clone(),
-                            thread_id: thread.id.clone(),
+                            workstream_id: workstream_id.clone(),
+                            work_unit_id: work_unit_id.clone(),
+                            thread_id: tracked_thread.id.to_string(),
                         }),
                     expanded: false,
                     collapsible: false,
@@ -279,21 +275,87 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
 
 fn main_detail_panel(state: &AppState) -> PanelViewModel {
     match state.main_view.selected.as_ref() {
-        Some(MainHierarchySelection::Workstream { .. }) => {
-            let detail = workstream_detail(state);
-            PanelViewModel {
-                title: detail.title,
-                lines: detail.lines,
+        Some(MainHierarchySelection::Workstream { workstream_id }) => {
+            if let Some(detail) = state.authority_main.workstream_details.get(workstream_id) {
+                PanelViewModel {
+                    title: format!("Workstream {}", detail.workstream.id),
+                    lines: vec![
+                        format!("title: {}", detail.workstream.title),
+                        format!("root: {}", detail.workstream.objective),
+                        format!(
+                            "status: {}  priority: {}",
+                            workstream_status_label(detail.workstream.status),
+                            detail.workstream.priority
+                        ),
+                        format!("revision: {}", detail.workstream.revision.get()),
+                        format!("work units: {}", detail.work_units.len()),
+                    ],
+                }
+            } else {
+                PanelViewModel {
+                    title: "Workstream Detail".to_string(),
+                    lines: vec!["Loading workstream detail…".to_string()],
+                }
             }
         }
-        Some(MainHierarchySelection::WorkUnit { .. }) => {
-            let detail = collaboration_detail(state);
-            PanelViewModel {
-                title: detail.title,
-                lines: detail.lines,
+        Some(MainHierarchySelection::WorkUnit { work_unit_id, .. }) => {
+            if let Some(detail) = state.authority_main.work_unit_details.get(work_unit_id) {
+                PanelViewModel {
+                    title: format!("Work Unit {}", detail.work_unit.id),
+                    lines: vec![
+                        format!("title: {}", detail.work_unit.title),
+                        format!(
+                            "status: {}  tracked threads: {}",
+                            work_unit_status_label(detail.work_unit.status),
+                            detail.tracked_threads.len()
+                        ),
+                        format!("task: {}", abbreviate(&detail.work_unit.task_statement, 88)),
+                        format!("revision: {}", detail.work_unit.revision.get()),
+                    ],
+                }
+            } else {
+                PanelViewModel {
+                    title: "Work Unit Detail".to_string(),
+                    lines: vec!["Loading work unit detail…".to_string()],
+                }
             }
         }
-        Some(MainHierarchySelection::Thread { .. }) => thread_summary(state),
+        Some(MainHierarchySelection::Thread { thread_id, .. }) => {
+            if let Some(detail) = state.authority_main.tracked_thread_details.get(thread_id) {
+                let tracked_thread = &detail.tracked_thread;
+                let mut lines = vec![
+                    format!("title: {}", tracked_thread.title),
+                    format!(
+                        "root: {}",
+                        tracked_thread
+                            .preferred_cwd
+                            .clone()
+                            .unwrap_or_else(|| "unset".to_string())
+                    ),
+                    format!(
+                        "binding: {}  backend: {}",
+                        tracked_thread_binding_label(tracked_thread.binding_state),
+                        tracked_thread_backend_label(tracked_thread.backend_kind)
+                    ),
+                    format!("revision: {}", tracked_thread.revision.get()),
+                ];
+                if let Some(upstream_thread_id) = tracked_thread.upstream_thread_id.as_ref() {
+                    lines.push(format!("upstream thread: {upstream_thread_id}"));
+                } else {
+                    lines.push("upstream thread: none".to_string());
+                }
+                lines.push("delete semantics: local only".to_string());
+                PanelViewModel {
+                    title: format!("Tracked Thread {}", tracked_thread.id),
+                    lines,
+                }
+            } else {
+                PanelViewModel {
+                    title: "Tracked Thread Detail".to_string(),
+                    lines: vec!["Loading tracked thread detail…".to_string()],
+                }
+            }
+        }
         None => PanelViewModel {
             title: "Selection Detail".to_string(),
             lines: vec!["No hierarchy row selected.".to_string()],
@@ -302,50 +364,220 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
 }
 
 fn main_footer_prompt(state: &AppState) -> MainFooterPromptViewModel {
-    let (title, prompt_lines) = if let Some(compose) = state.steer_compose.as_ref() {
-        (
-            "Composer".to_string(),
-            compose
-                .buffer
-                .lines()
-                .take(4)
-                .enumerate()
-                .map(|(index, line)| format!("{:>2}: {}", index + 1, abbreviate(line, 72)))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        (
-            "Composer".to_string(),
-            vec![
-                "Prompt submission remains read-only in this pass.".to_string(),
-                "This region is reserved for the persistent operator composer.".to_string(),
-            ],
-        )
-    };
-
     let mut context_lines = Vec::new();
     if let Some(selection) = state.main_view.selected.as_ref() {
         context_lines.push(format!("selection: {}", selection_label(selection)));
-    }
-    if let Some(thread_id) = state.selected_thread_id.as_ref() {
-        context_lines.push(format!("active thread context: {thread_id}"));
-    }
-    if state.prompt_in_flight {
-        context_lines.push("turn status: prompt/turn activity is in flight".to_string());
     } else {
-        context_lines.push(format!(
-            "turn status: {} active turns",
-            state.session.active_turns.len()
-        ));
+        context_lines.push("selection: none".to_string());
     }
+    context_lines.push("backend: local authority / state.db".to_string());
 
+    match &state.authority_main.footer {
+        MainFooterState::Inspect => MainFooterPromptViewModel {
+            title: "Composer".to_string(),
+            prompt_lines: vec![
+                "mode: Inspect".to_string(),
+                format!("actions: {}", inspect_actions_label(state)),
+            ],
+            context_lines,
+            hint_line: inspect_hint_line(state),
+        },
+        MainFooterState::CreateWorkstream(form) => main_workstream_footer(
+            "mode: CreateWorkstream",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::EditWorkstream(form) => main_workstream_footer(
+            "mode: EditWorkstream",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::CreateWorkUnit(form) => main_workunit_footer(
+            "mode: CreateWorkUnit",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::EditWorkUnit(form) => main_workunit_footer(
+            "mode: EditWorkUnit",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::CreateTrackedThread(form) => main_tracked_thread_footer(
+            "mode: CreateTrackedThread",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::EditTrackedThread(form) => main_tracked_thread_footer(
+            "mode: EditTrackedThread",
+            form,
+            context_lines,
+            "tab next field  ctrl+s submit  esc cancel",
+        ),
+        MainFooterState::ConfirmDelete(delete) => main_delete_footer(delete, context_lines),
+    }
+}
+
+fn main_workstream_footer(
+    mode_label: &str,
+    form: &WorkstreamFooterForm,
+    mut context_lines: Vec<String>,
+    hint_line: &str,
+) -> MainFooterPromptViewModel {
+    context_lines.push("workstream schema stores root in the local objective field".to_string());
     MainFooterPromptViewModel {
-        title,
+        title: "Composer".to_string(),
+        prompt_lines: vec![
+            mode_label.to_string(),
+            render_footer_field("title", &form.title, form.active_field == 0),
+            render_footer_field("root", &form.root_dir, form.active_field == 1),
+        ],
+        context_lines,
+        hint_line: hint_line.to_string(),
+    }
+}
+
+fn main_workunit_footer(
+    mode_label: &str,
+    form: &WorkUnitFooterForm,
+    mut context_lines: Vec<String>,
+    hint_line: &str,
+) -> MainFooterPromptViewModel {
+    context_lines.push(format!("parent workstream: {}", form.workstream_id));
+    MainFooterPromptViewModel {
+        title: "Composer".to_string(),
+        prompt_lines: vec![
+            mode_label.to_string(),
+            render_footer_field("title", &form.title, form.active_field == 0),
+        ],
+        context_lines,
+        hint_line: hint_line.to_string(),
+    }
+}
+
+fn main_tracked_thread_footer(
+    mode_label: &str,
+    form: &TrackedThreadFooterForm,
+    mut context_lines: Vec<String>,
+    hint_line: &str,
+) -> MainFooterPromptViewModel {
+    context_lines.push(format!("parent work unit: {}", form.work_unit_id));
+    context_lines.push("tracked_thread is a local Orcas record".to_string());
+    MainFooterPromptViewModel {
+        title: "Composer".to_string(),
+        prompt_lines: vec![
+            mode_label.to_string(),
+            render_footer_field("name", &form.title, form.active_field == 0),
+            render_footer_field("root", &form.root_dir, form.active_field == 1),
+        ],
+        context_lines,
+        hint_line: hint_line.to_string(),
+    }
+}
+
+fn main_delete_footer(
+    delete: &DeleteFooterState,
+    mut context_lines: Vec<String>,
+) -> MainFooterPromptViewModel {
+    context_lines.push(format!(
+        "impact: {} work units, {} tracked threads",
+        delete.affected_work_units, delete.affected_tracked_threads
+    ));
+    if delete.has_upstream_bindings {
+        context_lines.push("upstream bindings: present; delete remains local-only".to_string());
+    }
+    let mut prompt_lines = vec![
+        "mode: ConfirmDelete".to_string(),
+        format!("delete `{}`", delete.label),
+    ];
+    if delete.requires_typed_confirmation {
+        prompt_lines.push(format!("type `{}` to confirm", delete.label));
+        prompt_lines.push(render_footer_field(
+            "confirm",
+            &delete.typed_confirmation,
+            delete.active_field == 0,
+        ));
+    } else {
+        prompt_lines.push("press Ctrl+S to confirm delete".to_string());
+    }
+    MainFooterPromptViewModel {
+        title: "Composer".to_string(),
         prompt_lines,
         context_lines,
-        hint_line: "up/down move  left collapse  right expand  tab switch tabs  r refresh  ? help"
-            .to_string(),
+        hint_line: "ctrl+s confirm delete  esc cancel".to_string(),
     }
+}
+
+fn render_footer_field(label: &str, field: &FooterFieldState, active: bool) -> String {
+    let value_with_cursor = if active {
+        let (head, tail) = field.value.split_at(field.cursor);
+        format!("{head}|{tail}")
+    } else {
+        field.value.clone()
+    };
+    format!(
+        "{} {}: {}",
+        if active { ">" } else { " " },
+        label,
+        if value_with_cursor.is_empty() {
+            "…".to_string()
+        } else {
+            value_with_cursor
+        }
+    )
+}
+
+fn inspect_actions_label(state: &AppState) -> String {
+    let mut actions = vec!["n new workstream".to_string()];
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::Workstream { .. }) => {
+            actions.push("u new work unit".to_string());
+            actions.push("e edit".to_string());
+            actions.push("d delete".to_string());
+        }
+        Some(MainHierarchySelection::WorkUnit { .. }) => {
+            actions.push("t new tracked thread".to_string());
+            actions.push("e edit".to_string());
+            actions.push("d delete".to_string());
+        }
+        Some(MainHierarchySelection::Thread { .. }) => {
+            actions.push("e edit".to_string());
+            actions.push("d delete".to_string());
+        }
+        None => {}
+    }
+    actions.join("  ")
+}
+
+fn inspect_hint_line(state: &AppState) -> String {
+    let mut hints = vec!["n new".to_string()];
+    match state.main_view.selected.as_ref() {
+        Some(MainHierarchySelection::Workstream { .. }) => {
+            hints.push("u unit".to_string());
+            hints.push("e edit".to_string());
+            hints.push("d delete".to_string());
+        }
+        Some(MainHierarchySelection::WorkUnit { .. }) => {
+            hints.push("t tracked-thread".to_string());
+            hints.push("e edit".to_string());
+            hints.push("d delete".to_string());
+        }
+        Some(MainHierarchySelection::Thread { .. }) => {
+            hints.push("e edit".to_string());
+            hints.push("d delete".to_string());
+        }
+        None => {}
+    }
+    hints.push("up/down move".to_string());
+    hints.push("left collapse".to_string());
+    hints.push("right expand".to_string());
+    hints.push("tab switch tabs".to_string());
+    hints.push("r refresh".to_string());
+    hints.join("  ")
 }
 
 fn selection_label(selection: &MainHierarchySelection) -> String {
@@ -356,59 +588,9 @@ fn selection_label(selection: &MainHierarchySelection) -> String {
         MainHierarchySelection::WorkUnit { work_unit_id, .. } => {
             format!("work unit {work_unit_id}")
         }
-        MainHierarchySelection::Thread { thread_id, .. } => format!("thread {thread_id}"),
-    }
-}
-
-fn thread_ids_for_work_unit(state: &AppState, work_unit_id: &str) -> Vec<String> {
-    let mut thread_ids = state
-        .collaboration
-        .codex_thread_assignments
-        .iter()
-        .filter(|assignment| assignment.work_unit_id == work_unit_id)
-        .map(|assignment| assignment.codex_thread_id.clone())
-        .collect::<Vec<_>>();
-    thread_ids.sort_by(|left, right| {
-        thread_updated_at(state, right)
-            .cmp(&thread_updated_at(state, left))
-            .then_with(|| left.cmp(right))
-    });
-    thread_ids.dedup();
-    thread_ids
-}
-
-fn thread_updated_at(state: &AppState, thread_id: &str) -> i64 {
-    state
-        .threads
-        .iter()
-        .find(|thread| thread.id == thread_id)
-        .map(|thread| thread.updated_at)
-        .unwrap_or_default()
-}
-
-fn placeholder_thread(thread_id: String) -> ipc::ThreadSummary {
-    ipc::ThreadSummary {
-        id: thread_id,
-        preview: "thread summary unavailable".to_string(),
-        name: None,
-        model_provider: String::new(),
-        cwd: String::new(),
-        status: "unknown".to_string(),
-        created_at: 0,
-        updated_at: 0,
-        scope: String::new(),
-        archived: false,
-        loaded_status: ipc::ThreadLoadedStatus::Unknown,
-        active_flags: Vec::new(),
-        active_turn_id: None,
-        last_seen_turn_id: None,
-        recent_output: None,
-        recent_event: None,
-        turn_in_flight: false,
-        monitor_state: ipc::ThreadMonitorState::Detached,
-        last_sync_at: chrono::Utc::now(),
-        source_kind: None,
-        raw_summary: None,
+        MainHierarchySelection::Thread { thread_id, .. } => {
+            format!("tracked thread {thread_id}")
+        }
     }
 }
 
@@ -432,81 +614,19 @@ fn work_unit_status_label(status: WorkUnitStatus) -> String {
     }
 }
 
-fn assignment_badge(state: &AppState, work_unit: &ipc::WorkUnitSummary) -> String {
-    let Some(assignment_id) = work_unit.current_assignment_id.as_ref() else {
-        return "unassigned".to_string();
-    };
-    state
-        .collaboration
-        .assignments
-        .iter()
-        .find(|assignment| assignment.id == *assignment_id)
-        .map(|assignment| assignment_status_label(assignment.status))
-        .unwrap_or_else(|| "assigned".to_string())
-}
-
-fn assignment_status_label(status: AssignmentStatus) -> String {
-    match status {
-        AssignmentStatus::Created => "created".to_string(),
-        AssignmentStatus::Running => "running".to_string(),
-        AssignmentStatus::AwaitingDecision => "awaiting_decision".to_string(),
-        AssignmentStatus::Failed => "failed".to_string(),
-        AssignmentStatus::Closed => "closed".to_string(),
-        AssignmentStatus::Interrupted => "interrupted".to_string(),
-        AssignmentStatus::Lost => "lost".to_string(),
+fn tracked_thread_binding_label(binding: authority::TrackedThreadBindingState) -> String {
+    match binding {
+        authority::TrackedThreadBindingState::Unbound => "unbound".to_string(),
+        authority::TrackedThreadBindingState::Bound => "bound".to_string(),
+        authority::TrackedThreadBindingState::Detached => "detached".to_string(),
+        authority::TrackedThreadBindingState::Missing => "missing".to_string(),
     }
 }
 
-fn proposal_badge(work_unit: &ipc::WorkUnitSummary) -> String {
-    work_unit
-        .proposal
-        .as_ref()
-        .map(|proposal| proposal_status_label(proposal.latest_status))
-        .unwrap_or_else(|| "proposal:none".to_string())
-}
-
-fn proposal_status_label(status: SupervisorProposalStatus) -> String {
-    match status {
-        SupervisorProposalStatus::Open => "proposal:open".to_string(),
-        SupervisorProposalStatus::Approved => "proposal:approved".to_string(),
-        SupervisorProposalStatus::Rejected => "proposal:rejected".to_string(),
-        SupervisorProposalStatus::Superseded => "proposal:superseded".to_string(),
-        SupervisorProposalStatus::Stale => "proposal:stale".to_string(),
-        SupervisorProposalStatus::GenerationFailed => "proposal:failed".to_string(),
+fn tracked_thread_backend_label(backend: authority::TrackedThreadBackendKind) -> String {
+    match backend {
+        authority::TrackedThreadBackendKind::Codex => "codex".to_string(),
     }
-}
-
-fn thread_turn_badge(state: &AppState, thread: &ipc::ThreadSummary) -> String {
-    latest_turn_state(state, &thread.id)
-        .map(|turn| lifecycle_label(&turn.lifecycle).to_string())
-        .unwrap_or_else(|| thread.status.clone())
-}
-
-fn thread_loaded_badge(status: ipc::ThreadLoadedStatus) -> String {
-    match status {
-        ipc::ThreadLoadedStatus::NotLoaded => "not_loaded".to_string(),
-        ipc::ThreadLoadedStatus::Idle => "loaded".to_string(),
-        ipc::ThreadLoadedStatus::Active => "active".to_string(),
-        ipc::ThreadLoadedStatus::SystemError => "system_error".to_string(),
-        ipc::ThreadLoadedStatus::Unknown => "unknown".to_string(),
-    }
-}
-
-fn thread_monitor_badge(status: ipc::ThreadMonitorState) -> String {
-    match status {
-        ipc::ThreadMonitorState::Detached => "history".to_string(),
-        ipc::ThreadMonitorState::Attaching => "attaching".to_string(),
-        ipc::ThreadMonitorState::Attached => "attached".to_string(),
-        ipc::ThreadMonitorState::Errored => "attach_error".to_string(),
-    }
-}
-
-fn latest_turn_state<'a>(state: &'a AppState, thread_id: &str) -> Option<&'a ipc::TurnStateView> {
-    state
-        .turn_states
-        .values()
-        .filter(|turn| turn.thread_id == thread_id)
-        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
 }
 
 #[allow(dead_code)]
@@ -518,17 +638,4 @@ fn latest_report_parse_result(state: &AppState, work_unit_id: &str) -> Option<Re
         .filter(|report| report.work_unit_id == work_unit_id)
         .max_by(|left, right| left.created_at.cmp(&right.created_at))
         .map(|report| report.parse_result)
-}
-
-#[allow(dead_code)]
-fn thread_assignment_status(
-    state: &AppState,
-    thread_id: &str,
-) -> Option<CodexThreadAssignmentStatus> {
-    state
-        .collaboration
-        .codex_thread_assignments
-        .iter()
-        .find(|assignment| assignment.codex_thread_id == thread_id)
-        .map(|assignment| assignment.status)
 }

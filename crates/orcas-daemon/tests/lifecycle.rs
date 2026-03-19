@@ -25,6 +25,7 @@ fn app_paths(root: &PathBuf) -> AppPaths {
         config_file: root.join("config/orcas/config.toml"),
         data_dir: root.join("data/orcas"),
         state_file: root.join("data/orcas/state.json"),
+        state_db_file: root.join("data/orcas/state.db"),
         logs_dir: root.join("data/orcas/logs"),
         runtime_dir: root.join("runtime/orcas"),
         socket_file: root.join("runtime/orcas/orcasd.sock"),

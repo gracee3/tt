@@ -15,10 +15,10 @@ sudo systemctl start orcas-daemon.service
 sudo systemctl enable orcas-daemon.service
 ```
 
-The supervisor CLI can also request that the daemon be started on demand.
+The Orcas CLI can also request that the daemon be started on demand.
 
 ```bash
-orcas supervisor daemon start
+orcas daemon start
 ```
 
 ## Checking Status
@@ -29,10 +29,10 @@ Check the unit state with systemd.
 systemctl status orcas-daemon.service
 ```
 
-Check Orcas-level daemon state through the supervisor.
+Check Orcas-level daemon state through the CLI.
 
 ```bash
-orcas supervisor daemon status
+orcas daemon status
 orcas supervisor doctor
 ```
 
@@ -63,11 +63,11 @@ sudo systemctl restart orcas-daemon.service
 sudo systemctl stop orcas-daemon.service
 ```
 
-The supervisor exposes the same operations through the daemon API.
+The CLI exposes the same operations through the daemon API.
 
 ```bash
-orcas supervisor daemon restart
-orcas supervisor daemon stop
+orcas daemon restart
+orcas daemon stop
 ```
 
 ## Common Issues
@@ -86,7 +86,7 @@ tail -n 100 ~/.local/share/orcas/logs/orcasd.log
 Orcas uses a Unix socket, not a TCP port. If another process already owns the socket path, or if a stale socket file remains after a crash, the daemon cannot bind cleanly. Stop the old process or remove the stale runtime artifacts after confirming nothing is still running.
 
 ```bash
-orcas supervisor daemon status
+orcas daemon status
 sudo systemctl stop orcas-daemon.service
 ```
 
@@ -116,7 +116,7 @@ Example:
 
 ```bash
 RUST_LOG=debug orcasd
-orcas supervisor daemon status
+orcas daemon status
 orcas supervisor doctor
 ```
 

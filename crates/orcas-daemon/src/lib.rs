@@ -1,6 +1,7 @@
 #![allow(unused_crate_dependencies)]
 
 pub mod assignment_comm;
+mod authority_store;
 pub mod client;
 pub mod process;
 pub mod service;

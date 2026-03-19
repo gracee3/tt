@@ -600,6 +600,7 @@ mod tests {
             config_file: root.join("config/config.toml"),
             data_dir: root.join("data"),
             state_file: root.join("data/state.json"),
+            state_db_file: root.join("data/state.db"),
             logs_dir: root.join("data/logs"),
             runtime_dir: root.join("runtime"),
             socket_file: root.join("runtime/orcasd.sock"),

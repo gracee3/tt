@@ -19,6 +19,7 @@ use orcas_codex::{
     CodexClient, CodexDaemonManager, DaemonLaunch as CodexDaemonLaunch, LocalCodexDaemonManager,
     RejectingApprovalRouter, WebSocketTransport,
 };
+use orcas_core::authority::{AuthorityCommand, AuthorityQueryStore};
 use orcas_core::ipc;
 use orcas_core::jsonrpc::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
@@ -42,6 +43,7 @@ use crate::assignment_comm::parse::parse_worker_report_for_turn;
 use crate::assignment_comm::policy::validate_assignment_packet;
 use crate::assignment_comm::render::build_assignment_communication_record;
 use crate::assignment_comm::stable_fingerprint;
+use crate::authority_store::{AuthorityMutationResult, AuthoritySqliteStore};
 use crate::process::{
     ENV_CODEX_BIN, ENV_CODEX_LISTEN_URL, ENV_CONNECTION_MODE, ENV_DEFAULT_CWD, ENV_DEFAULT_MODEL,
     OrcasDaemonProcessManager, OrcasRuntimeOverrides, apply_runtime_overrides,
@@ -154,6 +156,7 @@ pub struct OrcasDaemonService {
     config: AppConfig,
     runtime: ipc::DaemonRuntimeMetadata,
     store: Arc<JsonSessionStore>,
+    authority_store: Arc<AuthoritySqliteStore>,
     codex_daemon: Arc<dyn CodexDaemonManager>,
     codex_client: Arc<CodexClient>,
     state: RwLock<DaemonState>,
@@ -176,6 +179,7 @@ impl OrcasDaemonService {
             OrcasDaemonProcessManager::runtime_metadata_for_current_process(&paths).await?;
 
         let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
+        let authority_store = Arc::new(AuthoritySqliteStore::open(paths.clone())?);
         let codex_daemon: Arc<dyn CodexDaemonManager> = Arc::new(LocalCodexDaemonManager::new(
             config.codex.clone(),
             &paths,
@@ -194,6 +198,7 @@ impl OrcasDaemonService {
             config,
             runtime,
             store,
+            authority_store,
             codex_daemon,
             codex_client,
             state: RwLock::new(DaemonState::default()),
@@ -549,6 +554,91 @@ impl OrcasDaemonService {
             ipc::methods::WORKUNIT_GET => {
                 let params: ipc::WorkunitGetRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.workunit_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_HIERARCHY_GET => {
+                let params: ipc::AuthorityHierarchyGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_hierarchy_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_DELETE_PLAN => {
+                let params: ipc::AuthorityDeletePlanRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_delete_plan(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKSTREAM_CREATE => {
+                let params: ipc::AuthorityWorkstreamCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workstream_create(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKSTREAM_EDIT => {
+                let params: ipc::AuthorityWorkstreamEditRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workstream_edit(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKSTREAM_DELETE => {
+                let params: ipc::AuthorityWorkstreamDeleteRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workstream_delete(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKSTREAM_LIST => {
+                let params: ipc::AuthorityWorkstreamListRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workstream_list(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKSTREAM_GET => {
+                let params: ipc::AuthorityWorkstreamGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workstream_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKUNIT_CREATE => {
+                let params: ipc::AuthorityWorkunitCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workunit_create(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKUNIT_EDIT => {
+                let params: ipc::AuthorityWorkunitEditRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workunit_edit(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKUNIT_DELETE => {
+                let params: ipc::AuthorityWorkunitDeleteRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workunit_delete(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKUNIT_LIST => {
+                let params: ipc::AuthorityWorkunitListRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workunit_list(params).await?)?
+            }
+            ipc::methods::AUTHORITY_WORKUNIT_GET => {
+                let params: ipc::AuthorityWorkunitGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_workunit_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_CREATE => {
+                let params: ipc::AuthorityTrackedThreadCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_tracked_thread_create(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_EDIT => {
+                let params: ipc::AuthorityTrackedThreadEditRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_tracked_thread_edit(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_DELETE => {
+                let params: ipc::AuthorityTrackedThreadDeleteRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_tracked_thread_delete(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_LIST => {
+                let params: ipc::AuthorityTrackedThreadListRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_tracked_thread_list(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_GET => {
+                let params: ipc::AuthorityTrackedThreadGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_tracked_thread_get(params).await?)?
             }
             ipc::methods::ASSIGNMENT_START => {
                 let params: ipc::AssignmentStartRequest =
@@ -1435,6 +1525,316 @@ impl OrcasDaemonService {
             decisions,
             proposals,
         })
+    }
+
+    async fn authority_hierarchy_get(
+        &self,
+        params: ipc::AuthorityHierarchyGetRequest,
+    ) -> OrcasResult<ipc::AuthorityHierarchyGetResponse> {
+        Ok(ipc::AuthorityHierarchyGetResponse {
+            hierarchy: self
+                .authority_store
+                .hierarchy_snapshot(params.include_deleted)
+                .await?,
+        })
+    }
+
+    async fn authority_delete_plan(
+        &self,
+        params: ipc::AuthorityDeletePlanRequest,
+    ) -> OrcasResult<ipc::AuthorityDeletePlanResponse> {
+        let delete_plan = self
+            .authority_store
+            .delete_plan(&params.target)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority delete target `{}`",
+                    params.target.aggregate_key().aggregate_id
+                ))
+            })?;
+        Ok(ipc::AuthorityDeletePlanResponse { delete_plan })
+    }
+
+    async fn authority_workstream_create(
+        &self,
+        params: ipc::AuthorityWorkstreamCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamCreateResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::CreateWorkstream(params.command))
+            .await?
+        {
+            AuthorityMutationResult::Workstream(workstream) => {
+                Ok(ipc::AuthorityWorkstreamCreateResponse { workstream })
+            }
+            AuthorityMutationResult::WorkUnit(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority workstream create returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workstream_edit(
+        &self,
+        params: ipc::AuthorityWorkstreamEditRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamEditResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::EditWorkstream(params.command))
+            .await?
+        {
+            AuthorityMutationResult::Workstream(workstream) => {
+                Ok(ipc::AuthorityWorkstreamEditResponse { workstream })
+            }
+            AuthorityMutationResult::WorkUnit(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority workstream edit returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workstream_delete(
+        &self,
+        params: ipc::AuthorityWorkstreamDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamDeleteResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::DeleteWorkstream(params.command))
+            .await?
+        {
+            AuthorityMutationResult::Workstream(workstream) => {
+                Ok(ipc::AuthorityWorkstreamDeleteResponse { workstream })
+            }
+            AuthorityMutationResult::WorkUnit(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority workstream delete returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workstream_list(
+        &self,
+        params: ipc::AuthorityWorkstreamListRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamListResponse> {
+        Ok(ipc::AuthorityWorkstreamListResponse {
+            workstreams: self
+                .authority_store
+                .list_workstreams(params.include_deleted)
+                .await?,
+        })
+    }
+
+    async fn authority_workstream_get(
+        &self,
+        params: ipc::AuthorityWorkstreamGetRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkstreamGetResponse> {
+        let workstream = self
+            .authority_store
+            .get_workstream(&params.workstream_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority workstream `{}`",
+                    params.workstream_id
+                ))
+            })?;
+        let work_units = self
+            .authority_store
+            .list_work_units(Some(&params.workstream_id), false)
+            .await?;
+        Ok(ipc::AuthorityWorkstreamGetResponse {
+            workstream,
+            work_units,
+        })
+    }
+
+    async fn authority_workunit_create(
+        &self,
+        params: ipc::AuthorityWorkunitCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitCreateResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::CreateWorkUnit(params.command))
+            .await?
+        {
+            AuthorityMutationResult::WorkUnit(work_unit) => {
+                Ok(ipc::AuthorityWorkunitCreateResponse { work_unit })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority work unit create returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workunit_edit(
+        &self,
+        params: ipc::AuthorityWorkunitEditRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitEditResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::EditWorkUnit(params.command))
+            .await?
+        {
+            AuthorityMutationResult::WorkUnit(work_unit) => {
+                Ok(ipc::AuthorityWorkunitEditResponse { work_unit })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority work unit edit returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workunit_delete(
+        &self,
+        params: ipc::AuthorityWorkunitDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitDeleteResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::DeleteWorkUnit(params.command))
+            .await?
+        {
+            AuthorityMutationResult::WorkUnit(work_unit) => {
+                Ok(ipc::AuthorityWorkunitDeleteResponse { work_unit })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::TrackedThread(_) => {
+                Err(OrcasError::Store(
+                    "authority work unit delete returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_workunit_list(
+        &self,
+        params: ipc::AuthorityWorkunitListRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitListResponse> {
+        Ok(ipc::AuthorityWorkunitListResponse {
+            work_units: self
+                .authority_store
+                .list_work_units(params.workstream_id.as_ref(), params.include_deleted)
+                .await?,
+        })
+    }
+
+    async fn authority_workunit_get(
+        &self,
+        params: ipc::AuthorityWorkunitGetRequest,
+    ) -> OrcasResult<ipc::AuthorityWorkunitGetResponse> {
+        let work_unit = self
+            .authority_store
+            .get_work_unit(&params.work_unit_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority work unit `{}`",
+                    params.work_unit_id
+                ))
+            })?;
+        let tracked_threads = self
+            .authority_store
+            .list_tracked_threads(&params.work_unit_id, false)
+            .await?;
+        Ok(ipc::AuthorityWorkunitGetResponse {
+            work_unit,
+            tracked_threads,
+        })
+    }
+
+    async fn authority_tracked_thread_create(
+        &self,
+        params: ipc::AuthorityTrackedThreadCreateRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadCreateResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::CreateTrackedThread(params.command))
+            .await?
+        {
+            AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                Ok(ipc::AuthorityTrackedThreadCreateResponse { tracked_thread })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::WorkUnit(_) => {
+                Err(OrcasError::Store(
+                    "authority tracked thread create returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_tracked_thread_edit(
+        &self,
+        params: ipc::AuthorityTrackedThreadEditRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadEditResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::EditTrackedThread(params.command))
+            .await?
+        {
+            AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                Ok(ipc::AuthorityTrackedThreadEditResponse { tracked_thread })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::WorkUnit(_) => {
+                Err(OrcasError::Store(
+                    "authority tracked thread edit returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_tracked_thread_delete(
+        &self,
+        params: ipc::AuthorityTrackedThreadDeleteRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadDeleteResponse> {
+        match self
+            .authority_store
+            .execute_command(AuthorityCommand::DeleteTrackedThread(params.command))
+            .await?
+        {
+            AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                Ok(ipc::AuthorityTrackedThreadDeleteResponse { tracked_thread })
+            }
+            AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::WorkUnit(_) => {
+                Err(OrcasError::Store(
+                    "authority tracked thread delete returned wrong mutation type".to_string(),
+                ))
+            }
+        }
+    }
+
+    async fn authority_tracked_thread_list(
+        &self,
+        params: ipc::AuthorityTrackedThreadListRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadListResponse> {
+        Ok(ipc::AuthorityTrackedThreadListResponse {
+            tracked_threads: self
+                .authority_store
+                .list_tracked_threads(&params.work_unit_id, params.include_deleted)
+                .await?,
+        })
+    }
+
+    async fn authority_tracked_thread_get(
+        &self,
+        params: ipc::AuthorityTrackedThreadGetRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadGetResponse> {
+        let tracked_thread = self
+            .authority_store
+            .get_tracked_thread(&params.tracked_thread_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority tracked thread `{}`",
+                    params.tracked_thread_id
+                ))
+            })?;
+        Ok(ipc::AuthorityTrackedThreadGetResponse { tracked_thread })
     }
 
     async fn assignment_start(
@@ -8083,6 +8483,7 @@ mod tests {
     use super::{DaemonState, TurnKey};
     use crate::assignment_comm::parse::{parse_worker_report, parse_worker_report_for_turn};
     use crate::assignment_comm::render::{build_assignment_communication_record, render_prompt};
+    use crate::authority_store::AuthoritySqliteStore;
     use crate::supervisor::{
         SupervisorReasoner, SupervisorReasonerFailure, SupervisorReasonerResult,
     };
@@ -9060,6 +9461,7 @@ mod tests {
             config_file: base.join("config/config.toml"),
             data_dir: base.join("data"),
             state_file: base.join("data/state.json"),
+            state_db_file: base.join("data/state.db"),
             logs_dir: base.join("logs"),
             runtime_dir: base.join("runtime"),
             socket_file: base.join("runtime/orcasd.sock"),
@@ -9097,6 +9499,8 @@ mod tests {
         spawn_codex_bridge: bool,
     ) -> Arc<OrcasDaemonService> {
         let store = Arc::new(JsonSessionStore::new(paths.clone(), config.clone()));
+        let authority_store =
+            Arc::new(AuthoritySqliteStore::open(paths.clone()).expect("authority"));
         let (event_tx, _) = broadcast::channel(32);
         let service = Arc::new(OrcasDaemonService {
             paths,
@@ -9112,6 +9516,7 @@ mod tests {
                 git_commit: None,
             },
             store,
+            authority_store,
             codex_daemon,
             codex_client,
             state: RwLock::new(DaemonState::default()),
@@ -9157,6 +9562,7 @@ mod tests {
             config_file: base.join("config/config.toml"),
             data_dir: base.join("data"),
             state_file: base.join("data/state.json"),
+            state_db_file: base.join("data/state.db"),
             logs_dir: base.join("logs"),
             runtime_dir: base.join("runtime"),
             socket_file: base.join("runtime/orcasd.sock"),
@@ -17624,6 +18030,117 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                 [&interrupted_assignment.worker_session_id]
                 .runtime_status,
             WorkerSessionRuntimeStatus::Lost
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_queries_and_mutations_round_trip_through_service() {
+        let base = std::env::temp_dir().join(format!("orcas-authority-service-{}", Uuid::new_v4()));
+        let service = test_service_at(base.clone()).await;
+        let origin_node_id = service.authority_store.origin_node_id().expect("origin");
+
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: origin_node_id.clone(),
+            actor: orcas_core::authority::CommandActor::parse("service_test")
+                .expect("command actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("ws-create"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("svc-ws")
+                        .expect("workstream id"),
+                    title: "Service workstream".to_string(),
+                    objective: "Exercise authority API".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "high".to_string(),
+                },
+            })
+            .await
+            .expect("authority workstream create")
+            .workstream;
+
+        let work_unit = service
+            .authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+                command: orcas_core::authority::CreateWorkUnit {
+                    metadata: metadata("wu-create"),
+                    work_unit_id: orcas_core::authority::WorkUnitId::parse("svc-wu")
+                        .expect("work unit id"),
+                    workstream_id: workstream.id.clone(),
+                    title: "Service work unit".to_string(),
+                    task_statement: "Persist through service".to_string(),
+                    status: WorkUnitStatus::Ready,
+                },
+            })
+            .await
+            .expect("authority work unit create")
+            .work_unit;
+
+        let tracked_thread = service
+            .authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
+                command: orcas_core::authority::CreateTrackedThread {
+                    metadata: metadata("tt-create"),
+                    tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("svc-tt")
+                        .expect("tracked thread id"),
+                    work_unit_id: work_unit.id.clone(),
+                    title: "Service tracked thread".to_string(),
+                    notes: Some("Local record".to_string()),
+                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
+                    upstream_thread_id: Some("upstream-service-thread".to_string()),
+                    preferred_cwd: Some("/tmp/orcas".to_string()),
+                    preferred_model: Some("gpt-5.4".to_string()),
+                },
+            })
+            .await
+            .expect("authority tracked thread create")
+            .tracked_thread;
+
+        let hierarchy = service
+            .authority_hierarchy_get(ipc::AuthorityHierarchyGetRequest::default())
+            .await
+            .expect("authority hierarchy")
+            .hierarchy;
+        assert_eq!(hierarchy.workstreams.len(), 1);
+        assert_eq!(hierarchy.workstreams[0].work_units.len(), 1);
+        assert_eq!(
+            hierarchy.workstreams[0].work_units[0].tracked_threads.len(),
+            1
+        );
+
+        let delete_plan = service
+            .authority_delete_plan(ipc::AuthorityDeletePlanRequest {
+                target: orcas_core::authority::DeleteTarget::Workstream {
+                    workstream_id: workstream.id.clone(),
+                },
+            })
+            .await
+            .expect("authority delete plan")
+            .delete_plan;
+        assert_eq!(delete_plan.affected_work_units, 1);
+        assert_eq!(delete_plan.affected_tracked_threads, 1);
+        assert!(delete_plan.has_upstream_bindings);
+
+        drop(service);
+
+        let restarted = test_service_at(base).await;
+        let loaded = restarted
+            .authority_tracked_thread_get(ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: tracked_thread.id,
+            })
+            .await
+            .expect("authority tracked thread get after restart")
+            .tracked_thread;
+        assert_eq!(loaded.title, "Service tracked thread");
+        assert_eq!(
+            loaded.upstream_thread_id.as_deref(),
+            Some("upstream-service-thread")
         );
     }
 }

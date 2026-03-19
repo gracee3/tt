@@ -3,15 +3,60 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use chrono::Utc;
 use tokio::sync::{Mutex, mpsc};
 
-use orcas_core::{AppPaths, Assignment, Decision, Report, SupervisorTurnDecision, WorkUnit, ipc};
+use orcas_core::{
+    AppPaths, Assignment, Decision, Report, SupervisorTurnDecision, WorkUnit, authority, ipc,
+};
 use orcas_daemon::{
     OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCommand {
+    GetAuthorityHierarchy {
+        include_deleted: bool,
+    },
+    GetAuthorityDeletePlan {
+        target: authority::DeleteTarget,
+    },
+    GetAuthorityWorkstream {
+        workstream_id: authority::WorkstreamId,
+    },
+    GetAuthorityWorkUnit {
+        work_unit_id: authority::WorkUnitId,
+    },
+    GetAuthorityTrackedThread {
+        tracked_thread_id: authority::TrackedThreadId,
+    },
+    CreateAuthorityWorkstream {
+        command: authority::CreateWorkstream,
+    },
+    EditAuthorityWorkstream {
+        command: authority::EditWorkstream,
+    },
+    DeleteAuthorityWorkstream {
+        command: authority::DeleteWorkstream,
+    },
+    CreateAuthorityWorkUnit {
+        command: authority::CreateWorkUnit,
+    },
+    EditAuthorityWorkUnit {
+        command: authority::EditWorkUnit,
+    },
+    DeleteAuthorityWorkUnit {
+        command: authority::DeleteWorkUnit,
+    },
+    CreateAuthorityTrackedThread {
+        command: authority::CreateTrackedThread,
+    },
+    EditAuthorityTrackedThread {
+        command: authority::EditTrackedThread,
+    },
+    DeleteAuthorityTrackedThread {
+        command: authority::DeleteTrackedThread,
+    },
     GetThread {
         thread_id: String,
     },
@@ -60,6 +105,14 @@ pub enum BackendCommand {
 
 #[derive(Debug, Clone)]
 pub enum BackendCommandResult {
+    AuthorityHierarchy(authority::HierarchySnapshot),
+    AuthorityDeletePlan(authority::DeletePlan),
+    AuthorityWorkstreamDetail(ipc::AuthorityWorkstreamGetResponse),
+    AuthorityWorkUnitDetail(ipc::AuthorityWorkunitGetResponse),
+    AuthorityTrackedThreadDetail(ipc::AuthorityTrackedThreadGetResponse),
+    AuthorityWorkstream(authority::WorkstreamRecord),
+    AuthorityWorkUnit(authority::WorkUnitRecord),
+    AuthorityTrackedThread(authority::TrackedThreadRecord),
     Snapshot(ipc::StateSnapshot),
     Thread(ipc::ThreadView),
     ThreadAttached(ipc::ThreadAttachResponse),
@@ -172,9 +225,15 @@ impl TuiBackend for OrcasDaemonBackend {
         let client = self.ensure_client(launch).await?;
         match Self::execute_with_client(&client, command.clone()).await {
             Ok(result) => Ok(result),
-            Err(_) => {
+            Err(error) => {
+                let retry_launch = if Self::should_restart_for_error(&command, &error) {
+                    self.daemon.restart().await?;
+                    OrcasDaemonLaunch::Never
+                } else {
+                    launch
+                };
                 self.invalidate_client().await;
-                let client = self.connect_client(launch).await?;
+                let client = self.connect_client(retry_launch).await?;
                 Self::execute_with_client(&client, command).await
             }
         }
@@ -182,11 +241,163 @@ impl TuiBackend for OrcasDaemonBackend {
 }
 
 impl OrcasDaemonBackend {
+    fn is_authority_command(command: &BackendCommand) -> bool {
+        matches!(
+            command,
+            BackendCommand::GetAuthorityHierarchy { .. }
+                | BackendCommand::GetAuthorityDeletePlan { .. }
+                | BackendCommand::GetAuthorityWorkstream { .. }
+                | BackendCommand::GetAuthorityWorkUnit { .. }
+                | BackendCommand::GetAuthorityTrackedThread { .. }
+                | BackendCommand::CreateAuthorityWorkstream { .. }
+                | BackendCommand::EditAuthorityWorkstream { .. }
+                | BackendCommand::DeleteAuthorityWorkstream { .. }
+                | BackendCommand::CreateAuthorityWorkUnit { .. }
+                | BackendCommand::EditAuthorityWorkUnit { .. }
+                | BackendCommand::DeleteAuthorityWorkUnit { .. }
+                | BackendCommand::CreateAuthorityTrackedThread { .. }
+                | BackendCommand::EditAuthorityTrackedThread { .. }
+                | BackendCommand::DeleteAuthorityTrackedThread { .. }
+        )
+    }
+
+    fn should_restart_for_error(command: &BackendCommand, error: &anyhow::Error) -> bool {
+        Self::is_authority_command(command) && {
+            let text = error.to_string();
+            text.contains("unknown method") || text.contains("-32601")
+        }
+    }
+
     async fn execute_with_client(
         client: &Arc<OrcasIpcClient>,
         command: BackendCommand,
     ) -> Result<BackendCommandResult> {
         match command {
+            BackendCommand::GetAuthorityHierarchy { include_deleted } => {
+                Ok(BackendCommandResult::AuthorityHierarchy(
+                    client
+                        .authority_hierarchy_get(&ipc::AuthorityHierarchyGetRequest {
+                            include_deleted,
+                        })
+                        .await?
+                        .hierarchy,
+                ))
+            }
+            BackendCommand::GetAuthorityDeletePlan { target } => {
+                Ok(BackendCommandResult::AuthorityDeletePlan(
+                    client
+                        .authority_delete_plan(&ipc::AuthorityDeletePlanRequest { target })
+                        .await?
+                        .delete_plan,
+                ))
+            }
+            BackendCommand::GetAuthorityWorkstream { workstream_id } => {
+                Ok(BackendCommandResult::AuthorityWorkstreamDetail(
+                    client
+                        .authority_workstream_get(&ipc::AuthorityWorkstreamGetRequest {
+                            workstream_id,
+                        })
+                        .await?,
+                ))
+            }
+            BackendCommand::GetAuthorityWorkUnit { work_unit_id } => {
+                Ok(BackendCommandResult::AuthorityWorkUnitDetail(
+                    client
+                        .authority_workunit_get(&ipc::AuthorityWorkunitGetRequest { work_unit_id })
+                        .await?,
+                ))
+            }
+            BackendCommand::GetAuthorityTrackedThread { tracked_thread_id } => {
+                Ok(BackendCommandResult::AuthorityTrackedThreadDetail(
+                    client
+                        .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                            tracked_thread_id,
+                        })
+                        .await?,
+                ))
+            }
+            BackendCommand::CreateAuthorityWorkstream { command } => {
+                Ok(BackendCommandResult::AuthorityWorkstream(
+                    client
+                        .authority_workstream_create(&ipc::AuthorityWorkstreamCreateRequest {
+                            command,
+                        })
+                        .await?
+                        .workstream,
+                ))
+            }
+            BackendCommand::EditAuthorityWorkstream { command } => {
+                Ok(BackendCommandResult::AuthorityWorkstream(
+                    client
+                        .authority_workstream_edit(&ipc::AuthorityWorkstreamEditRequest { command })
+                        .await?
+                        .workstream,
+                ))
+            }
+            BackendCommand::DeleteAuthorityWorkstream { command } => {
+                Ok(BackendCommandResult::AuthorityWorkstream(
+                    client
+                        .authority_workstream_delete(&ipc::AuthorityWorkstreamDeleteRequest {
+                            command,
+                        })
+                        .await?
+                        .workstream,
+                ))
+            }
+            BackendCommand::CreateAuthorityWorkUnit { command } => {
+                Ok(BackendCommandResult::AuthorityWorkUnit(
+                    client
+                        .authority_workunit_create(&ipc::AuthorityWorkunitCreateRequest { command })
+                        .await?
+                        .work_unit,
+                ))
+            }
+            BackendCommand::EditAuthorityWorkUnit { command } => {
+                Ok(BackendCommandResult::AuthorityWorkUnit(
+                    client
+                        .authority_workunit_edit(&ipc::AuthorityWorkunitEditRequest { command })
+                        .await?
+                        .work_unit,
+                ))
+            }
+            BackendCommand::DeleteAuthorityWorkUnit { command } => {
+                Ok(BackendCommandResult::AuthorityWorkUnit(
+                    client
+                        .authority_workunit_delete(&ipc::AuthorityWorkunitDeleteRequest { command })
+                        .await?
+                        .work_unit,
+                ))
+            }
+            BackendCommand::CreateAuthorityTrackedThread { command } => {
+                Ok(BackendCommandResult::AuthorityTrackedThread(
+                    client
+                        .authority_tracked_thread_create(
+                            &ipc::AuthorityTrackedThreadCreateRequest { command },
+                        )
+                        .await?
+                        .tracked_thread,
+                ))
+            }
+            BackendCommand::EditAuthorityTrackedThread { command } => {
+                Ok(BackendCommandResult::AuthorityTrackedThread(
+                    client
+                        .authority_tracked_thread_edit(&ipc::AuthorityTrackedThreadEditRequest {
+                            command,
+                        })
+                        .await?
+                        .tracked_thread,
+                ))
+            }
+            BackendCommand::DeleteAuthorityTrackedThread { command } => {
+                Ok(BackendCommandResult::AuthorityTrackedThread(
+                    client
+                        .authority_tracked_thread_delete(
+                            &ipc::AuthorityTrackedThreadDeleteRequest { command },
+                        )
+                        .await?
+                        .tracked_thread,
+                ))
+            }
             BackendCommand::GetThread { thread_id } => Ok(BackendCommandResult::Thread(
                 client
                     .thread_read_history(&ipc::ThreadReadHistoryRequest { thread_id })
@@ -342,6 +553,47 @@ impl OrcasDaemonBackend {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authority_unknown_method_errors_trigger_restart_retry() {
+        let command = BackendCommand::CreateAuthorityWorkstream {
+            command: authority::CreateWorkstream {
+                metadata: authority::CommandMetadata {
+                    command_id: authority::CommandId::new(),
+                    issued_at: chrono::Utc::now(),
+                    origin_node_id: authority::OriginNodeId::parse("orcas-tui")
+                        .expect("origin node id"),
+                    actor: authority::CommandActor::parse("tui_operator").expect("actor"),
+                    correlation_id: None,
+                },
+                workstream_id: authority::WorkstreamId::new(),
+                title: "alpha".to_string(),
+                objective: "beta".to_string(),
+                status: orcas_core::WorkstreamStatus::Active,
+                priority: "normal".to_string(),
+            },
+        };
+        let error = anyhow!(
+            "protocol error: json-rpc error -32601: unknown method `authority/workstream/create`"
+        );
+        assert!(OrcasDaemonBackend::should_restart_for_error(
+            &command, &error
+        ));
+    }
+
+    #[test]
+    fn non_authority_errors_do_not_trigger_restart_retry() {
+        let command = BackendCommand::LoadModels;
+        let error = anyhow!("protocol error: json-rpc error -32601: unknown method `models/list`");
+        assert!(!OrcasDaemonBackend::should_restart_for_error(
+            &command, &error
+        ));
+    }
+}
+
 #[derive(Clone)]
 pub struct FakeBackend {
     inner: Arc<Mutex<FakeBackendState>>,
@@ -352,6 +604,9 @@ struct FakeBackendState {
     threads: HashMap<String, ipc::ThreadView>,
     turns: HashMap<(String, String), ipc::TurnAttachResponse>,
     work_unit_details: HashMap<String, ipc::WorkunitGetResponse>,
+    authority_workstreams: HashMap<String, authority::WorkstreamRecord>,
+    authority_work_units: HashMap<String, authority::WorkUnitRecord>,
+    authority_tracked_threads: HashMap<String, authority::TrackedThreadRecord>,
     active_turns: Vec<ipc::TurnStateView>,
     models: Vec<ipc::ModelSummary>,
     next_submit_id: usize,
@@ -366,6 +621,7 @@ struct FakeBackendState {
 
 impl FakeBackend {
     pub fn new(snapshot: ipc::StateSnapshot) -> Self {
+        let authority_state = authority_state_from_snapshot(&snapshot);
         let threads = snapshot
             .active_thread
             .clone()
@@ -381,6 +637,9 @@ impl FakeBackend {
         Self {
             inner: Arc::new(Mutex::new(FakeBackendState {
                 work_unit_details: workunit_details_from_snapshot(&snapshot),
+                authority_workstreams: authority_state.workstreams,
+                authority_work_units: authority_state.work_units,
+                authority_tracked_threads: authority_state.tracked_threads,
                 snapshot,
                 threads,
                 turns: HashMap::new(),
@@ -420,6 +679,7 @@ impl FakeBackend {
     }
 
     pub async fn replace_snapshot(&self, snapshot: ipc::StateSnapshot) {
+        let authority_state = authority_state_from_snapshot(&snapshot);
         let active_turns = snapshot
             .session
             .active_turns
@@ -428,6 +688,9 @@ impl FakeBackend {
             .collect();
         let mut guard = self.inner.lock().await;
         guard.work_unit_details = workunit_details_from_snapshot(&snapshot);
+        guard.authority_workstreams = authority_state.workstreams;
+        guard.authority_work_units = authority_state.work_units;
+        guard.authority_tracked_threads = authority_state.tracked_threads;
         guard.snapshot = snapshot;
         guard.active_turns = active_turns;
     }
@@ -573,6 +836,330 @@ impl TuiBackend for FakeBackend {
             return Err(anyhow!(message));
         }
         match command {
+            BackendCommand::GetAuthorityHierarchy { include_deleted } => {
+                Ok(BackendCommandResult::AuthorityHierarchy(
+                    build_authority_hierarchy(&guard, include_deleted),
+                ))
+            }
+            BackendCommand::GetAuthorityDeletePlan { target } => {
+                let plan = build_delete_plan(&guard, &target)
+                    .ok_or_else(|| anyhow!("unknown authority delete target"))?;
+                Ok(BackendCommandResult::AuthorityDeletePlan(plan))
+            }
+            BackendCommand::GetAuthorityWorkstream { workstream_id } => {
+                let workstream = guard
+                    .authority_workstreams
+                    .get(workstream_id.as_str())
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown authority workstream `{workstream_id}`"))?;
+                let mut work_units = guard
+                    .authority_work_units
+                    .values()
+                    .filter(|work_unit| {
+                        work_unit.workstream_id == workstream_id && work_unit.deleted_at.is_none()
+                    })
+                    .map(authority::WorkUnitSummary::from)
+                    .collect::<Vec<_>>();
+                work_units.sort_by(|left, right| {
+                    right
+                        .updated_at
+                        .cmp(&left.updated_at)
+                        .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+                });
+                Ok(BackendCommandResult::AuthorityWorkstreamDetail(
+                    ipc::AuthorityWorkstreamGetResponse {
+                        workstream,
+                        work_units,
+                    },
+                ))
+            }
+            BackendCommand::GetAuthorityWorkUnit { work_unit_id } => {
+                let work_unit = guard
+                    .authority_work_units
+                    .get(work_unit_id.as_str())
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown authority work unit `{work_unit_id}`"))?;
+                let mut tracked_threads = guard
+                    .authority_tracked_threads
+                    .values()
+                    .filter(|tracked_thread| {
+                        tracked_thread.work_unit_id == work_unit_id
+                            && tracked_thread.deleted_at.is_none()
+                    })
+                    .map(authority::TrackedThreadSummary::from)
+                    .collect::<Vec<_>>();
+                tracked_threads.sort_by(|left, right| {
+                    right
+                        .updated_at
+                        .cmp(&left.updated_at)
+                        .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+                });
+                Ok(BackendCommandResult::AuthorityWorkUnitDetail(
+                    ipc::AuthorityWorkunitGetResponse {
+                        work_unit,
+                        tracked_threads,
+                    },
+                ))
+            }
+            BackendCommand::GetAuthorityTrackedThread { tracked_thread_id } => {
+                Ok(BackendCommandResult::AuthorityTrackedThreadDetail(
+                    ipc::AuthorityTrackedThreadGetResponse {
+                        tracked_thread: guard
+                            .authority_tracked_threads
+                            .get(tracked_thread_id.as_str())
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow!("unknown authority tracked thread `{tracked_thread_id}`")
+                            })?,
+                    },
+                ))
+            }
+            BackendCommand::CreateAuthorityWorkstream { command } => {
+                let now = command.metadata.issued_at;
+                let record = authority::WorkstreamRecord {
+                    id: command.workstream_id.clone(),
+                    title: command.title.clone(),
+                    objective: command.objective.clone(),
+                    status: command.status,
+                    priority: command.priority.clone(),
+                    revision: authority::Revision::initial(),
+                    origin_node_id: command.metadata.origin_node_id.clone(),
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                };
+                guard
+                    .authority_workstreams
+                    .insert(record.id.to_string(), record.clone());
+                Ok(BackendCommandResult::AuthorityWorkstream(record))
+            }
+            BackendCommand::EditAuthorityWorkstream { command } => {
+                let record = guard
+                    .authority_workstreams
+                    .get_mut(command.workstream_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority workstream"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected workstream revision"));
+                }
+                if let Some(title) = command.changes.title.as_ref() {
+                    record.title = title.clone();
+                }
+                if let Some(objective) = command.changes.objective.as_ref() {
+                    record.objective = objective.clone();
+                }
+                if let Some(status) = command.changes.status {
+                    record.status = status;
+                }
+                if let Some(priority) = command.changes.priority.as_ref() {
+                    record.priority = priority.clone();
+                }
+                record.revision = record.revision.next();
+                record.updated_at = command.metadata.issued_at;
+                Ok(BackendCommandResult::AuthorityWorkstream(record.clone()))
+            }
+            BackendCommand::DeleteAuthorityWorkstream { command } => {
+                let record = guard
+                    .authority_workstreams
+                    .get_mut(command.workstream_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority workstream"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected workstream revision"));
+                }
+                let deleted_at = command.metadata.issued_at;
+                record.revision = record.revision.next();
+                record.updated_at = deleted_at;
+                record.deleted_at = Some(deleted_at);
+                let deleted_record = record.clone();
+                let descendant_work_unit_ids = guard
+                    .authority_work_units
+                    .values()
+                    .filter(|work_unit| {
+                        work_unit.workstream_id == command.workstream_id
+                            && work_unit.deleted_at.is_none()
+                    })
+                    .map(|work_unit| work_unit.id.to_string())
+                    .collect::<Vec<_>>();
+                for work_unit_id in &descendant_work_unit_ids {
+                    if let Some(work_unit) = guard.authority_work_units.get_mut(work_unit_id) {
+                        work_unit.revision = work_unit.revision.next();
+                        work_unit.updated_at = deleted_at;
+                        work_unit.deleted_at = Some(deleted_at);
+                    }
+                }
+                for tracked_thread in guard.authority_tracked_threads.values_mut() {
+                    if descendant_work_unit_ids
+                        .iter()
+                        .any(|work_unit_id| work_unit_id == tracked_thread.work_unit_id.as_str())
+                        && tracked_thread.deleted_at.is_none()
+                    {
+                        tracked_thread.revision = tracked_thread.revision.next();
+                        tracked_thread.updated_at = deleted_at;
+                        tracked_thread.deleted_at = Some(deleted_at);
+                    }
+                }
+                Ok(BackendCommandResult::AuthorityWorkstream(deleted_record))
+            }
+            BackendCommand::CreateAuthorityWorkUnit { command } => {
+                if !guard
+                    .authority_workstreams
+                    .contains_key(command.workstream_id.as_str())
+                {
+                    return Err(anyhow!("unknown authority parent workstream"));
+                }
+                let now = command.metadata.issued_at;
+                let record = authority::WorkUnitRecord {
+                    id: command.work_unit_id.clone(),
+                    workstream_id: command.workstream_id.clone(),
+                    title: command.title.clone(),
+                    task_statement: command.task_statement.clone(),
+                    status: command.status,
+                    revision: authority::Revision::initial(),
+                    origin_node_id: command.metadata.origin_node_id.clone(),
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                };
+                guard
+                    .authority_work_units
+                    .insert(record.id.to_string(), record.clone());
+                Ok(BackendCommandResult::AuthorityWorkUnit(record))
+            }
+            BackendCommand::EditAuthorityWorkUnit { command } => {
+                let record = guard
+                    .authority_work_units
+                    .get_mut(command.work_unit_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority work unit"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected work unit revision"));
+                }
+                if let Some(title) = command.changes.title.as_ref() {
+                    record.title = title.clone();
+                }
+                if let Some(task_statement) = command.changes.task_statement.as_ref() {
+                    record.task_statement = task_statement.clone();
+                }
+                if let Some(status) = command.changes.status {
+                    record.status = status;
+                }
+                record.revision = record.revision.next();
+                record.updated_at = command.metadata.issued_at;
+                Ok(BackendCommandResult::AuthorityWorkUnit(record.clone()))
+            }
+            BackendCommand::DeleteAuthorityWorkUnit { command } => {
+                let record = guard
+                    .authority_work_units
+                    .get_mut(command.work_unit_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority work unit"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected work unit revision"));
+                }
+                let deleted_at = command.metadata.issued_at;
+                record.revision = record.revision.next();
+                record.updated_at = deleted_at;
+                record.deleted_at = Some(deleted_at);
+                let deleted_record = record.clone();
+                for tracked_thread in guard.authority_tracked_threads.values_mut() {
+                    if tracked_thread.work_unit_id == command.work_unit_id
+                        && tracked_thread.deleted_at.is_none()
+                    {
+                        tracked_thread.revision = tracked_thread.revision.next();
+                        tracked_thread.updated_at = deleted_at;
+                        tracked_thread.deleted_at = Some(deleted_at);
+                    }
+                }
+                Ok(BackendCommandResult::AuthorityWorkUnit(deleted_record))
+            }
+            BackendCommand::CreateAuthorityTrackedThread { command } => {
+                if !guard
+                    .authority_work_units
+                    .contains_key(command.work_unit_id.as_str())
+                {
+                    return Err(anyhow!("unknown authority parent work unit"));
+                }
+                let now = command.metadata.issued_at;
+                let binding_state = if command.upstream_thread_id.is_some() {
+                    authority::TrackedThreadBindingState::Bound
+                } else {
+                    authority::TrackedThreadBindingState::Unbound
+                };
+                let record = authority::TrackedThreadRecord {
+                    id: command.tracked_thread_id.clone(),
+                    work_unit_id: command.work_unit_id.clone(),
+                    title: command.title.clone(),
+                    notes: command.notes.clone(),
+                    backend_kind: command.backend_kind,
+                    upstream_thread_id: command.upstream_thread_id.clone(),
+                    binding_state,
+                    preferred_cwd: command.preferred_cwd.clone(),
+                    preferred_model: command.preferred_model.clone(),
+                    last_seen_turn_id: None,
+                    revision: authority::Revision::initial(),
+                    origin_node_id: command.metadata.origin_node_id.clone(),
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: None,
+                };
+                guard
+                    .authority_tracked_threads
+                    .insert(record.id.to_string(), record.clone());
+                Ok(BackendCommandResult::AuthorityTrackedThread(record))
+            }
+            BackendCommand::EditAuthorityTrackedThread { command } => {
+                let record = guard
+                    .authority_tracked_threads
+                    .get_mut(command.tracked_thread_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority tracked thread"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected tracked thread revision"));
+                }
+                if let Some(title) = command.changes.title.as_ref() {
+                    record.title = title.clone();
+                }
+                if let Some(notes) = command.changes.notes.as_ref() {
+                    record.notes = notes.clone();
+                }
+                if let Some(backend_kind) = command.changes.backend_kind {
+                    record.backend_kind = backend_kind;
+                }
+                if let Some(upstream_thread_id) = command.changes.upstream_thread_id.as_ref() {
+                    record.upstream_thread_id = upstream_thread_id.clone();
+                }
+                if let Some(binding_state) = command.changes.binding_state {
+                    record.binding_state = binding_state;
+                } else {
+                    record.binding_state = if record.upstream_thread_id.is_some() {
+                        authority::TrackedThreadBindingState::Bound
+                    } else {
+                        authority::TrackedThreadBindingState::Unbound
+                    };
+                }
+                if let Some(preferred_cwd) = command.changes.preferred_cwd.as_ref() {
+                    record.preferred_cwd = preferred_cwd.clone();
+                }
+                if let Some(preferred_model) = command.changes.preferred_model.as_ref() {
+                    record.preferred_model = preferred_model.clone();
+                }
+                if let Some(last_seen_turn_id) = command.changes.last_seen_turn_id.as_ref() {
+                    record.last_seen_turn_id = last_seen_turn_id.clone();
+                }
+                record.revision = record.revision.next();
+                record.updated_at = command.metadata.issued_at;
+                Ok(BackendCommandResult::AuthorityTrackedThread(record.clone()))
+            }
+            BackendCommand::DeleteAuthorityTrackedThread { command } => {
+                let record = guard
+                    .authority_tracked_threads
+                    .get_mut(command.tracked_thread_id.as_str())
+                    .ok_or_else(|| anyhow!("unknown authority tracked thread"))?;
+                if record.revision != command.expected_revision {
+                    return Err(anyhow!("unexpected tracked thread revision"));
+                }
+                let deleted_at = command.metadata.issued_at;
+                record.revision = record.revision.next();
+                record.updated_at = deleted_at;
+                record.deleted_at = Some(deleted_at);
+                Ok(BackendCommandResult::AuthorityTrackedThread(record.clone()))
+            }
             BackendCommand::GetThread { thread_id } => guard
                 .threads
                 .get(&thread_id)
@@ -1298,6 +1885,268 @@ impl TuiBackend for FakeBackend {
             }
         }
     }
+}
+
+struct FakeAuthorityState {
+    workstreams: HashMap<String, authority::WorkstreamRecord>,
+    work_units: HashMap<String, authority::WorkUnitRecord>,
+    tracked_threads: HashMap<String, authority::TrackedThreadRecord>,
+}
+
+fn authority_state_from_snapshot(snapshot: &ipc::StateSnapshot) -> FakeAuthorityState {
+    let mut workstreams = HashMap::new();
+    let mut work_units = HashMap::new();
+    let mut tracked_threads = HashMap::new();
+
+    for workstream in &snapshot.collaboration.workstreams {
+        let id = authority::WorkstreamId::parse(workstream.id.clone()).unwrap_or_else(|_| {
+            authority::WorkstreamId::parse(format!("ws-{}", authority::WorkstreamId::new()))
+                .expect("generated workstream id")
+        });
+        workstreams.insert(
+            workstream.id.clone(),
+            authority::WorkstreamRecord {
+                id,
+                title: workstream.title.clone(),
+                objective: workstream.objective.clone(),
+                status: workstream.status,
+                priority: workstream.priority.clone(),
+                revision: authority::Revision::initial(),
+                origin_node_id: fake_origin_node_id(),
+                created_at: workstream.updated_at,
+                updated_at: workstream.updated_at,
+                deleted_at: None,
+            },
+        );
+    }
+
+    for work_unit in &snapshot.collaboration.work_units {
+        let workstream_id = workstreams
+            .get(work_unit.workstream_id.as_str())
+            .map(|record| record.id.clone())
+            .unwrap_or_else(|| {
+                authority::WorkstreamId::parse(work_unit.workstream_id.clone())
+                    .expect("snapshot workstream id")
+            });
+        work_units.insert(
+            work_unit.id.clone(),
+            authority::WorkUnitRecord {
+                id: authority::WorkUnitId::parse(work_unit.id.clone()).expect("snapshot workunit"),
+                workstream_id,
+                title: work_unit.title.clone(),
+                task_statement: work_unit.title.clone(),
+                status: work_unit.status,
+                revision: authority::Revision::initial(),
+                origin_node_id: fake_origin_node_id(),
+                created_at: work_unit.updated_at,
+                updated_at: work_unit.updated_at,
+                deleted_at: None,
+            },
+        );
+    }
+
+    for assignment in &snapshot.collaboration.codex_thread_assignments {
+        let Some(work_unit) = work_units.get(assignment.work_unit_id.as_str()) else {
+            continue;
+        };
+        let thread = snapshot
+            .threads
+            .iter()
+            .find(|thread| thread.id == assignment.codex_thread_id);
+        let title = thread
+            .and_then(|thread| thread.name.clone())
+            .unwrap_or_else(|| assignment.codex_thread_id.clone());
+        tracked_threads.insert(
+            assignment.codex_thread_id.clone(),
+            authority::TrackedThreadRecord {
+                id: authority::TrackedThreadId::parse(assignment.codex_thread_id.clone())
+                    .unwrap_or_else(|_| authority::TrackedThreadId::new()),
+                work_unit_id: work_unit.id.clone(),
+                title,
+                notes: assignment.notes.clone(),
+                backend_kind: authority::TrackedThreadBackendKind::Codex,
+                upstream_thread_id: Some(assignment.codex_thread_id.clone()),
+                binding_state: authority::TrackedThreadBindingState::Bound,
+                preferred_cwd: thread.map(|thread| thread.cwd.clone()),
+                preferred_model: None,
+                last_seen_turn_id: thread.and_then(|thread| thread.last_seen_turn_id.clone()),
+                revision: authority::Revision::initial(),
+                origin_node_id: fake_origin_node_id(),
+                created_at: assignment.assigned_at,
+                updated_at: assignment.updated_at,
+                deleted_at: None,
+            },
+        );
+    }
+
+    FakeAuthorityState {
+        workstreams,
+        work_units,
+        tracked_threads,
+    }
+}
+
+fn build_authority_hierarchy(
+    state: &FakeBackendState,
+    include_deleted: bool,
+) -> authority::HierarchySnapshot {
+    let mut workstreams = state
+        .authority_workstreams
+        .values()
+        .filter(|workstream| include_deleted || workstream.deleted_at.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    workstreams.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+    });
+
+    authority::HierarchySnapshot {
+        workstreams: workstreams
+            .into_iter()
+            .map(|workstream| {
+                let mut work_units = state
+                    .authority_work_units
+                    .values()
+                    .filter(|work_unit| {
+                        work_unit.workstream_id == workstream.id
+                            && (include_deleted || work_unit.deleted_at.is_none())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                work_units.sort_by(|left, right| {
+                    right
+                        .updated_at
+                        .cmp(&left.updated_at)
+                        .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+                });
+
+                authority::WorkstreamNode {
+                    workstream: authority::WorkstreamSummary::from(&workstream),
+                    work_units: work_units
+                        .into_iter()
+                        .map(|work_unit| {
+                            let mut tracked_threads = state
+                                .authority_tracked_threads
+                                .values()
+                                .filter(|tracked_thread| {
+                                    tracked_thread.work_unit_id == work_unit.id
+                                        && (include_deleted || tracked_thread.deleted_at.is_none())
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            tracked_threads.sort_by(|left, right| {
+                                right
+                                    .updated_at
+                                    .cmp(&left.updated_at)
+                                    .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+                            });
+                            authority::WorkUnitNode {
+                                work_unit: authority::WorkUnitSummary::from(&work_unit),
+                                tracked_threads: tracked_threads
+                                    .iter()
+                                    .map(authority::TrackedThreadSummary::from)
+                                    .collect(),
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn build_delete_plan(
+    state: &FakeBackendState,
+    target: &authority::DeleteTarget,
+) -> Option<authority::DeletePlan> {
+    match target {
+        authority::DeleteTarget::Workstream { workstream_id } => {
+            let workstream = state.authority_workstreams.get(workstream_id.as_str())?;
+            let work_units = state
+                .authority_work_units
+                .values()
+                .filter(|work_unit| {
+                    work_unit.workstream_id == *workstream_id && work_unit.deleted_at.is_none()
+                })
+                .collect::<Vec<_>>();
+            let tracked_threads = state
+                .authority_tracked_threads
+                .values()
+                .filter(|tracked_thread| {
+                    tracked_thread.deleted_at.is_none()
+                        && work_units
+                            .iter()
+                            .any(|work_unit| work_unit.id == tracked_thread.work_unit_id)
+                })
+                .collect::<Vec<_>>();
+            Some(authority::DeletePlan {
+                target: authority::DeletePlanTarget {
+                    aggregate_key: authority::AggregateKey::workstream(workstream_id),
+                    label: workstream.title.clone(),
+                },
+                expected_revision: workstream.revision,
+                affected_work_units: work_units.len() as u64,
+                affected_tracked_threads: tracked_threads.len() as u64,
+                has_upstream_bindings: tracked_threads
+                    .iter()
+                    .any(|tracked_thread| tracked_thread.upstream_thread_id.is_some()),
+                confirmation_token: authority::DeleteToken::new(),
+                requires_typed_confirmation: !work_units.is_empty() || !tracked_threads.is_empty(),
+                expires_at: Utc::now() + chrono::TimeDelta::minutes(5),
+            })
+        }
+        authority::DeleteTarget::WorkUnit { work_unit_id } => {
+            let work_unit = state.authority_work_units.get(work_unit_id.as_str())?;
+            let tracked_threads = state
+                .authority_tracked_threads
+                .values()
+                .filter(|tracked_thread| {
+                    tracked_thread.work_unit_id == *work_unit_id
+                        && tracked_thread.deleted_at.is_none()
+                })
+                .collect::<Vec<_>>();
+            Some(authority::DeletePlan {
+                target: authority::DeletePlanTarget {
+                    aggregate_key: authority::AggregateKey::work_unit(work_unit_id),
+                    label: work_unit.title.clone(),
+                },
+                expected_revision: work_unit.revision,
+                affected_work_units: 0,
+                affected_tracked_threads: tracked_threads.len() as u64,
+                has_upstream_bindings: tracked_threads
+                    .iter()
+                    .any(|tracked_thread| tracked_thread.upstream_thread_id.is_some()),
+                confirmation_token: authority::DeleteToken::new(),
+                requires_typed_confirmation: !tracked_threads.is_empty(),
+                expires_at: Utc::now() + chrono::TimeDelta::minutes(5),
+            })
+        }
+        authority::DeleteTarget::TrackedThread { tracked_thread_id } => {
+            let tracked_thread = state
+                .authority_tracked_threads
+                .get(tracked_thread_id.as_str())?;
+            Some(authority::DeletePlan {
+                target: authority::DeletePlanTarget {
+                    aggregate_key: authority::AggregateKey::tracked_thread(tracked_thread_id),
+                    label: tracked_thread.title.clone(),
+                },
+                expected_revision: tracked_thread.revision,
+                affected_work_units: 0,
+                affected_tracked_threads: 0,
+                has_upstream_bindings: tracked_thread.upstream_thread_id.is_some(),
+                confirmation_token: authority::DeleteToken::new(),
+                requires_typed_confirmation: false,
+                expires_at: Utc::now() + chrono::TimeDelta::minutes(5),
+            })
+        }
+    }
+}
+
+fn fake_origin_node_id() -> authority::OriginNodeId {
+    authority::OriginNodeId::parse("fake-authority-node").expect("static fake origin node id")
 }
 
 fn turn_state_from_active_turn(turn: &ipc::ActiveTurn) -> ipc::TurnStateView {

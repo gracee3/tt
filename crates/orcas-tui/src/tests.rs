@@ -1,7 +1,7 @@
 use chrono::Utc;
 
 use crate::app::{
-    BannerLevel, CollaborationFocus, DaemonConnectionPhase, DaemonLifecycleState,
+    BannerLevel, CollaborationFocus, DaemonConnectionPhase, DaemonLifecycleState, MainFooterState,
     MainHierarchySelection, ProgramView, ReviewSelection, TopLevelView, UiEvent, UserAction,
 };
 use crate::backend::BackendCommand;
@@ -211,6 +211,18 @@ async fn type_multiline_steer_text(harness: &mut AppHarness, lines: &[&str]) {
 async fn clear_steer_text(harness: &mut AppHarness, text_len: usize) {
     for _ in 0..text_len {
         harness.dispatch(UserAction::SteerComposeBackspace).await;
+    }
+}
+
+async fn type_main_footer_text(harness: &mut AppHarness, text: &str) {
+    for ch in text.chars() {
+        harness.dispatch(UserAction::MainFooterAppend(ch)).await;
+    }
+}
+
+async fn clear_main_footer_text(harness: &mut AppHarness, text_len: usize) {
+    for _ in 0..text_len {
+        harness.dispatch(UserAction::MainFooterBackspace).await;
     }
 }
 
@@ -3664,7 +3676,7 @@ async fn main_selection_updates_detail_panel_by_row_kind() {
     harness.dispatch(UserAction::Refresh).await;
 
     let initial = harness.main_vm();
-    assert!(initial.detail_panel.title.contains("Selected Thread"));
+    assert!(initial.detail_panel.title.contains("Tracked Thread"));
 
     harness.dispatch(UserAction::CollapseSelectedInView).await;
     let work_unit = harness.main_vm();
@@ -3708,8 +3720,9 @@ async fn main_header_and_footer_surface_runtime_summary_and_prompt_region() {
         main.footer_prompt
             .prompt_lines
             .iter()
-            .any(|line| line.contains("read-only"))
+            .any(|line| line.contains("mode: Inspect"))
     );
+    assert!(main.footer_prompt.hint_line.contains("n new"));
 }
 
 #[tokio::test]
@@ -3741,6 +3754,308 @@ async fn snapshot_refresh_keeps_main_selection_stable() {
     );
     let rendered = harness.render_text(160, 42);
     assert!(rendered.contains("Hierarchy"), "{rendered}");
+}
+
+#[tokio::test]
+async fn main_footer_mode_transitions_and_contextual_hints_are_explicit() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    let inspect = harness.main_vm().footer_prompt;
+    assert!(inspect.hint_line.contains("n new"));
+    assert!(inspect.hint_line.contains("e edit"));
+    assert!(inspect.hint_line.contains("d delete"));
+
+    harness.dispatch(UserAction::CreateWorkstream).await;
+    assert!(matches!(
+        harness.state().authority_main.footer,
+        MainFooterState::CreateWorkstream(_)
+    ));
+    let footer = harness.main_vm().footer_prompt;
+    assert!(
+        footer
+            .prompt_lines
+            .iter()
+            .any(|line| line.contains("CreateWorkstream"))
+    );
+    assert!(footer.hint_line.contains("ctrl+s submit"));
+
+    harness.dispatch(UserAction::CancelMainFooter).await;
+    assert!(matches!(
+        harness.state().authority_main.footer,
+        MainFooterState::Inspect
+    ));
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    let work_unit_footer = harness.main_vm().footer_prompt;
+    assert!(work_unit_footer.hint_line.contains("t tracked-thread"));
+}
+
+#[tokio::test]
+async fn create_workstream_flow_routes_through_authority_backend() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::CreateWorkstream).await;
+    type_main_footer_text(&mut harness, "Local authority").await;
+    harness.dispatch(UserAction::MainFooterNextField).await;
+    type_main_footer_text(&mut harness, "/repo/orcas").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+
+    let hierarchy = harness.main_hierarchy_vm();
+    assert!(
+        hierarchy
+            .rows
+            .iter()
+            .any(|row| row.label == "Local authority")
+    );
+    assert!(matches!(
+        harness
+            .recorded_commands()
+            .await
+            .iter()
+            .find(|command| matches!(command, BackendCommand::CreateAuthorityWorkstream { .. })),
+        Some(_)
+    ));
+}
+
+#[tokio::test]
+async fn create_work_unit_under_selected_workstream_routes_through_authority_backend() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness
+        .dispatch(UserAction::CreateWorkUnitForSelection)
+        .await;
+    type_main_footer_text(&mut harness, "SQLite projector").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+
+    let hierarchy = harness.main_hierarchy_vm();
+    assert!(
+        hierarchy
+            .rows
+            .iter()
+            .any(|row| row.label == "SQLite projector")
+    );
+    assert!(matches!(
+        harness
+            .recorded_commands()
+            .await
+            .iter()
+            .find(|command| matches!(command, BackendCommand::CreateAuthorityWorkUnit { .. })),
+        Some(_)
+    ));
+}
+
+#[tokio::test]
+async fn create_tracked_thread_under_selected_work_unit_routes_through_authority_backend() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness
+        .dispatch(UserAction::CreateTrackedThreadForSelection)
+        .await;
+    type_main_footer_text(&mut harness, "operator lane").await;
+    harness.dispatch(UserAction::MainFooterNextField).await;
+    type_main_footer_text(&mut harness, "/repo/orcas").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+
+    let hierarchy = harness.main_hierarchy_vm();
+    assert!(
+        hierarchy
+            .rows
+            .iter()
+            .any(|row| row.label == "operator lane")
+    );
+    assert!(matches!(
+        harness
+            .recorded_commands()
+            .await
+            .iter()
+            .find(|command| matches!(command, BackendCommand::CreateAuthorityTrackedThread { .. })),
+        Some(_)
+    ));
+}
+
+#[tokio::test]
+async fn edit_workstream_work_unit_and_tracked_thread_flow_through_authority_backend() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::EditSelectedMainEntity).await;
+    clear_main_footer_text(&mut harness, "thread-1".len()).await;
+    type_main_footer_text(&mut harness, "tracked local").await;
+    harness.dispatch(UserAction::MainFooterNextField).await;
+    clear_main_footer_text(&mut harness, "/tmp/orcas".len()).await;
+    type_main_footer_text(&mut harness, "/repo/tracked").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert!(
+        harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "tracked local")
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::EditSelectedMainEntity).await;
+    clear_main_footer_text(&mut harness, "Snapshot wiring".len()).await;
+    type_main_footer_text(&mut harness, "Snapshot reducer").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert!(
+        harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "Snapshot reducer")
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::EditSelectedMainEntity).await;
+    clear_main_footer_text(&mut harness, "Collaboration hardening".len()).await;
+    type_main_footer_text(&mut harness, "Authority hardening").await;
+    harness.dispatch(UserAction::MainFooterNextField).await;
+    clear_main_footer_text(
+        &mut harness,
+        "Harden collaboration snapshot semantics.".len(),
+    )
+    .await;
+    type_main_footer_text(&mut harness, "/repo/orcas").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert!(
+        harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "Authority hardening")
+    );
+
+    let commands = harness.recorded_commands().await;
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::EditAuthorityTrackedThread { .. }))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::EditAuthorityWorkUnit { .. }))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::EditAuthorityWorkstream { .. }))
+    );
+}
+
+#[tokio::test]
+async fn delete_flows_are_confirmation_gated_and_reselect_sensibly() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::DeleteSelectedMainEntity).await;
+    assert!(matches!(
+        harness.state().authority_main.footer,
+        MainFooterState::ConfirmDelete(_)
+    ));
+    let footer = harness.main_vm().footer_prompt;
+    assert!(
+        footer
+            .prompt_lines
+            .iter()
+            .any(|line| line.contains("ConfirmDelete"))
+    );
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert!(
+        !harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "thread-1")
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::DeleteSelectedMainEntity).await;
+    type_main_footer_text(&mut harness, "Snapshot wiring").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert!(
+        !harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "Snapshot wiring")
+    );
+    assert_eq!(
+        harness.state().main_view.selected,
+        Some(MainHierarchySelection::Thread {
+            workstream_id: "ws-1".to_string(),
+            work_unit_id: "wu-2".to_string(),
+            thread_id: "thread-2".to_string(),
+        })
+    );
+
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::CollapseSelectedInView).await;
+    harness.dispatch(UserAction::DeleteSelectedMainEntity).await;
+    type_main_footer_text(&mut harness, "Collaboration hardening").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    assert_eq!(
+        harness.state().main_view.selected,
+        Some(MainHierarchySelection::WorkUnit {
+            workstream_id: "ws-2".to_string(),
+            work_unit_id: "wu-3".to_string(),
+        })
+    );
+
+    let commands = harness.recorded_commands().await;
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::DeleteAuthorityTrackedThread { .. }))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::DeleteAuthorityWorkUnit { .. }))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::DeleteAuthorityWorkstream { .. }))
+    );
+}
+
+#[tokio::test]
+async fn main_refresh_keeps_authority_mutations_visible_after_requery() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::CreateWorkstream).await;
+    type_main_footer_text(&mut harness, "Reloaded authority").await;
+    harness.dispatch(UserAction::MainFooterNextField).await;
+    type_main_footer_text(&mut harness, "/repo/reloaded").await;
+    harness.dispatch(UserAction::SubmitMainFooter).await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    assert!(
+        harness
+            .main_hierarchy_vm()
+            .rows
+            .iter()
+            .any(|row| row.label == "Reloaded authority")
+    );
 }
 
 #[tokio::test]

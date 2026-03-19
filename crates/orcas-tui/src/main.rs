@@ -13,7 +13,7 @@ use crossterm::terminal::{
 use tracing::{debug, info};
 
 use orcas_core::{AppPaths, init_file_logger};
-use orcas_tui::app::{Action, ProgramView, TopLevelView, UserAction};
+use orcas_tui::app::{Action, MainFooterState, ProgramView, TopLevelView, UserAction};
 use orcas_tui::backend::OrcasDaemonBackend;
 use orcas_tui::codex::{
     CodexResumeDescriptor, CodexSessionManager, DEFAULT_PTY_RING_BUFFER_CAPACITY, OrcasTerminal,
@@ -174,6 +174,53 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         };
     }
 
+    let main_footer_active = state.current_view == TopLevelView::Overview
+        && state.main_view.program_view == ProgramView::Main
+        && !matches!(state.authority_main.footer, MainFooterState::Inspect);
+    if main_footer_active {
+        let submit_or_advance = match &state.authority_main.footer {
+            MainFooterState::CreateWorkstream(form) | MainFooterState::EditWorkstream(form) => {
+                if form.active_field + 1 >= 2 {
+                    UserAction::SubmitMainFooter
+                } else {
+                    UserAction::MainFooterNextField
+                }
+            }
+            MainFooterState::CreateWorkUnit(form) | MainFooterState::EditWorkUnit(form) => {
+                if form.active_field + 1 >= 1 {
+                    UserAction::SubmitMainFooter
+                } else {
+                    UserAction::MainFooterNextField
+                }
+            }
+            MainFooterState::CreateTrackedThread(form)
+            | MainFooterState::EditTrackedThread(form) => {
+                if form.active_field + 1 >= 2 {
+                    UserAction::SubmitMainFooter
+                } else {
+                    UserAction::MainFooterNextField
+                }
+            }
+            MainFooterState::ConfirmDelete(_) => UserAction::SubmitMainFooter,
+            MainFooterState::Inspect => UserAction::SubmitMainFooter,
+        };
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(UserAction::CancelMainFooter),
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(UserAction::SubmitMainFooter),
+            (KeyCode::Tab, KeyModifiers::NONE) => Some(UserAction::MainFooterNextField),
+            (KeyCode::Enter, KeyModifiers::NONE) => Some(submit_or_advance),
+            (KeyCode::BackTab, _) => Some(UserAction::MainFooterPreviousField),
+            (KeyCode::Backspace, _) => Some(UserAction::MainFooterBackspace),
+            (KeyCode::Delete, _) => Some(UserAction::MainFooterDelete),
+            (KeyCode::Left, _) => Some(UserAction::MainFooterMoveLeft),
+            (KeyCode::Right, _) => Some(UserAction::MainFooterMoveRight),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(UserAction::MainFooterAppend(ch))
+            }
+            _ => None,
+        };
+    }
+
     let current_view = state.current_view;
     let in_main_view =
         current_view == TopLevelView::Overview && state.main_view.program_view == ProgramView::Main;
@@ -209,6 +256,11 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         }
         KeyCode::Char('w') if in_threads_view => Some(UserAction::RecordNoActionForSelectedThread),
         KeyCode::Char('m') if in_threads_view => Some(UserAction::ManualRefreshForSelectedThread),
+        KeyCode::Char('n') if in_main_view => Some(UserAction::CreateWorkstream),
+        KeyCode::Char('u') if in_main_view => Some(UserAction::CreateWorkUnitForSelection),
+        KeyCode::Char('t') if in_main_view => Some(UserAction::CreateTrackedThreadForSelection),
+        KeyCode::Char('e') if in_main_view => Some(UserAction::EditSelectedMainEntity),
+        KeyCode::Char('d') if in_main_view => Some(UserAction::DeleteSelectedMainEntity),
         KeyCode::Down => Some(UserAction::SelectNextInView),
         KeyCode::Up => Some(UserAction::SelectPreviousInView),
         KeyCode::Left if in_main_view => Some(UserAction::CollapseSelectedInView),
@@ -228,6 +280,7 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
+    use orcas_core::WorkstreamStatus;
 
     #[test]
     fn left_and_right_cycle_top_level_views_outside_main_surface() {
@@ -457,6 +510,43 @@ mod tests {
         assert_eq!(
             action_for_key(&state, ctrl_key('s')),
             Some(UserAction::SubmitSteerCompose)
+        );
+    }
+
+    #[test]
+    fn main_footer_enter_advances_until_last_field_then_submits() {
+        let mut state = state_for_overview_program(ProgramView::Main);
+        state.authority_main.footer = orcas_tui::app::MainFooterState::CreateWorkstream(
+            orcas_tui::app::WorkstreamFooterForm {
+                workstream_id: None,
+                expected_revision: None,
+                title: orcas_tui::app::FooterFieldState {
+                    value: "alpha".to_string(),
+                    cursor: 5,
+                },
+                root_dir: orcas_tui::app::FooterFieldState {
+                    value: "/repo/orcas".to_string(),
+                    cursor: 11,
+                },
+                status: WorkstreamStatus::Active,
+                priority: "0".to_string(),
+                active_field: 0,
+            },
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Enter)),
+            Some(UserAction::MainFooterNextField)
+        );
+        state.authority_main.footer = match state.authority_main.footer {
+            orcas_tui::app::MainFooterState::CreateWorkstream(mut form) => {
+                form.active_field = 1;
+                orcas_tui::app::MainFooterState::CreateWorkstream(form)
+            }
+            other => other,
+        };
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Enter)),
+            Some(UserAction::SubmitMainFooter)
         );
     }
 

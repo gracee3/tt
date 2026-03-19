@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::authority;
 use crate::collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, Decision, DecisionType, Report,
@@ -47,6 +48,23 @@ pub mod methods {
     pub const WORKUNIT_CREATE: &str = "workunit/create";
     pub const WORKUNIT_LIST: &str = "workunit/list";
     pub const WORKUNIT_GET: &str = "workunit/get";
+    pub const AUTHORITY_HIERARCHY_GET: &str = "authority/hierarchy/get";
+    pub const AUTHORITY_DELETE_PLAN: &str = "authority/delete/plan";
+    pub const AUTHORITY_WORKSTREAM_CREATE: &str = "authority/workstream/create";
+    pub const AUTHORITY_WORKSTREAM_EDIT: &str = "authority/workstream/edit";
+    pub const AUTHORITY_WORKSTREAM_DELETE: &str = "authority/workstream/delete";
+    pub const AUTHORITY_WORKSTREAM_LIST: &str = "authority/workstream/list";
+    pub const AUTHORITY_WORKSTREAM_GET: &str = "authority/workstream/get";
+    pub const AUTHORITY_WORKUNIT_CREATE: &str = "authority/workunit/create";
+    pub const AUTHORITY_WORKUNIT_EDIT: &str = "authority/workunit/edit";
+    pub const AUTHORITY_WORKUNIT_DELETE: &str = "authority/workunit/delete";
+    pub const AUTHORITY_WORKUNIT_LIST: &str = "authority/workunit/list";
+    pub const AUTHORITY_WORKUNIT_GET: &str = "authority/workunit/get";
+    pub const AUTHORITY_TRACKED_THREAD_CREATE: &str = "authority/tracked_thread/create";
+    pub const AUTHORITY_TRACKED_THREAD_EDIT: &str = "authority/tracked_thread/edit";
+    pub const AUTHORITY_TRACKED_THREAD_DELETE: &str = "authority/tracked_thread/delete";
+    pub const AUTHORITY_TRACKED_THREAD_LIST: &str = "authority/tracked_thread/list";
+    pub const AUTHORITY_TRACKED_THREAD_GET: &str = "authority/tracked_thread/get";
     pub const ASSIGNMENT_START: &str = "assignment/start";
     pub const ASSIGNMENT_GET: &str = "assignment/get";
     pub const ASSIGNMENT_COMMUNICATION_GET: &str = "assignment_communication/get";
@@ -940,6 +958,185 @@ pub struct WorkunitGetResponse {
     pub decisions: Vec<Decision>,
     #[serde(default)]
     pub proposals: Vec<SupervisorProposalRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthorityHierarchyGetRequest {
+    #[serde(default)]
+    pub include_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityHierarchyGetResponse {
+    pub hierarchy: authority::HierarchySnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityDeletePlanRequest {
+    pub target: authority::DeleteTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityDeletePlanResponse {
+    pub delete_plan: authority::DeletePlan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamCreateRequest {
+    pub command: authority::CreateWorkstream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamCreateResponse {
+    pub workstream: authority::WorkstreamRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamEditRequest {
+    pub command: authority::EditWorkstream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamEditResponse {
+    pub workstream: authority::WorkstreamRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamDeleteRequest {
+    pub command: authority::DeleteWorkstream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamDeleteResponse {
+    pub workstream: authority::WorkstreamRecord,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamListRequest {
+    #[serde(default)]
+    pub include_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamListResponse {
+    pub workstreams: Vec<authority::WorkstreamSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamGetRequest {
+    pub workstream_id: authority::WorkstreamId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkstreamGetResponse {
+    pub workstream: authority::WorkstreamRecord,
+    pub work_units: Vec<authority::WorkUnitSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitCreateRequest {
+    pub command: authority::CreateWorkUnit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitCreateResponse {
+    pub work_unit: authority::WorkUnitRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitEditRequest {
+    pub command: authority::EditWorkUnit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitEditResponse {
+    pub work_unit: authority::WorkUnitRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitDeleteRequest {
+    pub command: authority::DeleteWorkUnit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitDeleteResponse {
+    pub work_unit: authority::WorkUnitRecord,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthorityWorkunitListRequest {
+    #[serde(default)]
+    pub workstream_id: Option<authority::WorkstreamId>,
+    #[serde(default)]
+    pub include_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitListResponse {
+    pub work_units: Vec<authority::WorkUnitSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitGetRequest {
+    pub work_unit_id: authority::WorkUnitId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityWorkunitGetResponse {
+    pub work_unit: authority::WorkUnitRecord,
+    pub tracked_threads: Vec<authority::TrackedThreadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadCreateRequest {
+    pub command: authority::CreateTrackedThread,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadCreateResponse {
+    pub tracked_thread: authority::TrackedThreadRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadEditRequest {
+    pub command: authority::EditTrackedThread,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadEditResponse {
+    pub tracked_thread: authority::TrackedThreadRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadDeleteRequest {
+    pub command: authority::DeleteTrackedThread,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadDeleteResponse {
+    pub tracked_thread: authority::TrackedThreadRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadListRequest {
+    pub work_unit_id: authority::WorkUnitId,
+    #[serde(default)]
+    pub include_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadListResponse {
+    pub tracked_threads: Vec<authority::TrackedThreadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadGetRequest {
+    pub tracked_thread_id: authority::TrackedThreadId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadGetResponse {
+    pub tracked_thread: authority::TrackedThreadRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

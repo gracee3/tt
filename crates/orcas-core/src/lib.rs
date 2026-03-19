@@ -1,3 +1,4 @@
+pub mod authority;
 pub mod collaboration;
 pub mod communication;
 pub mod config;
