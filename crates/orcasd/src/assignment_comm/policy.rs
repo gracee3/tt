@@ -374,6 +374,7 @@ mod tests {
             Some("gpt-test".to_string()),
             Some("/repo".to_string()),
             None,
+            None,
             fixed_now(),
         )
         .expect("build communication record")

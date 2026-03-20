@@ -742,6 +742,7 @@ impl SupervisorService {
                     upstream_thread_id,
                     preferred_cwd: Some(root_dir),
                     preferred_model,
+                    workspace: None,
                 },
             })
             .await?;
@@ -779,6 +780,7 @@ impl SupervisorService {
             preferred_cwd: root_dir.map(Some),
             preferred_model: preferred_model.map(Some),
             last_seen_turn_id: None,
+            workspace: None,
         };
         if patch.is_empty() {
             bail!("supply at least one tracked-thread field to edit");
@@ -877,6 +879,14 @@ impl SupervisorService {
         }
         if let Some(preferred_model) = response.tracked_thread.preferred_model.as_ref() {
             println!("preferred_model: {preferred_model}");
+        }
+        if let Some(workspace) = response.tracked_thread.workspace.as_ref() {
+            println!("workspace_repository_root: {}", workspace.repository_root);
+            println!("workspace_worktree_path: {}", workspace.worktree_path);
+            println!("workspace_branch_name: {}", workspace.branch_name);
+            println!("workspace_base_ref: {}", workspace.base_ref);
+            println!("workspace_landing_target: {}", workspace.landing_target);
+            println!("workspace_status: {:?}", workspace.status);
         }
         Ok(())
     }

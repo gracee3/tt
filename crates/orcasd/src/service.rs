@@ -28,16 +28,17 @@ use orcas_core::jsonrpc::{
 };
 use orcas_core::{
     AppConfig, AppPaths, Assignment, AssignmentCommunicationPacket, AssignmentCommunicationRecord,
-    AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentStatus, CodexConnectionMode,
-    CodexThreadAssignment, CodexThreadAssignmentStatus, CodexThreadBootstrapState,
-    CollaborationState, ConnectionState, Decision, DecisionType, DraftAssignment, EventEnvelope,
-    ImplementModeSpec, JsonSessionStore, OrcasError, OrcasEvent, OrcasResult, OrcasSessionStore,
-    Report, SupervisorContextPack, SupervisorProposal, SupervisorProposalFailure,
-    SupervisorProposalFailureStage, SupervisorProposalRecord, SupervisorProposalStatus,
-    SupervisorProposalTriggerKind, SupervisorReasonerUsage, SupervisorTurnDecision,
-    SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus, SupervisorTurnProposalKind,
-    ThreadMetadata, WorkUnit, WorkUnitStatus, Worker, WorkerSession, WorkerSessionAttachability,
-    WorkerSessionRuntimeStatus, WorkerStatus, Workstream, WorkstreamStatus,
+    AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentStatus, AssignmentWorkspaceContract,
+    CodexConnectionMode, CodexThreadAssignment, CodexThreadAssignmentStatus,
+    CodexThreadBootstrapState, CollaborationState, ConnectionState, Decision, DecisionType,
+    DraftAssignment, EventEnvelope, ImplementModeSpec, JsonSessionStore, OrcasError, OrcasEvent,
+    OrcasResult, OrcasSessionStore, Report, SupervisorContextPack, SupervisorProposal,
+    SupervisorProposalFailure, SupervisorProposalFailureStage, SupervisorProposalRecord,
+    SupervisorProposalStatus, SupervisorProposalTriggerKind, SupervisorReasonerUsage,
+    SupervisorTurnDecision, SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus,
+    SupervisorTurnProposalKind, ThreadMetadata, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
+    WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus, Workstream,
+    WorkstreamStatus,
 };
 
 use crate::assignment_comm::parse::parse_worker_report_for_turn;
@@ -6271,37 +6272,8 @@ impl OrcasDaemonService {
         requested_cwd: Option<String>,
     ) -> OrcasResult<()> {
         let started_at = Instant::now();
-        if self
-            .state
-            .read()
-            .await
-            .collaboration
-            .assignment_communications
-            .contains_key(assignment_id)
-        {
-            debug!(
-                assignment_id,
-                result = "already_present",
-                "assignment communication record available"
-            );
-            return Ok(());
-        }
-
-        let record = {
-            let now = Utc::now();
-            let mut state = self.state.write().await;
-            if state
-                .collaboration
-                .assignment_communications
-                .contains_key(assignment_id)
-            {
-                debug!(
-                    assignment_id,
-                    result = "already_present",
-                    "assignment communication record available"
-                );
-                return Ok(());
-            }
+        let (assignment, worker_thread_id, existing_workspace_contract, has_record) = {
+            let state = self.state.read().await;
             let assignment = state
                 .collaboration
                 .assignments
@@ -6317,12 +6289,67 @@ impl OrcasDaemonService {
                         "unknown assignment `{assignment_id}` for communication record"
                     ))
                 })?;
+            let worker_thread_id = state
+                .collaboration
+                .worker_sessions
+                .get(&assignment.worker_session_id)
+                .and_then(|worker_session| worker_session.thread_id.clone());
+            let existing_workspace_contract = state
+                .collaboration
+                .assignment_communications
+                .get(assignment_id)
+                .and_then(|record| record.packet.workspace_contract.clone());
+            let has_record = state
+                .collaboration
+                .assignment_communications
+                .contains_key(assignment_id);
+            (
+                assignment,
+                worker_thread_id,
+                existing_workspace_contract,
+                has_record,
+            )
+        };
+        let workspace_contract = self
+            .resolve_assignment_workspace_contract(&assignment, worker_thread_id.as_deref())
+            .await?;
+        if has_record && existing_workspace_contract == workspace_contract {
+            debug!(
+                assignment_id,
+                result = "already_present",
+                "assignment communication record available"
+            );
+            return Ok(());
+        }
+
+        let record = {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            if state
+                .collaboration
+                .assignment_communications
+                .contains_key(assignment_id)
+                && state
+                    .collaboration
+                    .assignment_communications
+                    .get(assignment_id)
+                    .and_then(|record| record.packet.workspace_contract.clone())
+                    == workspace_contract
+            {
+                debug!(
+                    assignment_id,
+                    result = "already_present",
+                    "assignment communication record available"
+                );
+                return Ok(());
+            }
             let record = match build_assignment_communication_record(
                 &state.collaboration,
                 &assignment,
                 requested_model,
                 requested_cwd,
                 self.config.defaults.cwd.as_ref(),
+                workspace_contract,
                 now,
             ) {
                 Ok(record) => record,
@@ -6367,6 +6394,45 @@ impl OrcasDaemonService {
         );
         self.persist_collaboration_state().await?;
         Ok(())
+    }
+
+    async fn resolve_assignment_workspace_contract(
+        &self,
+        assignment: &Assignment,
+        worker_thread_id: Option<&str>,
+    ) -> OrcasResult<Option<AssignmentWorkspaceContract>> {
+        let Some(worker_thread_id) = worker_thread_id else {
+            return Ok(None);
+        };
+        let work_unit_id =
+            orcas_core::authority::WorkUnitId::parse(assignment.work_unit_id.clone())?;
+        let tracked_thread_id = self
+            .authority_store
+            .list_tracked_threads(&work_unit_id, false)
+            .await?
+            .into_iter()
+            .find(|tracked_thread| {
+                tracked_thread.upstream_thread_id.as_deref() == Some(worker_thread_id)
+            })
+            .map(|tracked_thread| tracked_thread.id);
+        let Some(tracked_thread_id) = tracked_thread_id else {
+            return Ok(None);
+        };
+        let Some(tracked_thread) = self
+            .authority_store
+            .get_tracked_thread(&tracked_thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(workspace) = tracked_thread.workspace.clone() else {
+            return Ok(None);
+        };
+        Ok(Some(AssignmentWorkspaceContract {
+            tracked_thread_id: tracked_thread.id,
+            tracked_thread_title: tracked_thread.title,
+            workspace,
+        }))
     }
 
     async fn ensure_worker_session_thread(
@@ -11485,6 +11551,7 @@ ORCAS_REPORT_END"#
         let record = build_assignment_communication_record(
             &collaboration,
             &assignment,
+            None,
             None,
             None,
             None,
@@ -18220,6 +18287,169 @@ ORCAS_REPORT_END"#
         ));
     }
 
+    #[tokio::test]
+    async fn assignment_communication_record_refreshes_when_bound_thread_workspace_becomes_available()
+     {
+        let base =
+            std::env::temp_dir().join(format!("orcas-workspace-contract-{}", Uuid::new_v4()));
+        let service = test_service_at(base).await;
+        let origin_node_id = service.authority_store.origin_node_id().expect("origin");
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: origin_node_id.clone(),
+            actor: orcas_core::authority::CommandActor::parse("workspace_test")
+                .expect("command actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("ws"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("workspace-ws")
+                        .expect("workstream id"),
+                    title: "Workspace stream".to_string(),
+                    objective: "Exercise worker workspace contracts".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "high".to_string(),
+                },
+            })
+            .await
+            .expect("authority workstream")
+            .workstream;
+        let work_unit = service
+            .authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+                command: orcas_core::authority::CreateWorkUnit {
+                    metadata: metadata("wu"),
+                    work_unit_id: orcas_core::authority::WorkUnitId::parse("workspace-wu")
+                        .expect("work unit id"),
+                    workstream_id: workstream.id.clone(),
+                    title: "Workspace unit".to_string(),
+                    task_statement: "Render a workspace contract into the worker prompt."
+                        .to_string(),
+                    status: WorkUnitStatus::Ready,
+                },
+            })
+            .await
+            .expect("authority work unit")
+            .work_unit;
+
+        let prepared = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: "worker-workspace".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Stay bounded to the workspace contract path.".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("prepare assignment");
+        service
+            .ensure_assignment_communication_record(&prepared.assignment.id, None, None)
+            .await
+            .expect("initial communication record");
+        let initial_record = service
+            .state
+            .read()
+            .await
+            .collaboration
+            .assignment_communications
+            .get(&prepared.assignment.id)
+            .cloned()
+            .expect("initial communication record");
+        assert!(initial_record.packet.workspace_contract.is_none());
+
+        let worker_session = service
+            .ensure_worker_session_thread(&prepared.assignment.worker_session_id, None, None)
+            .await
+            .expect("worker session thread");
+        let thread_id = worker_session.thread_id.expect("backing thread id");
+        service
+            .authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
+                command: orcas_core::authority::CreateTrackedThread {
+                    metadata: metadata("tt"),
+                    tracked_thread_id: orcas_core::authority::TrackedThreadId::parse(
+                        "workspace-tt",
+                    )
+                    .expect("tracked thread id"),
+                    work_unit_id: work_unit.id.clone(),
+                    title: "Workspace lane".to_string(),
+                    notes: Some("Dedicated worktree lane".to_string()),
+                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
+                    upstream_thread_id: Some(thread_id.clone()),
+                    preferred_cwd: Some("/home/emmy/git/worktree/orcas".to_string()),
+                    preferred_model: Some("gpt-5.4".to_string()),
+                    workspace: Some(orcas_core::authority::TrackedThreadWorkspace {
+                        repository_root: "/home/emmy/git/worktree/orcas".to_string(),
+                        owner_tracked_thread_id: orcas_core::authority::TrackedThreadId::parse(
+                            "workspace-tt",
+                        )
+                        .expect("tracked thread id"),
+                        strategy:
+                            orcas_core::authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                        worktree_path: "/home/emmy/git/worktree/orcas-threads/workspace-tt"
+                            .to_string(),
+                        branch_name: "orcas/workspace-tt".to_string(),
+                        base_ref: "origin/main".to_string(),
+                        base_commit: Some("abc1234".to_string()),
+                        landing_target: "main".to_string(),
+                        landing_policy:
+                            orcas_core::authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                        sync_policy:
+                            orcas_core::authority::TrackedThreadWorkspaceSyncPolicy::RebaseBeforeCompletion,
+                        cleanup_policy:
+                            orcas_core::authority::TrackedThreadWorkspaceCleanupPolicy::PruneAfterMerge,
+                        last_reported_head_commit: None,
+                        status: orcas_core::authority::TrackedThreadWorkspaceStatus::Requested,
+                    }),
+                },
+            })
+            .await
+            .expect("tracked thread create");
+
+        service
+            .ensure_assignment_communication_record(&prepared.assignment.id, None, None)
+            .await
+            .expect("refresh communication record");
+
+        let refreshed_record = service
+            .state
+            .read()
+            .await
+            .collaboration
+            .assignment_communications
+            .get(&prepared.assignment.id)
+            .cloned()
+            .expect("refreshed communication record");
+        let workspace_contract = refreshed_record
+            .packet
+            .workspace_contract
+            .as_ref()
+            .expect("workspace contract");
+        assert_eq!(workspace_contract.tracked_thread_title, "Workspace lane");
+        assert_eq!(
+            workspace_contract.workspace.worktree_path,
+            "/home/emmy/git/worktree/orcas-threads/workspace-tt"
+        );
+        assert!(
+            refreshed_record
+                .prompt_render
+                .prompt_text
+                .contains("Workspace Contract:")
+        );
+        assert!(
+            refreshed_record
+                .prompt_render
+                .prompt_text
+                .contains("Do not merge into `main` without explicit supervisor approval.")
+        );
+    }
+
     #[test]
     fn legacy_instruction_fallback_parses_existing_assignment_without_communication_seed() {
         let now = Utc::now();
@@ -18281,6 +18511,7 @@ Boundedness note: Stay within the legacy compatibility boundary."#
         let record = build_assignment_communication_record(
             &collaboration,
             &assignment,
+            None,
             None,
             None,
             None,
@@ -19949,6 +20180,7 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                     upstream_thread_id: Some("upstream-service-thread".to_string()),
                     preferred_cwd: Some("/tmp/orcas".to_string()),
                     preferred_model: Some("gpt-5.4".to_string()),
+                    workspace: None,
                 },
             })
             .await

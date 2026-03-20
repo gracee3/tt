@@ -246,6 +246,10 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                     badges: vec![
                         tracked_thread_binding_label(tracked_thread.binding_state),
                         tracked_thread_backend_label(tracked_thread.backend_kind),
+                        tracked_thread
+                            .workspace_status
+                            .map(tracked_thread_workspace_status_label)
+                            .unwrap_or_else(|| "workspace=none".to_string()),
                     ],
                     secondary: Some(
                         upstream
@@ -343,6 +347,20 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                     lines.push(format!("upstream thread: {upstream_thread_id}"));
                 } else {
                     lines.push("upstream thread: none".to_string());
+                }
+                if let Some(workspace) = tracked_thread.workspace.as_ref() {
+                    lines.push(format!(
+                        "workspace: {}  strategy: {}  status: {}",
+                        workspace.worktree_path,
+                        tracked_thread_workspace_strategy_label(workspace.strategy),
+                        tracked_thread_workspace_status_label(workspace.status)
+                    ));
+                    lines.push(format!(
+                        "branch: {}  base: {}  landing: {}",
+                        workspace.branch_name, workspace.base_ref, workspace.landing_target
+                    ));
+                } else {
+                    lines.push("workspace: none".to_string());
                 }
                 lines.push("delete semantics: local only".to_string());
                 PanelViewModel {
@@ -626,6 +644,34 @@ fn tracked_thread_binding_label(binding: authority::TrackedThreadBindingState) -
 fn tracked_thread_backend_label(backend: authority::TrackedThreadBackendKind) -> String {
     match backend {
         authority::TrackedThreadBackendKind::Codex => "codex".to_string(),
+    }
+}
+
+fn tracked_thread_workspace_strategy_label(
+    strategy: authority::TrackedThreadWorkspaceStrategy,
+) -> String {
+    match strategy {
+        authority::TrackedThreadWorkspaceStrategy::Shared => "shared".to_string(),
+        authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree => {
+            "dedicated_thread_worktree".to_string()
+        }
+        authority::TrackedThreadWorkspaceStrategy::Ephemeral => "ephemeral".to_string(),
+    }
+}
+
+fn tracked_thread_workspace_status_label(
+    status: authority::TrackedThreadWorkspaceStatus,
+) -> String {
+    match status {
+        authority::TrackedThreadWorkspaceStatus::Requested => "workspace=requested".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Ready => "workspace=ready".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Dirty => "workspace=dirty".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Ahead => "workspace=ahead".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Behind => "workspace=behind".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Conflicted => "workspace=conflicted".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Merged => "workspace=merged".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Abandoned => "workspace=abandoned".to_string(),
+        authority::TrackedThreadWorkspaceStatus::Pruned => "workspace=pruned".to_string(),
     }
 }
 

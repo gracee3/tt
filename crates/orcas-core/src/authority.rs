@@ -313,6 +313,101 @@ pub enum TrackedThreadBindingState {
     Missing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceStrategy {
+    Shared,
+    #[default]
+    DedicatedThreadWorktree,
+    Ephemeral,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceLandingPolicy {
+    #[default]
+    MergeToMain,
+    MergeToCampaign,
+    CherryPickOnly,
+    Parked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceSyncPolicy {
+    #[default]
+    Manual,
+    RebaseBeforeCompletion,
+    RebaseBeforeEachAssignment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceCleanupPolicy {
+    #[default]
+    KeepUntilCampaignClosed,
+    PruneAfterMerge,
+    KeepForAudit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceStatus {
+    #[default]
+    Requested,
+    Ready,
+    Dirty,
+    Ahead,
+    Behind,
+    Conflicted,
+    Merged,
+    Abandoned,
+    Pruned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrackedThreadWorkspace {
+    pub repository_root: String,
+    pub owner_tracked_thread_id: TrackedThreadId,
+    pub strategy: TrackedThreadWorkspaceStrategy,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub base_ref: String,
+    pub base_commit: Option<String>,
+    pub landing_target: String,
+    pub landing_policy: TrackedThreadWorkspaceLandingPolicy,
+    pub sync_policy: TrackedThreadWorkspaceSyncPolicy,
+    pub cleanup_policy: TrackedThreadWorkspaceCleanupPolicy,
+    pub last_reported_head_commit: Option<String>,
+    pub status: TrackedThreadWorkspaceStatus,
+}
+
+impl TrackedThreadWorkspace {
+    pub fn validate_for_owner(&self, owner_tracked_thread_id: &TrackedThreadId) -> OrcasResult<()> {
+        require_non_empty(self.repository_root.clone(), "repository_root")?;
+        require_non_empty(self.worktree_path.clone(), "worktree_path")?;
+        require_non_empty(self.branch_name.clone(), "branch_name")?;
+        require_non_empty(self.base_ref.clone(), "base_ref")?;
+        require_non_empty(self.landing_target.clone(), "landing_target")?;
+        if let Some(base_commit) = self.base_commit.as_ref() {
+            require_non_empty(base_commit.clone(), "base_commit")?;
+        }
+        if let Some(last_reported_head_commit) = self.last_reported_head_commit.as_ref() {
+            require_non_empty(
+                last_reported_head_commit.clone(),
+                "last_reported_head_commit",
+            )?;
+        }
+        if &self.owner_tracked_thread_id != owner_tracked_thread_id {
+            return Err(OrcasError::Protocol(format!(
+                "tracked thread workspace owner `{}` does not match tracked thread `{}`",
+                self.owner_tracked_thread_id, owner_tracked_thread_id
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackedThreadPatch {
     pub title: Option<String>,
@@ -323,6 +418,7 @@ pub struct TrackedThreadPatch {
     pub preferred_cwd: Option<Option<String>>,
     pub preferred_model: Option<Option<String>>,
     pub last_seen_turn_id: Option<Option<String>>,
+    pub workspace: Option<Option<TrackedThreadWorkspace>>,
 }
 
 impl TrackedThreadPatch {
@@ -336,6 +432,7 @@ impl TrackedThreadPatch {
             && self.preferred_cwd.is_none()
             && self.preferred_model.is_none()
             && self.last_seen_turn_id.is_none()
+            && self.workspace.is_none()
     }
 }
 
@@ -402,6 +499,7 @@ pub struct CreateTrackedThread {
     pub upstream_thread_id: Option<String>,
     pub preferred_cwd: Option<String>,
     pub preferred_model: Option<String>,
+    pub workspace: Option<TrackedThreadWorkspace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -594,6 +692,7 @@ pub struct TrackedThreadRecord {
     pub preferred_cwd: Option<String>,
     pub preferred_model: Option<String>,
     pub last_seen_turn_id: Option<String>,
+    pub workspace: Option<TrackedThreadWorkspace>,
     pub revision: Revision,
     pub origin_node_id: OriginNodeId,
     pub created_at: DateTime<Utc>,
@@ -616,6 +715,8 @@ pub struct TrackedThreadSummary {
     pub backend_kind: TrackedThreadBackendKind,
     pub upstream_thread_id: Option<String>,
     pub binding_state: TrackedThreadBindingState,
+    pub workspace_strategy: Option<TrackedThreadWorkspaceStrategy>,
+    pub workspace_status: Option<TrackedThreadWorkspaceStatus>,
     pub revision: Revision,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -630,6 +731,11 @@ impl From<&TrackedThreadRecord> for TrackedThreadSummary {
             backend_kind: record.backend_kind,
             upstream_thread_id: record.upstream_thread_id.clone(),
             binding_state: record.binding_state,
+            workspace_strategy: record
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.strategy),
+            workspace_status: record.workspace.as_ref().map(|workspace| workspace.status),
             revision: record.revision,
             updated_at: record.updated_at,
             deleted_at: record.deleted_at,
@@ -901,6 +1007,7 @@ mod tests {
             upstream_thread_id: Some("codex-thread-123".to_string()),
             preferred_cwd: Some("/tmp/orcas".to_string()),
             preferred_model: Some("gpt-5.4".to_string()),
+            workspace: None,
         });
 
         let json = serde_json::to_value(&command).expect("serialize command");
@@ -1000,6 +1107,7 @@ mod tests {
             preferred_cwd: None,
             preferred_model: None,
             last_seen_turn_id: None,
+            workspace: None,
             revision: Revision::initial(),
             origin_node_id: origin(),
             created_at: Utc

@@ -102,6 +102,7 @@ async fn create_authority_tracked_thread(
                 upstream_thread_id: Some(format!("upstream-{tracked_thread_id}")),
                 preferred_cwd: Some("/tmp/orcas".to_string()),
                 preferred_model: Some("gpt-5.4".to_string()),
+                workspace: None,
             },
         })
         .await
@@ -511,6 +512,7 @@ async fn authority_mutations_emit_post_commit_events_for_all_authority_entities(
                     preferred_cwd: None,
                     preferred_model: None,
                     last_seen_turn_id: None,
+                    workspace: None,
                 },
             },
         })

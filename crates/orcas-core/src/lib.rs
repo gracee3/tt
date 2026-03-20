@@ -24,10 +24,10 @@ pub use communication::{
     AcceptanceCriterionStatus, AcceptanceResult, AssignmentChangePolicy, AssignmentChecklistItem,
     AssignmentCommunicationPacket, AssignmentCommunicationPolicy, AssignmentCommunicationRecord,
     AssignmentCommunicationSeed, AssignmentContextBlock, AssignmentExecutionContext,
-    AssignmentModeSpec, AssignmentScopeBoundary, AssignmentTaskMode, FileChangeKind,
-    ImplementModePayload, ImplementModeSpec, PromptRenderArtifact, PromptRenderSpec, ReviewSignal,
-    ReviewSignalLevel, TouchedFile, WorkerReportContract, WorkerReportEnvelope,
-    WorkerReportModePayload, WorkerReportValidation,
+    AssignmentModeSpec, AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract,
+    FileChangeKind, ImplementModePayload, ImplementModeSpec, PromptRenderArtifact,
+    PromptRenderSpec, ReviewSignal, ReviewSignalLevel, TouchedFile, WorkerReportContract,
+    WorkerReportEnvelope, WorkerReportModePayload, WorkerReportValidation,
 };
 pub use config::{
     AppConfig, CodexConnectionMode, CodexDaemonConfig, ReconnectPolicy, SupervisorConfig,

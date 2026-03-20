@@ -108,6 +108,19 @@ create table if not exists tracked_threads (
   preferred_cwd text,
   preferred_model text,
   last_seen_turn_id text,
+  workspace_repository_root text,
+  workspace_owner_tracked_thread_id text,
+  workspace_strategy text,
+  workspace_worktree_path text,
+  workspace_branch_name text,
+  workspace_base_ref text,
+  workspace_base_commit text,
+  workspace_landing_target text,
+  workspace_landing_policy text,
+  workspace_sync_policy text,
+  workspace_cleanup_policy text,
+  workspace_last_reported_head_commit text,
+  workspace_status text,
   revision integer not null,
   origin_node_id text not null,
   created_at text not null,
@@ -662,6 +675,7 @@ impl AuthoritySqliteStore {
                     preferred_cwd: command.preferred_cwd.clone(),
                     preferred_model: command.preferred_model.clone(),
                     last_seen_turn_id: None,
+                    workspace: command.workspace.clone(),
                     revision: Revision::initial(),
                     origin_node_id: command.metadata.origin_node_id.clone(),
                     created_at: command.metadata.issued_at,
@@ -679,6 +693,9 @@ impl AuthoritySqliteStore {
                     record.upstream_thread_id.as_deref(),
                     None,
                 )?;
+                if let Some(workspace) = record.workspace.as_ref() {
+                    workspace.validate_for_owner(&record.id)?;
+                }
                 let event = AuthorityEventEnvelope {
                     metadata: EventMetadata {
                         event_id: authority::EventId::new(),
@@ -748,6 +765,15 @@ impl AuthoritySqliteStore {
                 }
                 if let Some(last_seen_turn_id) = &command.changes.last_seen_turn_id {
                     record.last_seen_turn_id = last_seen_turn_id.clone();
+                }
+                if let Some(workspace) = &command.changes.workspace {
+                    match workspace {
+                        Some(workspace) => {
+                            workspace.validate_for_owner(&record.id)?;
+                            record.workspace = Some(workspace.clone());
+                        }
+                        None => record.workspace = None,
+                    }
                 }
                 Self::ensure_upstream_binding_available_tx(
                     transaction,
@@ -1028,18 +1054,49 @@ impl AuthoritySqliteStore {
                     store_error(format!("initialize authority schema: {error}"))
                 })?;
                 connection
-                    .pragma_update(None, "user_version", 1_i64)
+                    .pragma_update(None, "user_version", 2_i64)
                     .map_err(|error| {
                         store_error(format!("set authority schema version: {error}"))
                     })?;
-                debug!(schema_version = 1_i64, "initialized authority schema");
+                debug!(schema_version = 2_i64, "initialized authority schema");
                 Ok(MigrationOutcome {
-                    schema_version: 1,
+                    schema_version: 2,
                     applied: true,
                 })
             }
-            1 => Ok(MigrationOutcome {
-                schema_version: 1,
+            1 => {
+                connection
+                    .execute_batch(
+                        "alter table tracked_threads add column workspace_repository_root text;
+                         alter table tracked_threads add column workspace_owner_tracked_thread_id text;
+                         alter table tracked_threads add column workspace_strategy text;
+                         alter table tracked_threads add column workspace_worktree_path text;
+                         alter table tracked_threads add column workspace_branch_name text;
+                         alter table tracked_threads add column workspace_base_ref text;
+                         alter table tracked_threads add column workspace_base_commit text;
+                         alter table tracked_threads add column workspace_landing_target text;
+                         alter table tracked_threads add column workspace_landing_policy text;
+                         alter table tracked_threads add column workspace_sync_policy text;
+                         alter table tracked_threads add column workspace_cleanup_policy text;
+                         alter table tracked_threads add column workspace_last_reported_head_commit text;
+                         alter table tracked_threads add column workspace_status text;",
+                    )
+                    .map_err(|error| {
+                        store_error(format!("migrate authority schema to version 2: {error}"))
+                    })?;
+                connection
+                    .pragma_update(None, "user_version", 2_i64)
+                    .map_err(|error| {
+                        store_error(format!("set authority schema version: {error}"))
+                    })?;
+                debug!(schema_version = 2_i64, "migrated authority schema");
+                Ok(MigrationOutcome {
+                    schema_version: 2,
+                    applied: true,
+                })
+            }
+            2 => Ok(MigrationOutcome {
+                schema_version: 2,
                 applied: false,
             }),
             other => {
@@ -1384,9 +1441,13 @@ impl AuthoritySqliteStore {
             .execute(
                 "insert into tracked_threads (
                     id, work_unit_id, title, notes, backend_kind, upstream_thread_id, binding_state,
-                    preferred_cwd, preferred_model, last_seen_turn_id, revision, origin_node_id,
-                    created_at, updated_at, deleted_at
-                 ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    preferred_cwd, preferred_model, last_seen_turn_id, workspace_repository_root,
+                    workspace_owner_tracked_thread_id, workspace_strategy, workspace_worktree_path,
+                    workspace_branch_name, workspace_base_ref, workspace_base_commit,
+                    workspace_landing_target, workspace_landing_policy, workspace_sync_policy,
+                    workspace_cleanup_policy, workspace_last_reported_head_commit, workspace_status,
+                    revision, origin_node_id, created_at, updated_at, deleted_at
+                 ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
                  on conflict(id) do update set
                     work_unit_id = excluded.work_unit_id,
                     title = excluded.title,
@@ -1397,6 +1458,19 @@ impl AuthoritySqliteStore {
                     preferred_cwd = excluded.preferred_cwd,
                     preferred_model = excluded.preferred_model,
                     last_seen_turn_id = excluded.last_seen_turn_id,
+                    workspace_repository_root = excluded.workspace_repository_root,
+                    workspace_owner_tracked_thread_id = excluded.workspace_owner_tracked_thread_id,
+                    workspace_strategy = excluded.workspace_strategy,
+                    workspace_worktree_path = excluded.workspace_worktree_path,
+                    workspace_branch_name = excluded.workspace_branch_name,
+                    workspace_base_ref = excluded.workspace_base_ref,
+                    workspace_base_commit = excluded.workspace_base_commit,
+                    workspace_landing_target = excluded.workspace_landing_target,
+                    workspace_landing_policy = excluded.workspace_landing_policy,
+                    workspace_sync_policy = excluded.workspace_sync_policy,
+                    workspace_cleanup_policy = excluded.workspace_cleanup_policy,
+                    workspace_last_reported_head_commit = excluded.workspace_last_reported_head_commit,
+                    workspace_status = excluded.workspace_status,
                     revision = excluded.revision,
                     origin_node_id = excluded.origin_node_id,
                     created_at = excluded.created_at,
@@ -1413,6 +1487,63 @@ impl AuthoritySqliteStore {
                     record.preferred_cwd,
                     record.preferred_model,
                     record.last_seen_turn_id,
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.repository_root.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.owner_tracked_thread_id.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| enum_to_storage(workspace.strategy))
+                        .transpose()?,
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.worktree_path.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.branch_name.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.base_ref.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.base_commit.as_deref()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.landing_target.as_str()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| enum_to_storage(workspace.landing_policy))
+                        .transpose()?,
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| enum_to_storage(workspace.sync_policy))
+                        .transpose()?,
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| enum_to_storage(workspace.cleanup_policy))
+                        .transpose()?,
+                    record
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.last_reported_head_commit.as_deref()),
+                    record
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| enum_to_storage(workspace.status))
+                        .transpose()?,
                     i64::try_from(record.revision.get()).map_err(|error| store_error(format!(
                         "store revision overflow: {error}"
                     )))?,
@@ -1463,8 +1594,12 @@ impl AuthoritySqliteStore {
         transaction
             .query_row(
                 "select id, work_unit_id, title, notes, backend_kind, upstream_thread_id, binding_state,
-                        preferred_cwd, preferred_model, last_seen_turn_id, revision, origin_node_id,
-                        created_at, updated_at, deleted_at
+                        preferred_cwd, preferred_model, last_seen_turn_id, workspace_repository_root,
+                        workspace_owner_tracked_thread_id, workspace_strategy, workspace_worktree_path,
+                        workspace_branch_name, workspace_base_ref, workspace_base_commit,
+                        workspace_landing_target, workspace_landing_policy, workspace_sync_policy,
+                        workspace_cleanup_policy, workspace_last_reported_head_commit, workspace_status,
+                        revision, origin_node_id, created_at, updated_at, deleted_at
                  from tracked_threads where id = ?1",
                 params![id.as_str()],
                 read_tracked_thread_row,
@@ -1514,15 +1649,23 @@ impl AuthoritySqliteStore {
     ) -> OrcasResult<Vec<TrackedThreadSummary>> {
         let sql = if include_deleted {
             "select id, work_unit_id, title, notes, backend_kind, upstream_thread_id, binding_state,
-                    preferred_cwd, preferred_model, last_seen_turn_id, revision, origin_node_id,
-                    created_at, updated_at, deleted_at
+                    preferred_cwd, preferred_model, last_seen_turn_id, workspace_repository_root,
+                    workspace_owner_tracked_thread_id, workspace_strategy, workspace_worktree_path,
+                    workspace_branch_name, workspace_base_ref, workspace_base_commit,
+                    workspace_landing_target, workspace_landing_policy, workspace_sync_policy,
+                    workspace_cleanup_policy, workspace_last_reported_head_commit, workspace_status,
+                    revision, origin_node_id, created_at, updated_at, deleted_at
              from tracked_threads
              where work_unit_id = ?1
              order by updated_at desc, id asc"
         } else {
             "select id, work_unit_id, title, notes, backend_kind, upstream_thread_id, binding_state,
-                    preferred_cwd, preferred_model, last_seen_turn_id, revision, origin_node_id,
-                    created_at, updated_at, deleted_at
+                    preferred_cwd, preferred_model, last_seen_turn_id, workspace_repository_root,
+                    workspace_owner_tracked_thread_id, workspace_strategy, workspace_worktree_path,
+                    workspace_branch_name, workspace_base_ref, workspace_base_commit,
+                    workspace_landing_target, workspace_landing_policy, workspace_sync_policy,
+                    workspace_cleanup_policy, workspace_last_reported_head_commit, workspace_status,
+                    revision, origin_node_id, created_at, updated_at, deleted_at
              from tracked_threads
              where work_unit_id = ?1 and deleted_at is null
              order by updated_at desc, id asc"
@@ -1929,8 +2072,12 @@ impl AuthorityQueryStore for AuthoritySqliteStore {
             connection
                 .query_row(
                     "select id, work_unit_id, title, notes, backend_kind, upstream_thread_id, binding_state,
-                            preferred_cwd, preferred_model, last_seen_turn_id, revision, origin_node_id,
-                            created_at, updated_at, deleted_at
+                            preferred_cwd, preferred_model, last_seen_turn_id, workspace_repository_root,
+                            workspace_owner_tracked_thread_id, workspace_strategy, workspace_worktree_path,
+                            workspace_branch_name, workspace_base_ref, workspace_base_commit,
+                            workspace_landing_target, workspace_landing_policy, workspace_sync_policy,
+                            workspace_cleanup_policy, workspace_last_reported_head_commit, workspace_status,
+                            revision, origin_node_id, created_at, updated_at, deleted_at
                      from tracked_threads where id = ?1",
                     params![id.as_str()],
                     read_tracked_thread_row,
@@ -2232,6 +2379,15 @@ fn apply_tracked_thread_patch(
     if let Some(last_seen_turn_id) = &changes.last_seen_turn_id {
         current.last_seen_turn_id = last_seen_turn_id.clone();
     }
+    if let Some(workspace) = &changes.workspace {
+        match workspace {
+            Some(workspace) => {
+                workspace.validate_for_owner(&current.id)?;
+                current.workspace = Some(workspace.clone());
+            }
+            None => current.workspace = None,
+        }
+    }
     current.revision = revision;
     current.updated_at = updated_at;
     Ok(current)
@@ -2321,9 +2477,35 @@ fn read_work_unit_row(row: &Row<'_>) -> rusqlite::Result<WorkUnitRecord> {
 }
 
 fn read_tracked_thread_row(row: &Row<'_>) -> rusqlite::Result<TrackedThreadRecord> {
+    let id = authority::TrackedThreadId::parse(row.get::<_, String>(0)?)
+        .map_err(protocol_to_sql_error(0))?;
+    let workspace_repository_root = row.get::<_, Option<String>>(10)?;
+    let workspace = match workspace_repository_root {
+        Some(repository_root) => Some(authority::TrackedThreadWorkspace {
+            repository_root,
+            owner_tracked_thread_id: authority::TrackedThreadId::parse(row.get::<_, String>(11)?)
+                .map_err(protocol_to_sql_error(11))?,
+            strategy: enum_from_storage(&row.get::<_, String>(12)?)
+                .map_err(protocol_to_sql_error(12))?,
+            worktree_path: row.get(13)?,
+            branch_name: row.get(14)?,
+            base_ref: row.get(15)?,
+            base_commit: row.get(16)?,
+            landing_target: row.get(17)?,
+            landing_policy: enum_from_storage(&row.get::<_, String>(18)?)
+                .map_err(protocol_to_sql_error(18))?,
+            sync_policy: enum_from_storage(&row.get::<_, String>(19)?)
+                .map_err(protocol_to_sql_error(19))?,
+            cleanup_policy: enum_from_storage(&row.get::<_, String>(20)?)
+                .map_err(protocol_to_sql_error(20))?,
+            last_reported_head_commit: row.get(21)?,
+            status: enum_from_storage(&row.get::<_, String>(22)?)
+                .map_err(protocol_to_sql_error(22))?,
+        }),
+        None => None,
+    };
     Ok(TrackedThreadRecord {
-        id: authority::TrackedThreadId::parse(row.get::<_, String>(0)?)
-            .map_err(protocol_to_sql_error(0))?,
+        id,
         work_unit_id: authority::WorkUnitId::parse(row.get::<_, String>(1)?)
             .map_err(protocol_to_sql_error(1))?,
         title: row.get(2)?,
@@ -2336,24 +2518,25 @@ fn read_tracked_thread_row(row: &Row<'_>) -> rusqlite::Result<TrackedThreadRecor
         preferred_cwd: row.get(7)?,
         preferred_model: row.get(8)?,
         last_seen_turn_id: row.get(9)?,
-        revision: Revision::new(u64::try_from(row.get::<_, i64>(10)?).map_err(|error| {
+        workspace,
+        revision: Revision::new(u64::try_from(row.get::<_, i64>(23)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                10,
+                23,
                 rusqlite::types::Type::Integer,
                 Box::new(error),
             )
         })?),
-        origin_node_id: OriginNodeId::parse(row.get::<_, String>(11)?)
-            .map_err(protocol_to_sql_error(11))?,
-        created_at: decode_datetime(&row.get::<_, String>(12)?)
-            .map_err(protocol_to_sql_error(12))?,
-        updated_at: decode_datetime(&row.get::<_, String>(13)?)
-            .map_err(protocol_to_sql_error(13))?,
+        origin_node_id: OriginNodeId::parse(row.get::<_, String>(24)?)
+            .map_err(protocol_to_sql_error(24))?,
+        created_at: decode_datetime(&row.get::<_, String>(25)?)
+            .map_err(protocol_to_sql_error(25))?,
+        updated_at: decode_datetime(&row.get::<_, String>(26)?)
+            .map_err(protocol_to_sql_error(26))?,
         deleted_at: row
-            .get::<_, Option<String>>(14)?
+            .get::<_, Option<String>>(27)?
             .map(|value| decode_datetime(&value))
             .transpose()
-            .map_err(protocol_to_sql_error(14))?,
+            .map_err(protocol_to_sql_error(27))?,
     })
 }
 
@@ -2596,6 +2779,7 @@ mod tests {
                 upstream_thread_id: Some("upstream-1".to_string()),
                 preferred_cwd: Some("/tmp/orcas".to_string()),
                 preferred_model: Some("gpt-5.4".to_string()),
+                workspace: None,
             }))
             .await
             .expect("create tracked thread")
@@ -2618,6 +2802,7 @@ mod tests {
                     preferred_cwd: None,
                     preferred_model: None,
                     last_seen_turn_id: Some(Some("turn-2".to_string())),
+                    workspace: None,
                 },
             }))
             .await
@@ -2756,6 +2941,7 @@ mod tests {
                 upstream_thread_id: Some("upstream-cascade".to_string()),
                 preferred_cwd: None,
                 preferred_model: None,
+                workspace: None,
             }))
             .await
             .expect("create tracked thread");

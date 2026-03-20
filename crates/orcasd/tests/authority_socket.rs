@@ -102,6 +102,7 @@ async fn create_tracked_thread(
                 upstream_thread_id: Some(format!("upstream-{tracked_thread_id}")),
                 preferred_cwd: Some("/tmp/orcas".to_string()),
                 preferred_model: Some("gpt-5.4".to_string()),
+                workspace: None,
             },
         })
         .await

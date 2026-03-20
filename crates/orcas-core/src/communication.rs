@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::authority;
 use crate::collaboration::{ReportConfidence, ReportDisposition, ReportParseResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +169,13 @@ pub struct WorkerReportContract {
     pub strict_single_envelope: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentWorkspaceContract {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub tracked_thread_title: String,
+    pub workspace: authority::TrackedThreadWorkspace,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignmentCommunicationPacket {
     pub schema_version: String,
@@ -203,6 +211,8 @@ pub struct AssignmentCommunicationPacket {
     pub non_goals: Vec<String>,
     #[serde(default)]
     pub included_context: Vec<AssignmentContextBlock>,
+    #[serde(default)]
+    pub workspace_contract: Option<AssignmentWorkspaceContract>,
     pub response_contract: WorkerReportContract,
     pub policy: AssignmentCommunicationPolicy,
 }
@@ -403,6 +413,7 @@ mod tests {
                 required: true,
                 truncated: false,
             }],
+            workspace_contract: None,
             response_contract: WorkerReportContract {
                 schema_version: "worker_report_contract.v1".to_string(),
                 task_mode: AssignmentTaskMode::Implement,

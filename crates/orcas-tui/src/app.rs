@@ -3539,6 +3539,7 @@ fn submit_main_footer(state: &mut AppState) -> Vec<Effect> {
                     upstream_thread_id: form.upstream_thread_id,
                     preferred_cwd: Some(root_dir),
                     preferred_model: form.preferred_model,
+                    workspace: None,
                 },
             }]
         }
@@ -3573,6 +3574,7 @@ fn submit_main_footer(state: &mut AppState) -> Vec<Effect> {
                         preferred_cwd: Some(Some(root_dir)),
                         preferred_model: None,
                         last_seen_turn_id: None,
+                        workspace: None,
                     },
                 },
             }]

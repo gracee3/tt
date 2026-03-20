@@ -8,10 +8,10 @@ use orcas_core::{
     Assignment, AssignmentChangePolicy, AssignmentChecklistItem, AssignmentCommunicationPacket,
     AssignmentCommunicationPolicy, AssignmentCommunicationRecord, AssignmentCommunicationSeed,
     AssignmentContextBlock, AssignmentExecutionContext, AssignmentModeSpec,
-    AssignmentScopeBoundary, AssignmentTaskMode, CollaborationState, ImplementModePayload,
-    ImplementModeSpec, OrcasError, OrcasResult, PromptRenderArtifact, PromptRenderSpec,
-    ReportConfidence, ReportDisposition, ReviewSignal, ReviewSignalLevel, WorkUnit,
-    WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload, Workstream,
+    AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract, CollaborationState,
+    ImplementModePayload, ImplementModeSpec, OrcasError, OrcasResult, PromptRenderArtifact,
+    PromptRenderSpec, ReportConfidence, ReportDisposition, ReviewSignal, ReviewSignalLevel,
+    WorkUnit, WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload, Workstream,
 };
 
 use crate::assignment_comm::{
@@ -26,6 +26,7 @@ const SECTION_ORDER: &[&str] = &[
     "task_mode",
     "objective",
     "instructions",
+    "workspace_contract",
     "scope_and_non_goals",
     "acceptance_criteria",
     "stop_conditions",
@@ -52,6 +53,7 @@ pub fn build_assignment_communication_record(
     requested_model: Option<String>,
     requested_cwd: Option<String>,
     default_cwd: Option<&PathBuf>,
+    workspace_contract: Option<AssignmentWorkspaceContract>,
     now: DateTime<Utc>,
 ) -> OrcasResult<AssignmentCommunicationRecord> {
     let started_at = Instant::now();
@@ -119,6 +121,7 @@ pub fn build_assignment_communication_record(
             workstream,
             execution_context,
             response_contract,
+            workspace_contract.clone(),
             seed,
             now,
         )
@@ -132,6 +135,7 @@ pub fn build_assignment_communication_record(
             workstream,
             execution_context,
             response_contract,
+            workspace_contract,
             now,
         )
     };
@@ -235,6 +239,7 @@ fn build_packet_from_seed(
     workstream: &Workstream,
     execution_context: AssignmentExecutionContext,
     response_contract: WorkerReportContract,
+    workspace_contract: Option<AssignmentWorkspaceContract>,
     seed: &AssignmentCommunicationSeed,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
@@ -276,6 +281,7 @@ fn build_packet_from_seed(
             workstream,
             seed,
         ),
+        workspace_contract,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -288,6 +294,7 @@ fn build_packet_from_legacy_assignment_instructions(
     workstream: &Workstream,
     execution_context: AssignmentExecutionContext,
     response_contract: WorkerReportContract,
+    workspace_contract: Option<AssignmentWorkspaceContract>,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
     let legacy = parse_legacy_instruction_seed(&assignment.instructions);
@@ -330,6 +337,7 @@ fn build_packet_from_legacy_assignment_instructions(
             workstream,
             &legacy,
         ),
+        workspace_contract,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -388,6 +396,24 @@ pub fn render_prompt(
         "No additional instructions.",
     );
     prompt.push('\n');
+
+    if let Some(workspace_contract) = packet.workspace_contract.as_ref() {
+        let workspace_json = serde_json::to_string_pretty(workspace_contract)?;
+        prompt.push_str("Workspace Contract:\n");
+        prompt.push_str("```json\n");
+        prompt.push_str(&workspace_json);
+        prompt.push_str("\n```\n");
+        prompt.push_str("- The supervisor owns this workspace intent and landing policy.\n");
+        prompt.push_str("- You may create or reuse the declared worktree, fetch, create or switch the declared branch, commit, and rebase or sync as directed by the contract.\n");
+        prompt.push_str("- Perform git work inside the declared worktree path once prepared.\n");
+        prompt.push_str(
+            "- Report the current workspace status and HEAD commit in your final worker report.\n",
+        );
+        prompt.push_str(&format!(
+            "- Do not merge into `{}` without explicit supervisor approval.\n\n",
+            workspace_contract.workspace.landing_target
+        ));
+    }
 
     prompt.push_str("Scope And Non-Goals:\n");
     prompt.push_str(&format!(
@@ -1100,6 +1126,7 @@ mod tests {
             Some("gpt-5".to_string()),
             Some("/repo".to_string()),
             None,
+            None,
             fixed_now(),
         )
         .expect("build communication record");
@@ -1167,6 +1194,7 @@ mod tests {
             disallowed_scope: Vec::new(),
             non_goals: Vec::new(),
             included_context: Vec::new(),
+            workspace_contract: None,
             response_contract: worker_report_contract(),
             policy: orcas_core::AssignmentCommunicationPolicy {
                 stop_at_boundary: true,
@@ -1199,6 +1227,7 @@ mod tests {
             Some("gpt-5".to_string()),
             Some("/repo".to_string()),
             Some(&PathBuf::from("/fallback")),
+            None,
             fixed_now(),
         )
         .expect("build communication record");
@@ -1265,6 +1294,7 @@ Repo root: /legacy/repo",
             None,
             None,
             None,
+            None,
             fixed_now(),
         )
         .expect("build legacy communication record");
@@ -1317,6 +1347,7 @@ still not a checklist bullet",
         let record = build_assignment_communication_record(
             &collaboration,
             &assignment,
+            None,
             None,
             None,
             None,
