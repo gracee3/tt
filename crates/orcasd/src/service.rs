@@ -2072,7 +2072,12 @@ impl OrcasDaemonService {
             .await;
         }
         let worker_session = match self
-            .ensure_worker_session_thread(&worker_session_id, session_model, session_cwd)
+            .ensure_worker_session_thread(
+                &worker_session_id,
+                session_model,
+                session_cwd,
+                Some(&prepared.assignment.work_unit_id),
+            )
             .await
         {
             Ok(worker_session) => worker_session,
@@ -2090,11 +2095,6 @@ impl OrcasDaemonService {
                 .await;
             return Err(error);
         };
-        self.sync_worker_session_tracked_thread_binding_for_assignment(
-            &worker_session_id,
-            &prepared.assignment.work_unit_id,
-        )
-        .await?;
 
         self.ensure_assignment_communication_record(
             &assignment_id,
@@ -6614,6 +6614,7 @@ impl OrcasDaemonService {
         worker_session_id: &str,
         model: Option<String>,
         cwd: Option<String>,
+        work_unit_id: Option<&str>,
     ) -> OrcasResult<WorkerSession> {
         // Worker sessions may be reused across assignments, but that reuse only preserves the
         // runtime thread anchor. It does not carry hidden workflow continuity; each assignment
@@ -6637,6 +6638,26 @@ impl OrcasDaemonService {
                 .await
                 .is_ok()
         {
+            if let Some(work_unit_id) = work_unit_id {
+                self.sync_worker_session_tracked_thread_binding_for_assignment(
+                    worker_session_id,
+                    work_unit_id,
+                )
+                .await?;
+                return self
+                    .state
+                    .read()
+                    .await
+                    .collaboration
+                    .worker_sessions
+                    .get(worker_session_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!(
+                            "unknown worker session `{worker_session_id}`"
+                        ))
+                    });
+            }
             return Ok(existing);
         }
 
@@ -6664,6 +6685,24 @@ impl OrcasDaemonService {
             session.clone()
         };
         self.persist_collaboration_state().await?;
+        if let Some(work_unit_id) = work_unit_id {
+            self.sync_worker_session_tracked_thread_binding_for_assignment(
+                worker_session_id,
+                work_unit_id,
+            )
+            .await?;
+            return self
+                .state
+                .read()
+                .await
+                .collaboration
+                .worker_sessions
+                .get(worker_session_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown worker session `{worker_session_id}`"))
+                });
+        }
         Ok(session)
     }
 
@@ -18537,7 +18576,12 @@ ORCAS_REPORT_END"#
         assert!(initial_record.packet.workspace_contract.is_none());
 
         let worker_session = service
-            .ensure_worker_session_thread(&prepared.assignment.worker_session_id, None, None)
+            .ensure_worker_session_thread(
+                &prepared.assignment.worker_session_id,
+                None,
+                None,
+                Some(work_unit.id.as_str()),
+            )
             .await
             .expect("worker session thread");
         let thread_id = worker_session.thread_id.expect("backing thread id");
@@ -18636,6 +18680,127 @@ ORCAS_REPORT_END"#
                 .prompt_render
                 .prompt_text
                 .contains("Do not merge into `main` without explicit supervisor approval.")
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_worker_session_thread_binds_tracked_thread_immediately_when_known() {
+        let base = std::env::temp_dir().join(format!("orcas-workspace-binding-{}", Uuid::new_v4()));
+        let service = test_service_at(base).await;
+        let origin_node_id = service.authority_store.origin_node_id().expect("origin");
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: origin_node_id.clone(),
+            actor: orcas_core::authority::CommandActor::parse("workspace_test")
+                .expect("command actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("ws"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("binding-ws")
+                        .expect("workstream id"),
+                    title: "Binding stream".to_string(),
+                    objective: "Exercise explicit binding timing".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "high".to_string(),
+                },
+            })
+            .await
+            .expect("authority workstream")
+            .workstream;
+        let work_unit = service
+            .authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+                command: orcas_core::authority::CreateWorkUnit {
+                    metadata: metadata("wu"),
+                    work_unit_id: orcas_core::authority::WorkUnitId::parse("binding-wu")
+                        .expect("work unit id"),
+                    workstream_id: workstream.id.clone(),
+                    title: "Binding unit".to_string(),
+                    task_statement: "Bind the worker session explicitly.".to_string(),
+                    status: WorkUnitStatus::Ready,
+                },
+            })
+            .await
+            .expect("authority work unit")
+            .work_unit;
+
+        let prepared = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: "worker-binding".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Stay bounded to the binding path.".to_string()),
+                model: None,
+                cwd: None,
+            })
+            .await
+            .expect("prepare assignment");
+
+        let worker_session = service
+            .ensure_worker_session_thread(&prepared.assignment.worker_session_id, None, None, None)
+            .await
+            .expect("worker session thread");
+        let thread_id = worker_session.thread_id.expect("backing thread id");
+
+        service
+            .authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
+                command: orcas_core::authority::CreateTrackedThread {
+                    metadata: metadata("tt"),
+                    tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("binding-tt")
+                        .expect("tracked thread id"),
+                    work_unit_id: work_unit.id.clone(),
+                    title: "Binding lane".to_string(),
+                    notes: Some("Dedicated worktree lane".to_string()),
+                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
+                    upstream_thread_id: Some(thread_id.clone()),
+                    preferred_cwd: Some("/home/emmy/git/worktree/orcas".to_string()),
+                    preferred_model: Some("gpt-5.4".to_string()),
+                    workspace: None,
+                },
+            })
+            .await
+            .expect("tracked thread create");
+
+        {
+            let mut state = service.state.write().await;
+            let session = state
+                .collaboration
+                .worker_sessions
+                .get_mut(&prepared.assignment.worker_session_id)
+                .expect("worker session");
+            session.tracked_thread_id = None;
+            session.updated_at = Utc::now();
+        }
+
+        service
+            .sync_worker_session_tracked_thread_binding_for_assignment(
+                &prepared.assignment.worker_session_id,
+                work_unit.id.as_str(),
+            )
+            .await
+            .expect("worker session rebound");
+        let rebound_session = service
+            .state
+            .read()
+            .await
+            .collaboration
+            .worker_sessions
+            .get(&prepared.assignment.worker_session_id)
+            .cloned()
+            .expect("worker session");
+        assert_eq!(
+            rebound_session
+                .tracked_thread_id
+                .as_ref()
+                .map(|tracked_thread_id| tracked_thread_id.as_str()),
+            Some("binding-tt")
         );
     }
 
