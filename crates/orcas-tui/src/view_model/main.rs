@@ -3,7 +3,10 @@ use crate::app::{
     ProgramView, TrackedThreadFooterForm, WorkUnitFooterForm, WorkstreamFooterForm,
 };
 use crate::view_model::{PanelViewModel, connection_status, event_log, status_banner};
-use orcas_core::{ReportParseResult, WorkUnitStatus, WorkstreamStatus, authority, ipc};
+use orcas_core::{
+    ReportParseResult, TrackedThreadWorkspaceOperationStatus, WorkUnitStatus, WorkstreamStatus,
+    authority, ipc,
+};
 
 use super::shared::{abbreviate, compact_line};
 
@@ -234,11 +237,11 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                     .and_then(|thread_id| {
                         state.threads.iter().find(|thread| thread.id == thread_id)
                     });
-                let inspection = state
+                let detail = state
                     .authority_main
                     .tracked_thread_details
-                    .get(tracked_thread.id.as_str())
-                    .and_then(|detail| detail.workspace_inspection.as_ref());
+                    .get(tracked_thread.id.as_str());
+                let inspection = detail.and_then(|detail| detail.workspace_inspection.as_ref());
                 let mut badges = vec![
                     tracked_thread_binding_label(tracked_thread.binding_state),
                     tracked_thread_backend_label(tracked_thread.backend_kind),
@@ -249,6 +252,11 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                 ];
                 if let Some(inspection) = inspection {
                     badges.push(tracked_thread_workspace_inspection_label(inspection));
+                }
+                if let Some(operation) =
+                    detail.and_then(|detail| detail.workspace_operation.as_ref())
+                {
+                    badges.push(tracked_thread_workspace_operation_label(operation));
                 }
                 rows.push(MainHierarchyRowViewModel {
                     kind: HierarchyRowKind::Thread,
@@ -436,6 +444,46 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                     }
                 } else {
                     lines.push("daemon inspection: unavailable".to_string());
+                }
+                if let Some(operation) = detail.workspace_operation.as_ref() {
+                    lines.push("workspace operation:".to_string());
+                    lines.push(format!(
+                        "  kind: {}  status: {}",
+                        tracked_thread_workspace_operation_kind_label(operation.kind),
+                        tracked_thread_workspace_operation_status_label(operation.status)
+                    ));
+                    lines.push(format!("  assignment: {}", operation.assignment_id));
+                    lines.push(format!("  work unit: {}", operation.work_unit_id));
+                    lines.push(format!(
+                        "  worker session: {}",
+                        operation.worker_session_id.as_deref().unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  requested by: {}",
+                        operation.requested_by.as_str()
+                    ));
+                    lines.push(format!(
+                        "  requested at: {}",
+                        operation.requested_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  updated at: {}",
+                        operation.updated_at.to_rfc3339()
+                    ));
+                    if let Some(note) = operation.request_note.as_ref() {
+                        lines.push(format!("  request note: {note}"));
+                    }
+                    if let Some(report_id) = operation.report_id.as_ref() {
+                        lines.push(format!("  report id: {report_id}"));
+                    }
+                    if let Some(disposition) = operation.report_disposition.as_ref() {
+                        lines.push(format!("  report disposition: {:?}", disposition));
+                    }
+                    if let Some(summary) = operation.outcome_summary.as_ref() {
+                        lines.push(format!("  outcome summary: {summary}"));
+                    }
+                } else {
+                    lines.push("workspace operation: none".to_string());
                 }
                 lines.push("delete semantics: local only".to_string());
                 PanelViewModel {
@@ -792,6 +840,47 @@ fn tracked_thread_workspace_inspection_warning_label(
         }
         ipc::TrackedThreadWorkspaceInspectionWarning::Unknown => "unknown",
     }
+}
+
+fn tracked_thread_workspace_operation_kind_label(
+    kind: orcas_core::TrackedThreadWorkspaceOperationKind,
+) -> &'static str {
+    match kind {
+        orcas_core::TrackedThreadWorkspaceOperationKind::PrepareWorkspace => "prepare",
+        orcas_core::TrackedThreadWorkspaceOperationKind::RefreshWorkspace => "refresh",
+    }
+}
+
+fn tracked_thread_workspace_operation_status_label(
+    status: TrackedThreadWorkspaceOperationStatus,
+) -> &'static str {
+    match status {
+        TrackedThreadWorkspaceOperationStatus::Requested => "requested",
+        TrackedThreadWorkspaceOperationStatus::Dispatched => "dispatched",
+        TrackedThreadWorkspaceOperationStatus::Completed => "completed",
+        TrackedThreadWorkspaceOperationStatus::Failed => "failed",
+        TrackedThreadWorkspaceOperationStatus::Canceled => "canceled",
+    }
+}
+
+fn tracked_thread_workspace_operation_label(
+    operation: &orcas_core::WorkspaceOperationRecord,
+) -> String {
+    format!(
+        "op={}",
+        tracked_thread_workspace_operation_label_parts(operation.kind, operation.status)
+    )
+}
+
+fn tracked_thread_workspace_operation_label_parts(
+    kind: orcas_core::TrackedThreadWorkspaceOperationKind,
+    status: TrackedThreadWorkspaceOperationStatus,
+) -> String {
+    format!(
+        "{}:{}",
+        tracked_thread_workspace_operation_kind_label(kind),
+        tracked_thread_workspace_operation_status_label(status)
+    )
 }
 
 #[allow(dead_code)]

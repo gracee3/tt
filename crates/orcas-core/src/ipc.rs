@@ -24,7 +24,7 @@ use crate::collaboration::{
     CodexThreadBootstrapState, CodexThreadSendPolicy, Decision, DecisionType, Report,
     ReportConfidence, ReportDisposition, ReportParseResult, SupervisorTurnDecision,
     SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit,
-    WorkUnitStatus, Worker, WorkerSession, Workstream, WorkstreamStatus,
+    WorkUnitStatus, Worker, WorkerSession, WorkspaceOperationRecord, Workstream, WorkstreamStatus,
 };
 use crate::communication::AssignmentCommunicationRecord;
 use crate::events::ConnectionState;
@@ -83,6 +83,10 @@ pub mod methods {
     pub const AUTHORITY_TRACKED_THREAD_DELETE: &str = "authority/tracked_thread/delete";
     pub const AUTHORITY_TRACKED_THREAD_LIST: &str = "authority/tracked_thread/list";
     pub const AUTHORITY_TRACKED_THREAD_GET: &str = "authority/tracked_thread/get";
+    pub const AUTHORITY_TRACKED_THREAD_PREPARE_WORKSPACE: &str =
+        "authority/tracked_thread/prepare_workspace";
+    pub const AUTHORITY_TRACKED_THREAD_REFRESH_WORKSPACE: &str =
+        "authority/tracked_thread/refresh_workspace";
     pub const ASSIGNMENT_START: &str = "assignment/start";
     pub const ASSIGNMENT_GET: &str = "assignment/get";
     pub const ASSIGNMENT_COMMUNICATION_GET: &str = "assignment_communication/get";
@@ -1372,6 +1376,52 @@ pub struct AuthorityTrackedThreadGetResponse {
     pub tracked_thread: authority::TrackedThreadRecord,
     #[serde(default)]
     pub workspace_inspection: Option<TrackedThreadWorkspaceInspection>,
+    #[serde(default)]
+    pub workspace_operation: Option<WorkspaceOperationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadPrepareWorkspaceRequest {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadPrepareWorkspaceResponse {
+    pub workspace_operation: WorkspaceOperationRecord,
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadRefreshWorkspaceRequest {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadRefreshWorkspaceResponse {
+    pub workspace_operation: WorkspaceOperationRecord,
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
 }
 
 /// Read-only daemon-side inspection of a tracked-thread workspace.

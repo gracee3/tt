@@ -178,6 +178,8 @@ enum TrackedThreadsCommand {
     Delete(TrackedThreadRefArgs),
     List(TrackedThreadListArgs),
     Get(TrackedThreadRefArgs),
+    PrepareWorkspace(TrackedThreadRefArgs),
+    RefreshWorkspace(TrackedThreadRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -900,6 +902,16 @@ async fn main() -> Result<()> {
                 }
                 TrackedThreadsCommand::Get(args) => {
                     service.tracked_thread_get(&args.tracked_thread).await?;
+                }
+                TrackedThreadsCommand::PrepareWorkspace(args) => {
+                    service
+                        .tracked_thread_prepare_workspace(&args.tracked_thread)
+                        .await?;
+                }
+                TrackedThreadsCommand::RefreshWorkspace(args) => {
+                    service
+                        .tracked_thread_refresh_workspace(&args.tracked_thread)
+                        .await?;
                 }
             }
         }

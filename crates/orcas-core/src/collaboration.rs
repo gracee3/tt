@@ -16,7 +16,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::authority;
-use crate::communication::{AssignmentCommunicationRecord, AssignmentCommunicationSeed};
+use crate::communication::{
+    AssignmentCommunicationRecord, AssignmentCommunicationSeed,
+    TrackedThreadWorkspaceOperationKind, TrackedThreadWorkspaceOperationStatus,
+};
 use crate::supervisor::SupervisorProposalRecord;
 
 /// Daemon-owned collaboration and execution/runtime state.
@@ -51,6 +54,8 @@ pub struct CollaborationState {
     pub decisions: BTreeMap<String, Decision>,
     #[serde(default)]
     pub assignment_communications: BTreeMap<String, AssignmentCommunicationRecord>,
+    #[serde(default)]
+    pub workspace_operations: BTreeMap<String, WorkspaceOperationRecord>,
     #[serde(default)]
     pub supervisor_proposals: BTreeMap<String, SupervisorProposalRecord>,
     #[serde(default)]
@@ -203,6 +208,41 @@ pub struct SupervisorTurnDecision {
     pub sent_turn_id: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+/// Persisted runtime record for a tracked-thread workspace operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOperationRecord {
+    pub id: String,
+    pub assignment_id: String,
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub work_unit_id: authority::WorkUnitId,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub worker_session_id: Option<String>,
+    pub kind: TrackedThreadWorkspaceOperationKind,
+    #[serde(default)]
+    pub status: TrackedThreadWorkspaceOperationStatus,
+    pub requested_by: String,
+    pub requested_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub dispatched_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub failed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub canceled_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub report_disposition: Option<ReportDisposition>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
 }
 
 /// Collaboration/runtime status for a workstream.

@@ -23,6 +23,25 @@ pub enum AssignmentChangePolicy {
     TestsOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceOperationKind {
+    #[default]
+    PrepareWorkspace,
+    RefreshWorkspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadWorkspaceOperationStatus {
+    #[default]
+    Requested,
+    Dispatched,
+    Completed,
+    Failed,
+    Canceled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcceptanceCriterionStatus {
@@ -144,6 +163,8 @@ pub struct AssignmentCommunicationSeed {
     pub expected_report_fields: Vec<String>,
     #[serde(default)]
     pub boundedness_note: Option<String>,
+    #[serde(default)]
+    pub workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
     pub mode_spec: AssignmentModeSpec,
 }
 
@@ -174,6 +195,18 @@ pub struct AssignmentWorkspaceContract {
     pub tracked_thread_id: authority::TrackedThreadId,
     pub tracked_thread_title: String,
     pub workspace: authority::TrackedThreadWorkspace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedThreadWorkspaceOperationContract {
+    pub kind: TrackedThreadWorkspaceOperationKind,
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub tracked_thread_title: String,
+    pub workspace: authority::TrackedThreadWorkspace,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +270,8 @@ pub struct AssignmentCommunicationPacket {
     pub included_context: Vec<AssignmentContextBlock>,
     #[serde(default)]
     pub workspace_contract: Option<AssignmentWorkspaceContract>,
+    #[serde(default)]
+    pub workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
     pub response_contract: WorkerReportContract,
     pub policy: AssignmentCommunicationPolicy,
 }
@@ -443,6 +478,7 @@ mod tests {
                 truncated: false,
             }],
             workspace_contract: None,
+            workspace_operation: None,
             response_contract: WorkerReportContract {
                 schema_version: "worker_report_contract.v1".to_string(),
                 task_mode: AssignmentTaskMode::Implement,
@@ -476,6 +512,7 @@ mod tests {
             required_context_refs: vec!["ctx-1".to_string()],
             expected_report_fields: vec!["summary".to_string()],
             boundedness_note: Some("Stay within the boundary.".to_string()),
+            workspace_operation: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: vec!["cargo test -p orcas-core".to_string()],
             }),

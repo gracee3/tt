@@ -974,6 +974,170 @@ impl SupervisorService {
                 }
             }
         }
+        if let Some(operation) = response.workspace_operation.as_ref() {
+            println!("workspace_scope: daemon_operation");
+            println!("workspace_operation_id: {}", operation.id);
+            println!("workspace_operation_kind: {:?}", operation.kind);
+            println!("workspace_operation_status: {:?}", operation.status);
+            println!(
+                "workspace_operation_assignment_id: {}",
+                operation.assignment_id
+            );
+            println!(
+                "workspace_operation_work_unit_id: {}",
+                operation.work_unit_id
+            );
+            println!(
+                "workspace_operation_worker_id: {}",
+                operation.worker_id.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_operation_worker_session_id: {}",
+                operation.worker_session_id.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_operation_requested_by: {}",
+                operation.requested_by.as_str()
+            );
+            println!(
+                "workspace_operation_requested_at: {}",
+                operation.requested_at.to_rfc3339()
+            );
+            println!(
+                "workspace_operation_updated_at: {}",
+                operation.updated_at.to_rfc3339()
+            );
+            if let Some(note) = operation.request_note.as_ref() {
+                println!("workspace_operation_request_note: {note}");
+            }
+            if let Some(report_id) = operation.report_id.as_ref() {
+                println!("workspace_operation_report_id: {report_id}");
+            }
+            if let Some(disposition) = operation.report_disposition.as_ref() {
+                println!("workspace_operation_report_disposition: {:?}", disposition);
+            }
+            if let Some(summary) = operation.outcome_summary.as_ref() {
+                println!("workspace_operation_outcome_summary: {summary}");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn tracked_thread_prepare_workspace(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
+        let response = client
+            .authority_tracked_thread_prepare_workspace(
+                &ipc::AuthorityTrackedThreadPrepareWorkspaceRequest {
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    requested_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                    request_note: None,
+                    model: tracked_thread.preferred_model.clone(),
+                    cwd: Some(workspace.repository_root.clone()),
+                },
+            )
+            .await?;
+        println!("surface: workspace_operation");
+        println!(
+            "workspace_operation_kind: {:?}",
+            response.workspace_operation.kind
+        );
+        println!(
+            "workspace_operation_status: {:?}",
+            response.workspace_operation.status
+        );
+        println!(
+            "workspace_operation_tracked_thread_id: {}",
+            response.workspace_operation.tracked_thread_id
+        );
+        println!(
+            "workspace_operation_assignment_id: {}",
+            response.assignment.id
+        );
+        println!("workspace_operation_worker_id: {}", response.worker.id);
+        println!(
+            "workspace_operation_worker_session_id: {}",
+            response.worker_session.id
+        );
+        println!("workspace_operation_report_id: {}", response.report.id);
+        println!(
+            "workspace_operation_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!(
+            "workspace_operation_report_summary: {}",
+            response.report.summary
+        );
+        Ok(())
+    }
+
+    pub async fn tracked_thread_refresh_workspace(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
+        let response = client
+            .authority_tracked_thread_refresh_workspace(
+                &ipc::AuthorityTrackedThreadRefreshWorkspaceRequest {
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    requested_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                    request_note: None,
+                    model: tracked_thread.preferred_model.clone(),
+                    cwd: Some(workspace.repository_root.clone()),
+                },
+            )
+            .await?;
+        println!("surface: workspace_operation");
+        println!(
+            "workspace_operation_kind: {:?}",
+            response.workspace_operation.kind
+        );
+        println!(
+            "workspace_operation_status: {:?}",
+            response.workspace_operation.status
+        );
+        println!(
+            "workspace_operation_tracked_thread_id: {}",
+            response.workspace_operation.tracked_thread_id
+        );
+        println!(
+            "workspace_operation_assignment_id: {}",
+            response.assignment.id
+        );
+        println!("workspace_operation_worker_id: {}", response.worker.id);
+        println!(
+            "workspace_operation_worker_session_id: {}",
+            response.worker_session.id
+        );
+        println!("workspace_operation_report_id: {}", response.report.id);
+        println!(
+            "workspace_operation_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!(
+            "workspace_operation_report_summary: {}",
+            response.report.summary
+        );
         Ok(())
     }
 

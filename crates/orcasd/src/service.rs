@@ -33,6 +33,7 @@ use orcas_codex::{
     CodexClient, CodexDaemonManager, DaemonLaunch as CodexDaemonLaunch, LocalCodexDaemonManager,
     RejectingApprovalRouter, WebSocketTransport,
 };
+use orcas_core::authority;
 use orcas_core::authority::{AuthorityCommand, AuthorityQueryStore};
 use orcas_core::ipc;
 use orcas_core::jsonrpc::{
@@ -45,13 +46,15 @@ use orcas_core::{
     CodexConnectionMode, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CollaborationState, ConnectionState, Decision, DecisionType,
     DraftAssignment, EventEnvelope, ImplementModeSpec, JsonSessionStore, OrcasError, OrcasEvent,
-    OrcasResult, OrcasSessionStore, Report, ReportParseResult, SupervisorContextPack,
-    SupervisorProposal, SupervisorProposalFailure, SupervisorProposalFailureStage,
-    SupervisorProposalRecord, SupervisorProposalStatus, SupervisorProposalTriggerKind,
-    SupervisorReasonerUsage, SupervisorTurnDecision, SupervisorTurnDecisionKind,
-    SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, ThreadMetadata, WorkUnit,
-    WorkUnitStatus, Worker, WorkerSession, WorkerSessionAttachability, WorkerSessionRuntimeStatus,
-    WorkerStatus, Workstream, WorkstreamStatus,
+    OrcasResult, OrcasSessionStore, Report, ReportDisposition, ReportParseResult,
+    SupervisorContextPack, SupervisorProposal, SupervisorProposalFailure,
+    SupervisorProposalFailureStage, SupervisorProposalRecord, SupervisorProposalStatus,
+    SupervisorProposalTriggerKind, SupervisorReasonerUsage, SupervisorTurnDecision,
+    SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus, SupervisorTurnProposalKind,
+    ThreadMetadata, TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind,
+    TrackedThreadWorkspaceOperationStatus, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
+    WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus, WorkspaceOperationRecord,
+    Workstream, WorkstreamStatus,
 };
 
 use crate::assignment_comm::parse::parse_worker_report_for_turn;
@@ -721,6 +724,22 @@ impl OrcasDaemonService {
                 let params: ipc::AuthorityTrackedThreadGetRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.authority_tracked_thread_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_PREPARE_WORKSPACE => {
+                let params: ipc::AuthorityTrackedThreadPrepareWorkspaceRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(
+                    self.authority_tracked_thread_prepare_workspace(params)
+                        .await?,
+                )?
+            }
+            ipc::methods::AUTHORITY_TRACKED_THREAD_REFRESH_WORKSPACE => {
+                let params: ipc::AuthorityTrackedThreadRefreshWorkspaceRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(
+                    self.authority_tracked_thread_refresh_workspace(params)
+                        .await?,
+                )?
             }
             ipc::methods::ASSIGNMENT_START => {
                 let params: ipc::AssignmentStartRequest =
@@ -2081,6 +2100,47 @@ impl OrcasDaemonService {
         Ok(ipc::AuthorityTrackedThreadGetResponse {
             tracked_thread,
             workspace_inspection,
+            workspace_operation: self
+                .latest_workspace_operation_for_tracked_thread(&params.tracked_thread_id)
+                .await?,
+        })
+    }
+
+    async fn authority_tracked_thread_prepare_workspace(
+        &self,
+        params: ipc::AuthorityTrackedThreadPrepareWorkspaceRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadPrepareWorkspaceResponse> {
+        self.start_tracked_thread_workspace_operation(
+            params.tracked_thread_id,
+            params.requested_by,
+            params.request_note,
+            params.model,
+            params.cwd,
+            TrackedThreadWorkspaceOperationKind::PrepareWorkspace,
+        )
+        .await
+    }
+
+    async fn authority_tracked_thread_refresh_workspace(
+        &self,
+        params: ipc::AuthorityTrackedThreadRefreshWorkspaceRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadRefreshWorkspaceResponse> {
+        let response = self
+            .start_tracked_thread_workspace_operation(
+                params.tracked_thread_id,
+                params.requested_by,
+                params.request_note,
+                params.model,
+                params.cwd,
+                TrackedThreadWorkspaceOperationKind::RefreshWorkspace,
+            )
+            .await?;
+        Ok(ipc::AuthorityTrackedThreadRefreshWorkspaceResponse {
+            workspace_operation: response.workspace_operation,
+            assignment: response.assignment,
+            worker: response.worker,
+            worker_session: response.worker_session,
+            report: response.report,
         })
     }
 
@@ -2100,7 +2160,24 @@ impl OrcasDaemonService {
                 .as_ref()
                 .map(|path| path.display().to_string())
         });
-        let prepared = self.prepare_assignment(params).await?;
+        self.start_prepared_assignment(
+            self.prepare_assignment(params).await?,
+            session_model,
+            session_cwd,
+            communication_model,
+            communication_cwd,
+        )
+        .await
+    }
+
+    async fn start_prepared_assignment(
+        &self,
+        prepared: PreparedAssignment,
+        session_model: Option<String>,
+        session_cwd: Option<String>,
+        communication_model: Option<String>,
+        communication_cwd: Option<String>,
+    ) -> OrcasResult<ipc::AssignmentStartResponse> {
         let assignment_id = prepared.assignment.id.clone();
         let worker_id = prepared.assignment.worker_id.clone();
         let worker_session_id = prepared.assignment.worker_session_id.clone();
@@ -2236,6 +2313,9 @@ impl OrcasDaemonService {
             &started_work_unit,
         )
         .await;
+        self.mark_workspace_operation_dispatched(&assignment_id, &worker_id, &worker_session_id)
+            .await?;
+        self.persist_collaboration_state().await?;
 
         let turn_state = match self.wait_for_turn_terminal(&thread_id, &turn.turn_id).await {
             Ok(turn_state) => turn_state,
@@ -2295,6 +2375,301 @@ impl OrcasDaemonService {
             worker_session,
             report,
         })
+    }
+
+    async fn start_tracked_thread_workspace_operation(
+        &self,
+        tracked_thread_id: orcas_core::authority::TrackedThreadId,
+        requested_by: Option<String>,
+        request_note: Option<String>,
+        model: Option<String>,
+        cwd: Option<String>,
+        kind: TrackedThreadWorkspaceOperationKind,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadPrepareWorkspaceResponse> {
+        let requested_by = requested_by.unwrap_or_else(|| "supervisor_cli".to_string());
+        let started_at = Instant::now();
+        let session_model = model.clone();
+        let session_cwd = cwd.clone();
+        info!(
+            tracked_thread_id = %tracked_thread_id,
+            kind = ?kind,
+            requested_by = %requested_by,
+            "starting tracked-thread workspace operation"
+        );
+
+        let tracked_thread = self
+            .authority_store
+            .get_tracked_thread(&tracked_thread_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority tracked thread `{tracked_thread_id}`"
+                ))
+            })?;
+        let (workspace, work_unit, worker_session, worker_kind) = {
+            let state = self.state.read().await;
+            let workspace = tracked_thread.workspace.clone().ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "tracked thread `{}` has no declared workspace",
+                    tracked_thread.id
+                ))
+            })?;
+            let work_unit = state
+                .collaboration
+                .work_units
+                .get(tracked_thread.work_unit_id.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown work unit `{}` for tracked thread `{}`",
+                        tracked_thread.work_unit_id, tracked_thread.id
+                    ))
+                })?;
+            let worker_session = state
+                .collaboration
+                .worker_sessions
+                .values()
+                .find(|session| session.tracked_thread_id.as_ref() == Some(&tracked_thread.id))
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "tracked thread `{}` has no bound worker session",
+                        tracked_thread.id
+                    ))
+                })?;
+            if state
+                .collaboration
+                .workspace_operations
+                .values()
+                .any(|operation| {
+                    operation.tracked_thread_id == tracked_thread.id
+                        && !Self::workspace_operation_status_is_terminal(operation.status)
+                })
+            {
+                return Err(OrcasError::Protocol(format!(
+                    "tracked thread `{}` already has an active workspace operation",
+                    tracked_thread.id
+                )));
+            }
+            let worker_kind = state
+                .collaboration
+                .workers
+                .get(&worker_session.worker_id)
+                .map(|worker| worker.kind.clone())
+                .unwrap_or_else(|| worker_session.backend_type.clone());
+            (workspace, work_unit, worker_session, worker_kind)
+        };
+
+        let operation_contract = TrackedThreadWorkspaceOperationContract {
+            kind,
+            tracked_thread_id: tracked_thread.id.clone(),
+            tracked_thread_title: tracked_thread.title.clone(),
+            workspace: workspace.clone(),
+            requested_by: Some(requested_by.clone()),
+            request_note: request_note.clone(),
+        };
+        let operation_seed = Self::tracked_thread_workspace_operation_seed(
+            &tracked_thread,
+            &workspace,
+            &operation_contract,
+            request_note.as_deref(),
+            kind,
+        );
+        let communication_model = model.clone().or_else(|| self.config.defaults.model.clone());
+        let communication_cwd = cwd.clone().or_else(|| {
+            self.config
+                .defaults
+                .cwd
+                .as_ref()
+                .map(|path| path.display().to_string())
+        });
+        let mut prepared = self
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: worker_session.worker_id.clone(),
+                worker_kind: Some(worker_kind),
+                instructions: Some(operation_seed.objective.clone()),
+                model,
+                cwd,
+            })
+            .await?;
+        if prepared.assignment.worker_session_id != worker_session.id {
+            prepared.assignment.worker_session_id = worker_session.id.clone();
+        }
+        {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            if let Some(assignment) = state
+                .collaboration
+                .assignments
+                .get_mut(&prepared.assignment.id)
+            {
+                assignment.worker_session_id = worker_session.id.clone();
+                assignment.communication_seed = Some(operation_seed.clone());
+                assignment.instructions = operation_seed.objective.clone();
+                assignment.updated_at = now;
+            }
+            let operation = orcas_core::WorkspaceOperationRecord {
+                id: prepared.assignment.id.clone(),
+                assignment_id: prepared.assignment.id.clone(),
+                tracked_thread_id: tracked_thread.id.clone(),
+                work_unit_id: authority::WorkUnitId::parse(work_unit.id.clone())?,
+                worker_id: Some(worker_session.worker_id.clone()),
+                worker_session_id: Some(worker_session.id.clone()),
+                kind,
+                status: TrackedThreadWorkspaceOperationStatus::Requested,
+                requested_by: requested_by.clone(),
+                requested_at: now,
+                updated_at: now,
+                dispatched_at: None,
+                completed_at: None,
+                failed_at: None,
+                canceled_at: None,
+                request_note: request_note.clone(),
+                report_id: None,
+                report_disposition: None,
+                outcome_summary: None,
+            };
+            state
+                .collaboration
+                .workspace_operations
+                .insert(operation.id.clone(), operation);
+        }
+        self.persist_collaboration_state().await?;
+
+        let response = self
+            .start_prepared_assignment(
+                prepared,
+                session_model,
+                session_cwd,
+                communication_model,
+                communication_cwd,
+            )
+            .await?;
+        let workspace_operation = self
+            .latest_workspace_operation_for_tracked_thread(&tracked_thread.id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "workspace operation for tracked thread `{}` was not persisted",
+                    tracked_thread.id
+                ))
+            })?;
+        info!(
+            tracked_thread_id = %tracked_thread.id,
+            assignment_id = %response.assignment.id,
+            kind = ?kind,
+            status = ?workspace_operation.status,
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "tracked-thread workspace operation finished"
+        );
+        Ok(ipc::AuthorityTrackedThreadPrepareWorkspaceResponse {
+            workspace_operation,
+            assignment: response.assignment,
+            worker: response.worker,
+            worker_session: response.worker_session,
+            report: response.report,
+        })
+    }
+
+    async fn latest_workspace_operation_for_tracked_thread(
+        &self,
+        tracked_thread_id: &orcas_core::authority::TrackedThreadId,
+    ) -> OrcasResult<Option<WorkspaceOperationRecord>> {
+        let state = self.state.read().await;
+        Ok(state
+            .collaboration
+            .workspace_operations
+            .values()
+            .filter(|operation| &operation.tracked_thread_id == tracked_thread_id)
+            .max_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .cloned())
+    }
+
+    fn workspace_operation_status_is_terminal(
+        status: TrackedThreadWorkspaceOperationStatus,
+    ) -> bool {
+        matches!(
+            status,
+            TrackedThreadWorkspaceOperationStatus::Completed
+                | TrackedThreadWorkspaceOperationStatus::Failed
+                | TrackedThreadWorkspaceOperationStatus::Canceled
+        )
+    }
+
+    async fn mark_workspace_operation_dispatched(
+        &self,
+        assignment_id: &str,
+        worker_id: &str,
+        worker_session_id: &str,
+    ) -> OrcasResult<()> {
+        let now = Utc::now();
+        let mut state = self.state.write().await;
+        let Some(operation) = state
+            .collaboration
+            .workspace_operations
+            .get_mut(assignment_id)
+        else {
+            return Ok(());
+        };
+        operation.status = TrackedThreadWorkspaceOperationStatus::Dispatched;
+        operation.worker_id = Some(worker_id.to_string());
+        operation.worker_session_id = Some(worker_session_id.to_string());
+        operation.dispatched_at = Some(now);
+        operation.updated_at = now;
+        Ok(())
+    }
+
+    async fn mark_workspace_operation_failed(
+        &self,
+        assignment_id: &str,
+        report_id: Option<String>,
+        outcome_summary: Option<String>,
+    ) -> OrcasResult<()> {
+        let now = Utc::now();
+        let mut state = self.state.write().await;
+        let Some(operation) = state
+            .collaboration
+            .workspace_operations
+            .get_mut(assignment_id)
+        else {
+            return Ok(());
+        };
+        operation.status = TrackedThreadWorkspaceOperationStatus::Failed;
+        operation.failed_at = Some(now);
+        operation.report_id = report_id;
+        operation.outcome_summary = outcome_summary;
+        operation.updated_at = now;
+        Ok(())
+    }
+
+    async fn mark_workspace_operation_completed(
+        &self,
+        assignment_id: &str,
+        report_id: Option<String>,
+        report_disposition: Option<ReportDisposition>,
+        outcome_summary: Option<String>,
+    ) -> OrcasResult<()> {
+        let now = Utc::now();
+        let mut state = self.state.write().await;
+        let Some(operation) = state
+            .collaboration
+            .workspace_operations
+            .get_mut(assignment_id)
+        else {
+            return Ok(());
+        };
+        operation.status = TrackedThreadWorkspaceOperationStatus::Completed;
+        operation.completed_at = Some(now);
+        operation.report_id = report_id;
+        operation.report_disposition = report_disposition;
+        operation.outcome_summary = outcome_summary;
+        operation.updated_at = now;
+        Ok(())
     }
 
     async fn mark_assignment_start_failed(
@@ -2371,6 +2746,13 @@ impl OrcasDaemonService {
             (assignment, work_unit)
         };
         self.persist_collaboration_state().await?;
+        self.mark_workspace_operation_failed(
+            assignment_id,
+            None,
+            Some("assignment start failed".to_string()),
+        )
+        .await?;
+        self.persist_collaboration_state().await?;
         self.emit_assignment_lifecycle(ipc::AssignmentLifecycleAction::Failed, &assignment)
             .await;
         self.emit_work_unit_lifecycle(ipc::CollaborationLifecycleAction::Updated, &work_unit)
@@ -2438,6 +2820,13 @@ impl OrcasDaemonService {
                 })?;
             (assignment, work_unit)
         };
+        self.persist_collaboration_state().await?;
+        self.mark_workspace_operation_failed(
+            assignment_id,
+            None,
+            Some("assignment runtime was lost".to_string()),
+        )
+        .await?;
         self.persist_collaboration_state().await?;
         self.emit_assignment_lifecycle(ipc::AssignmentLifecycleAction::Failed, &assignment)
             .await;
@@ -2516,13 +2905,15 @@ impl OrcasDaemonService {
         };
         assignment.updated_at = now;
 
+        let report_id = Self::new_object_id("report");
+        let summary = parsed_report.summary.clone();
         let report = Report {
-            id: Self::new_object_id("report"),
+            id: report_id.clone(),
             work_unit_id: work_unit_id.clone(),
             assignment_id: assignment_id.to_string(),
             worker_id: worker_id.to_string(),
             disposition: parsed_report.disposition,
-            summary: parsed_report.summary,
+            summary,
             findings: parsed_report.findings,
             blockers: parsed_report.blockers,
             questions: parsed_report.questions,
@@ -2593,6 +2984,33 @@ impl OrcasDaemonService {
             );
         }
 
+        if assignment_for_parse
+            .communication_seed
+            .as_ref()
+            .and_then(|seed| seed.workspace_operation.as_ref())
+            .is_some()
+        {
+            if parsed_report.validation.parse_result != ReportParseResult::Invalid
+                && workspace_report.is_some()
+                && parsed_report.disposition == ReportDisposition::Completed
+            {
+                self.mark_workspace_operation_completed(
+                    assignment_id,
+                    Some(report_id.clone()),
+                    Some(parsed_report.disposition),
+                    Some(parsed_report.summary.clone()),
+                )
+                .await?;
+            } else {
+                self.mark_workspace_operation_failed(
+                    assignment_id,
+                    Some(report_id.clone()),
+                    Some(parsed_report.summary.clone()),
+                )
+                .await?;
+            }
+        }
+
         let mut state = self.state.write().await;
         let stale_proposals =
             Self::refresh_stale_proposals_for_work_unit(&mut state.collaboration, &work_unit_id);
@@ -2609,6 +3027,8 @@ impl OrcasDaemonService {
             .get(&work_unit_id)
             .cloned()
             .ok_or_else(|| OrcasError::Protocol(format!("unknown work unit `{work_unit_id}`")))?;
+        drop(state);
+        self.persist_collaboration_state().await?;
         info!(
             assignment_id,
             worker_id,
@@ -5578,6 +5998,74 @@ impl OrcasDaemonService {
             required_context_refs: Vec::new(),
             expected_report_fields: Vec::new(),
             boundedness_note: None,
+            workspace_operation: None,
+            mode_spec: Self::implement_mode_spec(),
+        }
+    }
+
+    fn tracked_thread_workspace_operation_seed(
+        tracked_thread: &authority::TrackedThreadRecord,
+        workspace: &authority::TrackedThreadWorkspace,
+        contract: &TrackedThreadWorkspaceOperationContract,
+        request_note: Option<&str>,
+        kind: TrackedThreadWorkspaceOperationKind,
+    ) -> AssignmentCommunicationSeed {
+        let objective = match kind {
+            TrackedThreadWorkspaceOperationKind::PrepareWorkspace => format!(
+                "Prepare the declared workspace for tracked thread `{}`.",
+                tracked_thread.id
+            ),
+            TrackedThreadWorkspaceOperationKind::RefreshWorkspace => format!(
+                "Refresh the declared workspace for tracked thread `{}`.",
+                tracked_thread.id
+            ),
+        };
+        let mut instructions = vec![
+            format!("Tracked thread: {}", tracked_thread.id),
+            format!("Workspace path: {}", workspace.worktree_path),
+            format!("Repository root: {}", workspace.repository_root),
+            format!("Branch: {}", workspace.branch_name),
+            format!("Base ref: {}", workspace.base_ref),
+            format!("Landing target: {}", workspace.landing_target),
+        ];
+        match kind {
+            TrackedThreadWorkspaceOperationKind::PrepareWorkspace => {
+                instructions.push(
+                    "Inspect the declared lane, create or reuse the declared worktree if needed, and normalize the worker session into that lane.".to_string(),
+                );
+            }
+            TrackedThreadWorkspaceOperationKind::RefreshWorkspace => {
+                instructions.push(
+                    "Inspect the declared lane, fetch and sync according to policy, and do not land or merge into the protected target.".to_string(),
+                );
+            }
+        }
+        if let Some(request_note) = request_note.filter(|note| !note.trim().is_empty()) {
+            instructions.push(format!("Request note: {request_note}"));
+        }
+
+        AssignmentCommunicationSeed {
+            source_decision_id: None,
+            source_report_id: None,
+            source_proposal_id: None,
+            predecessor_assignment_id: None,
+            objective,
+            instructions,
+            acceptance_criteria: vec![
+                "The worker reports the observed workspace state in workspace_report.".to_string(),
+                "The workspace report includes the current head commit and dirty state when available."
+                    .to_string(),
+            ],
+            stop_conditions: vec![
+                "Stop before any landing, merge, reset, or prune action.".to_string(),
+            ],
+            required_context_refs: Vec::new(),
+            expected_report_fields: vec!["workspace_report".to_string()],
+            boundedness_note: Some(
+                "Daemon-side workspace operations remain read-only; the worker performs any git mutations."
+                    .to_string(),
+            ),
+            workspace_operation: Some(contract.clone()),
             mode_spec: Self::implement_mode_spec(),
         }
     }
@@ -5610,6 +6098,7 @@ impl OrcasDaemonService {
             expected_report_fields: draft.expected_report_fields.clone(),
             boundedness_note: (!draft.boundedness_note.trim().is_empty())
                 .then_some(draft.boundedness_note.clone()),
+            workspace_operation: None,
             mode_spec: Self::implement_mode_spec(),
         }
     }
@@ -5644,6 +6133,7 @@ impl OrcasDaemonService {
             required_context_refs,
             expected_report_fields: Vec::new(),
             boundedness_note: packet.non_goals.first().cloned(),
+            workspace_operation: packet.workspace_operation.clone(),
             mode_spec: packet.mode_spec.clone(),
         }
     }
@@ -11939,6 +12429,7 @@ ORCAS_REPORT_END"#
                 "recommended_next_actions".to_string(),
             ],
             boundedness_note: Some("Keep the follow-up strictly bounded.".to_string()),
+            workspace_operation: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: Vec::new(),
             }),

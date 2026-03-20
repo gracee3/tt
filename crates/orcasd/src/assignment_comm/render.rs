@@ -11,8 +11,9 @@ use orcas_core::{
     AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract, CollaborationState,
     ImplementModePayload, ImplementModeSpec, OrcasError, OrcasResult, PromptRenderArtifact,
     PromptRenderSpec, ReportConfidence, ReportDisposition, ReviewSignal, ReviewSignalLevel,
-    WorkUnit, WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload,
-    WorkerWorkspaceReport, Workstream,
+    TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind, WorkUnit,
+    WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload, WorkerWorkspaceReport,
+    Workstream,
 };
 
 use crate::assignment_comm::{
@@ -27,6 +28,7 @@ const SECTION_ORDER: &[&str] = &[
     "task_mode",
     "objective",
     "instructions",
+    "workspace_operation",
     "workspace_contract",
     "scope_and_non_goals",
     "acceptance_criteria",
@@ -123,6 +125,7 @@ pub fn build_assignment_communication_record(
             execution_context,
             response_contract,
             workspace_contract.clone(),
+            seed.workspace_operation.clone(),
             seed,
             now,
         )
@@ -137,6 +140,7 @@ pub fn build_assignment_communication_record(
             execution_context,
             response_contract,
             workspace_contract,
+            None,
             now,
         )
     };
@@ -241,6 +245,7 @@ fn build_packet_from_seed(
     execution_context: AssignmentExecutionContext,
     response_contract: WorkerReportContract,
     workspace_contract: Option<AssignmentWorkspaceContract>,
+    workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
     seed: &AssignmentCommunicationSeed,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
@@ -283,6 +288,7 @@ fn build_packet_from_seed(
             seed,
         ),
         workspace_contract,
+        workspace_operation,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -296,6 +302,7 @@ fn build_packet_from_legacy_assignment_instructions(
     execution_context: AssignmentExecutionContext,
     response_contract: WorkerReportContract,
     workspace_contract: Option<AssignmentWorkspaceContract>,
+    workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
     let legacy = parse_legacy_instruction_seed(&assignment.instructions);
@@ -339,6 +346,7 @@ fn build_packet_from_legacy_assignment_instructions(
             &legacy,
         ),
         workspace_contract,
+        workspace_operation,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -420,6 +428,36 @@ pub fn render_prompt(
         ));
     }
 
+    if let Some(workspace_operation) = packet.workspace_operation.as_ref() {
+        let workspace_operation_json = serde_json::to_string_pretty(workspace_operation)?;
+        prompt.push_str("Workspace Operation:\n");
+        prompt.push_str("```json\n");
+        prompt.push_str(&workspace_operation_json);
+        prompt.push_str("\n```\n");
+        prompt.push_str(
+            "- This is a standardized Orcas workspace flow, not freeform prompt wording.\n",
+        );
+        prompt.push_str("- Orcas itself remains read-only for git inspection and orchestration.\n");
+        match workspace_operation.kind {
+            TrackedThreadWorkspaceOperationKind::PrepareWorkspace => {
+                prompt.push_str("- prepare_workspace means normalize the declared lane, create or reuse the declared worktree if needed, and report the observed lane state.\n");
+            }
+            TrackedThreadWorkspaceOperationKind::RefreshWorkspace => {
+                prompt.push_str("- refresh_workspace means sync the declared lane against its base or landing target according to policy, then report the observed lane state.\n");
+                prompt.push_str(
+                    "- Do not land, merge, reset, or prune from the daemon-side workflow.\n",
+                );
+            }
+        }
+        prompt.push_str(
+            "- The worker performs any required git mutations inside the declared workspace.\n",
+        );
+        prompt.push_str(
+            "- Include a machine-readable workspace_report object in your final worker report for this lane.\n",
+        );
+        prompt.push_str("- workspace_report is observed state, not supervisor intent.\n\n");
+    }
+
     prompt.push_str("Scope And Non-Goals:\n");
     prompt.push_str(&format!(
         "- Change policy: {}\n",
@@ -474,9 +512,9 @@ pub fn render_prompt(
     prompt.push_str("- Array fields may be empty when there is nothing honest to report.\n");
     prompt.push_str("- Do not wrap the envelope in markdown fences.\n");
     prompt.push_str("- Worker recommendations are non-authoritative.\n");
-    if packet.workspace_contract.is_some() {
+    if packet.workspace_contract.is_some() || packet.workspace_operation.is_some() {
         prompt.push_str(
-            "- When a workspace contract is present, include workspace_report with the observed lane state for the bound tracked thread.\n",
+            "- When a workspace contract or workspace operation is present, include workspace_report with the observed lane state for the bound tracked thread.\n",
         );
     }
     prompt.push_str(&format!("- Packet fingerprint: {packet_hash}\n"));
@@ -1004,12 +1042,20 @@ mod tests {
     use orcas_core::{
         Assignment, AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentTaskMode,
         CollaborationState, ImplementModeSpec, Report, ReportConfidence, ReportDisposition,
-        ReportParseResult, WorkUnit, WorkUnitStatus, Workstream, WorkstreamStatus,
+        ReportParseResult, TrackedThreadWorkspaceOperationContract,
+        TrackedThreadWorkspaceOperationKind, WorkUnit, WorkUnitStatus, Workstream,
+        WorkstreamStatus,
     };
 
     use super::{
         REPORT_MARKER_BEGIN, REPORT_MARKER_END, build_assignment_communication_record,
         render_prompt, worker_report_contract,
+    };
+
+    use orcas_core::authority::{
+        TrackedThreadId, TrackedThreadWorkspace, TrackedThreadWorkspaceCleanupPolicy,
+        TrackedThreadWorkspaceLandingPolicy, TrackedThreadWorkspaceStatus,
+        TrackedThreadWorkspaceStrategy, TrackedThreadWorkspaceSyncPolicy,
     };
 
     fn fixed_now() -> chrono::DateTime<Utc> {
@@ -1119,6 +1165,7 @@ mod tests {
             ],
             expected_report_fields: vec!["summary".to_string()],
             boundedness_note: Some("Do not change runtime orchestration.".to_string()),
+            workspace_operation: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: vec![
                     "cargo test -p orcasd assignment_comm".to_string(),
@@ -1187,6 +1234,50 @@ mod tests {
     }
 
     #[test]
+    fn render_prompt_includes_workspace_operation_section_when_present() {
+        let collaboration = sample_collaboration();
+        let mut seed = sample_seed();
+        seed.workspace_operation = Some(TrackedThreadWorkspaceOperationContract {
+            kind: TrackedThreadWorkspaceOperationKind::PrepareWorkspace,
+            tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+            tracked_thread_title: "Tracked thread".to_string(),
+            workspace: TrackedThreadWorkspace {
+                repository_root: "/repo".to_string(),
+                owner_tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+                strategy: TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                worktree_path: "/repo/worktree".to_string(),
+                branch_name: "orcas/tt-1".to_string(),
+                base_ref: "origin/main".to_string(),
+                base_commit: Some("base-123".to_string()),
+                landing_target: "origin/main".to_string(),
+                landing_policy: TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                sync_policy: TrackedThreadWorkspaceSyncPolicy::Manual,
+                cleanup_policy: TrackedThreadWorkspaceCleanupPolicy::KeepUntilCampaignClosed,
+                last_reported_head_commit: None,
+                status: TrackedThreadWorkspaceStatus::Requested,
+            },
+            requested_by: Some("supervisor_cli".to_string()),
+            request_note: Some("Prepare the lane.".to_string()),
+        });
+        let assignment = sample_assignment(Some(seed), "unused legacy text");
+        let record = build_assignment_communication_record(
+            &collaboration,
+            &assignment,
+            Some("gpt-5".to_string()),
+            Some("/repo".to_string()),
+            None,
+            None,
+            fixed_now(),
+        )
+        .expect("build communication record");
+
+        let prompt = &record.prompt_render.prompt_text;
+        assert!(prompt.contains("Workspace Operation:"));
+        assert!(prompt.contains("\"kind\": \"prepare_workspace\""));
+        assert!(prompt.contains("prepare_workspace means normalize the declared lane"));
+    }
+
+    #[test]
     fn render_prompt_uses_stable_fallbacks_for_empty_optional_sections() {
         let packet = orcas_core::AssignmentCommunicationPacket {
             schema_version: "assignment_communication_packet.v1".to_string(),
@@ -1227,6 +1318,7 @@ mod tests {
             non_goals: Vec::new(),
             included_context: Vec::new(),
             workspace_contract: None,
+            workspace_operation: None,
             response_contract: worker_report_contract(),
             policy: orcas_core::AssignmentCommunicationPolicy {
                 stop_at_boundary: true,

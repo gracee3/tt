@@ -1497,6 +1497,7 @@ impl TuiBackend for FakeBackend {
                                 anyhow!("unknown authority tracked thread `{tracked_thread_id}`")
                             })?,
                         workspace_inspection: None,
+                        workspace_operation: None,
                     },
                 ))
             }
