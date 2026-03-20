@@ -605,8 +605,7 @@ impl OrcasDaemonService {
             // Retained as a collaboration execution-detail read for runtime surfaces.
             // Planning hierarchy reads and writes now go through authority RPCs.
             ipc::methods::WORKUNIT_GET => {
-                let params: ipc::WorkunitGetRequest =
-                    Self::decode_params(request.params.clone())?;
+                let params: ipc::WorkunitGetRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.workunit_get(params).await?)?
             }
             ipc::methods::AUTHORITY_HIERARCHY_GET => {
@@ -819,6 +818,14 @@ impl OrcasDaemonService {
                 let params: ipc::ProposalArtifactDetailGetRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.proposal_artifact_detail_get(params).await?)?
+            }
+            ipc::methods::PROPOSAL_ARTIFACT_SUMMARY_LIST_FOR_WORKUNIT => {
+                let params: ipc::ProposalArtifactSummaryListForWorkunitRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(
+                    self.proposal_artifact_summary_list_for_workunit(params)
+                        .await?,
+                )?
             }
             ipc::methods::PROPOSAL_LIST_FOR_WORKUNIT => {
                 let params: ipc::ProposalListForWorkunitRequest =
@@ -5235,6 +5242,48 @@ impl OrcasDaemonService {
         }
         Ok(ipc::ProposalArtifactDetailGetResponse {
             detail: Self::proposal_artifact_detail(&proposal),
+        })
+    }
+
+    async fn proposal_artifact_summary_list_for_workunit(
+        &self,
+        params: ipc::ProposalArtifactSummaryListForWorkunitRequest,
+    ) -> OrcasResult<ipc::ProposalArtifactSummaryListForWorkunitResponse> {
+        let (summaries, stale_proposals) = {
+            let mut state = self.state.write().await;
+            let stale_proposals = Self::refresh_stale_proposals_for_work_unit(
+                &mut state.collaboration,
+                &params.work_unit_id,
+            );
+            let mut proposals = state
+                .collaboration
+                .supervisor_proposals
+                .values()
+                .filter(|proposal| proposal.primary_work_unit_id == params.work_unit_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            proposals.sort_by(|left, right| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            let summaries = proposals
+                .iter()
+                .map(Self::proposal_artifact_summary)
+                .collect::<Vec<_>>();
+            (summaries, stale_proposals)
+        };
+        if !stale_proposals.is_empty() {
+            self.persist_collaboration_state().await?;
+            for proposal in &stale_proposals {
+                self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Stale, proposal)
+                    .await;
+            }
+        }
+        Ok(ipc::ProposalArtifactSummaryListForWorkunitResponse {
+            work_unit_id: params.work_unit_id,
+            summaries,
         })
     }
 
@@ -11699,6 +11748,49 @@ ORCAS_REPORT_END"#
         assert_eq!(summary.generation_failure_stage, None);
 
         let summary_json = serde_json::to_string(&summary).expect("summary json");
+        assert!(!summary_json.contains("You are the Orcas supervisor reasoner."));
+        assert!(!summary_json.contains("SupervisorContextPack:"));
+        assert!(!summary_json.contains("\"output\":["));
+        assert!(!summary_json.contains("raw response body"));
+    }
+
+    #[tokio::test]
+    async fn proposal_artifact_summary_list_for_workunit_is_bounded() {
+        let reasoner = Arc::new(StaticSupervisorReasoner::default());
+        let service = test_service_with_reasoner(reasoner.clone()).await;
+        let (_workstream, work_unit, assignment, report) =
+            seed_manual_proposal_fixture(&service, "artifact-summary-list").await;
+        let proposal =
+            create_default_proposal(&service, &reasoner, &work_unit, &assignment, &report)
+                .await
+                .proposal;
+
+        let response = service
+            .proposal_artifact_summary_list_for_workunit(
+                ipc::ProposalArtifactSummaryListForWorkunitRequest {
+                    work_unit_id: work_unit.id.clone(),
+                },
+            )
+            .await
+            .expect("proposal artifact summary list");
+
+        assert_eq!(response.work_unit_id, work_unit.id);
+        assert_eq!(response.summaries.len(), 1);
+        let summary = &response.summaries[0];
+        assert_eq!(summary.proposal_id, proposal.id);
+        assert_eq!(summary.proposal_status, SupervisorProposalStatus::Open);
+        assert!(summary.prompt_artifact_present);
+        assert_eq!(
+            summary.prompt_template_version.as_deref(),
+            Some(crate::supervisor::SUPERVISOR_PROMPT_TEMPLATE_VERSION)
+        );
+        assert!(summary.response_artifact_present);
+        assert!(summary.response_hash.is_some());
+        assert_eq!(summary.reasoner_backend, "test");
+        assert!(summary.parsed_proposal_present);
+        assert!(!summary.approved_proposal_present);
+
+        let summary_json = serde_json::to_string(&response).expect("summary list json");
         assert!(!summary_json.contains("You are the Orcas supervisor reasoner."));
         assert!(!summary_json.contains("SupervisorContextPack:"));
         assert!(!summary_json.contains("\"output\":["));

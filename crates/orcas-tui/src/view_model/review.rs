@@ -231,32 +231,46 @@ fn review_queue_row(state: &AppState, selection: ReviewSelection) -> ReviewQueue
                 .map(|work_unit| workstream_summary(state, &work_unit.workstream_id))
                 .flatten();
             let proposal = work_unit.and_then(|work_unit| work_unit.proposal.as_ref());
+            let mut badges = vec![
+                "proposal".to_string(),
+                proposal
+                    .map(|proposal| proposal_status_label(proposal.latest_status).to_string())
+                    .unwrap_or_else(|| "open".to_string()),
+                proposal
+                    .and_then(|proposal| proposal.open_proposed_decision_type)
+                    .map(decision_type_label)
+                    .unwrap_or("-")
+                    .to_string(),
+            ];
+            badges.extend(proposal_artifact_queue_badges(
+                state,
+                &work_unit_id,
+                &proposal_id,
+            ));
             ReviewQueueRowViewModel {
                 kind: ReviewRowKind::Proposal,
                 selection,
                 label: work_unit
                     .map(|work_unit| work_unit.title.clone())
                     .unwrap_or_else(|| proposal_id.clone()),
-                badges: vec![
-                    "proposal".to_string(),
-                    proposal
-                        .map(|proposal| proposal_status_label(proposal.latest_status).to_string())
-                        .unwrap_or_else(|| "open".to_string()),
-                    proposal
-                        .and_then(|proposal| proposal.open_proposed_decision_type)
-                        .map(decision_type_label)
-                        .unwrap_or("-")
-                        .to_string(),
-                ],
+                badges,
                 secondary: Some(match (workstream, proposal) {
                     (Some(workstream), Some(proposal)) => format!(
-                        "{}  created={}  edits={}",
+                        "{}  created={}  edits={}{}",
                         workstream.title,
                         timestamp_label(proposal.latest_created_at),
-                        proposal.latest_has_approval_edits
+                        proposal.latest_has_approval_edits,
+                        proposal_artifact_queue_suffix(state, &work_unit_id, &proposal_id),
                     ),
-                    (Some(workstream), None) => workstream.title.clone(),
-                    _ => format!("work_unit={work_unit_id}"),
+                    (Some(workstream), None) => format!(
+                        "{}{}",
+                        workstream.title,
+                        proposal_artifact_queue_suffix(state, &work_unit_id, &proposal_id)
+                    ),
+                    _ => format!(
+                        "work_unit={work_unit_id}{}",
+                        proposal_artifact_queue_suffix(state, &work_unit_id, &proposal_id)
+                    ),
                 }),
                 selected,
             }
@@ -292,23 +306,40 @@ fn review_queue_row(state: &AppState, selection: ReviewSelection) -> ReviewQueue
         } => {
             let work_unit = work_unit_summary(state, &work_unit_id);
             let record = proposal_record(state, &work_unit_id, &proposal_id);
+            let mut badges = vec![
+                "failure".to_string(),
+                record
+                    .and_then(|record| record.generation_failure.as_ref())
+                    .map(|failure| proposal_failure_stage_label(failure.stage).to_string())
+                    .unwrap_or_else(|| "generation_failed".to_string()),
+            ];
+            badges.extend(proposal_artifact_queue_badges(
+                state,
+                &work_unit_id,
+                &proposal_id,
+            ));
             ReviewQueueRowViewModel {
                 kind: ReviewRowKind::Failure,
                 selection,
                 label: work_unit
                     .map(|work_unit| work_unit.title.clone())
                     .unwrap_or_else(|| proposal_id.clone()),
-                badges: vec![
-                    "failure".to_string(),
-                    record
-                        .and_then(|record| record.generation_failure.as_ref())
-                        .map(|failure| proposal_failure_stage_label(failure.stage).to_string())
-                        .unwrap_or_else(|| "generation_failed".to_string()),
-                ],
+                badges,
                 secondary: record
                     .and_then(|record| record.generation_failure.as_ref())
-                    .map(|failure| abbreviate(&compact_line(&failure.message), 72))
-                    .or_else(|| Some(format!("work_unit={work_unit_id}"))),
+                    .map(|failure| {
+                        format!(
+                            "{}{}",
+                            abbreviate(&compact_line(&failure.message), 72),
+                            proposal_artifact_queue_suffix(state, &work_unit_id, &proposal_id)
+                        )
+                    })
+                    .or_else(|| {
+                        Some(format!(
+                            "work_unit={work_unit_id}{}",
+                            proposal_artifact_queue_suffix(state, &work_unit_id, &proposal_id)
+                        ))
+                    }),
                 selected,
             }
         }
@@ -792,6 +823,113 @@ fn proposal_artifact_summary_lines(state: &AppState, proposal_id: &str) -> Vec<S
             .unwrap_or("-")
     ));
     lines
+}
+
+fn proposal_artifact_queue_badges(
+    state: &AppState,
+    work_unit_id: &str,
+    proposal_id: &str,
+) -> Vec<String> {
+    if state
+        .loading_proposal_artifact_summary_work_units
+        .contains(work_unit_id)
+    {
+        return vec!["art:loading".to_string()];
+    }
+    if state
+        .proposal_artifact_summary_work_unit_errors
+        .contains_key(work_unit_id)
+    {
+        return vec!["art:error".to_string()];
+    }
+    let Some(summary) = state.proposal_artifact_summaries.get(proposal_id) else {
+        return vec!["art:pending".to_string()];
+    };
+
+    let mut badges = vec![format!(
+        "art:{}{}",
+        if summary.prompt_artifact_present {
+            'p'
+        } else {
+            '-'
+        },
+        if summary.response_artifact_present {
+            'r'
+        } else {
+            '-'
+        }
+    )];
+    badges.push(if summary.parsed_proposal_present {
+        "parse+".to_string()
+    } else {
+        "parse-".to_string()
+    });
+    if summary.approved_proposal_present {
+        badges.push("approved+".to_string());
+    }
+    badges
+}
+
+fn proposal_artifact_queue_suffix(
+    state: &AppState,
+    work_unit_id: &str,
+    proposal_id: &str,
+) -> String {
+    if state
+        .loading_proposal_artifact_summary_work_units
+        .contains(work_unit_id)
+    {
+        return "  artifacts=loading".to_string();
+    }
+    if let Some(error) = state
+        .proposal_artifact_summary_work_unit_errors
+        .get(work_unit_id)
+    {
+        return format!("  artifacts=error:{}", abbreviate(&compact_line(error), 24));
+    }
+    let Some(summary) = state.proposal_artifact_summaries.get(proposal_id) else {
+        return "  artifacts=pending".to_string();
+    };
+    let mut cues = vec![format!(
+        "art={}{}",
+        if summary.prompt_artifact_present {
+            'p'
+        } else {
+            '-'
+        },
+        if summary.response_artifact_present {
+            'r'
+        } else {
+            '-'
+        }
+    )];
+    cues.push(format!(
+        "parsed={}",
+        if summary.parsed_proposal_present {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    cues.push(format!(
+        "approved={}",
+        if summary.approved_proposal_present {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    if let Some(stage) = summary.generation_failure_stage {
+        cues.push(format!("failure={}", proposal_failure_stage_label(stage)));
+    }
+    if !summary.reasoner_backend.is_empty() {
+        cues.push(format!(
+            "reasoner={}/{}",
+            summary.reasoner_backend,
+            abbreviate(&summary.reasoner_model, 18)
+        ));
+    }
+    format!("  {}", cues.join("  "))
 }
 
 fn append_prompt_render_section(

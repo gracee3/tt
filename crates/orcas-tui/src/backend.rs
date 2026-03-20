@@ -71,6 +71,9 @@ pub enum BackendCommand {
     GetWorkUnit {
         work_unit_id: String,
     },
+    GetProposalArtifactSummaryListForWorkUnit {
+        work_unit_id: String,
+    },
     GetProposalArtifactSummary {
         proposal_id: String,
     },
@@ -125,6 +128,7 @@ pub enum BackendCommandResult {
     ThreadAttached(ipc::ThreadAttachResponse),
     Turn(ipc::TurnAttachResponse),
     WorkUnit(ipc::WorkunitGetResponse),
+    ProposalArtifactSummaryListForWorkUnit(ipc::ProposalArtifactSummaryListForWorkunitResponse),
     ProposalArtifactSummary(ipc::SupervisorProposalArtifactSummary),
     ProposalArtifactDetail(ipc::SupervisorProposalArtifactDetail),
     ActiveTurns(Vec<ipc::TurnStateView>),
@@ -456,6 +460,9 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         BackendCommand::AttachThread { .. } => "attach_thread",
         BackendCommand::GetTurn { .. } => "get_turn",
         BackendCommand::GetWorkUnit { .. } => "get_work_unit",
+        BackendCommand::GetProposalArtifactSummaryListForWorkUnit { .. } => {
+            "get_proposal_artifact_summary_list_for_workunit"
+        }
         BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
         BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
         BackendCommand::GetActiveTurns => "get_active_turns",
@@ -661,11 +668,22 @@ impl OrcasDaemonBackend {
                     .turn_attach(&ipc::TurnAttachRequest { thread_id, turn_id })
                     .await?,
             )),
+            // Retained runtime-detail exception: this collaboration read carries execution
+            // detail that is outside the canonical authority planning hierarchy.
             BackendCommand::GetWorkUnit { work_unit_id } => Ok(BackendCommandResult::WorkUnit(
                 client
                     .workunit_get(&ipc::WorkunitGetRequest { work_unit_id })
                     .await?,
             )),
+            BackendCommand::GetProposalArtifactSummaryListForWorkUnit { work_unit_id } => Ok(
+                BackendCommandResult::ProposalArtifactSummaryListForWorkUnit(
+                    client
+                        .proposal_artifact_summary_list_for_workunit(
+                            &ipc::ProposalArtifactSummaryListForWorkunitRequest { work_unit_id },
+                        )
+                        .await?,
+                ),
+            ),
             BackendCommand::GetProposalArtifactSummary { proposal_id } => {
                 Ok(BackendCommandResult::ProposalArtifactSummary(
                     client
@@ -1058,6 +1076,8 @@ struct FakeBackendState {
     threads: HashMap<String, ipc::ThreadView>,
     turns: HashMap<(String, String), ipc::TurnAttachResponse>,
     work_unit_details: HashMap<String, ipc::WorkunitGetResponse>,
+    proposal_artifact_summary_lists:
+        HashMap<String, ipc::ProposalArtifactSummaryListForWorkunitResponse>,
     proposal_artifact_summaries: HashMap<String, ipc::SupervisorProposalArtifactSummary>,
     proposal_artifact_details: HashMap<String, ipc::SupervisorProposalArtifactDetail>,
     authority_workstreams: HashMap<String, authority::WorkstreamRecord>,
@@ -1093,6 +1113,9 @@ impl FakeBackend {
         Self {
             inner: Arc::new(Mutex::new(FakeBackendState {
                 work_unit_details: workunit_details_from_snapshot(&snapshot),
+                proposal_artifact_summary_lists: proposal_artifact_summary_lists_from_snapshot(
+                    &snapshot,
+                ),
                 proposal_artifact_summaries: proposal_artifact_summaries_from_snapshot(&snapshot),
                 proposal_artifact_details: proposal_artifact_details_from_snapshot(&snapshot),
                 authority_workstreams: authority_state.workstreams,
@@ -1146,6 +1169,8 @@ impl FakeBackend {
             .collect();
         let mut guard = self.inner.lock().await;
         guard.work_unit_details = workunit_details_from_snapshot(&snapshot);
+        guard.proposal_artifact_summary_lists =
+            proposal_artifact_summary_lists_from_snapshot(&snapshot);
         guard.proposal_artifact_summaries = proposal_artifact_summaries_from_snapshot(&snapshot);
         guard.proposal_artifact_details = proposal_artifact_details_from_snapshot(&snapshot);
         guard.authority_workstreams = authority_state.workstreams;
@@ -1166,6 +1191,10 @@ impl FakeBackend {
             .iter()
             .map(proposal_artifact_detail_from_record)
             .collect::<Vec<_>>();
+        let summary_list = ipc::ProposalArtifactSummaryListForWorkunitResponse {
+            work_unit_id: detail.work_unit.id.clone(),
+            summaries: summaries.clone(),
+        };
         let mut guard = self.inner.lock().await;
         for summary in summaries {
             guard
@@ -1177,6 +1206,9 @@ impl FakeBackend {
                 .proposal_artifact_details
                 .insert(artifact_detail.proposal_id.clone(), artifact_detail);
         }
+        guard
+            .proposal_artifact_summary_lists
+            .insert(summary_list.work_unit_id.clone(), summary_list);
         guard
             .work_unit_details
             .insert(detail.work_unit.id.clone(), detail);
@@ -1700,6 +1732,14 @@ impl TuiBackend for FakeBackend {
                 .cloned()
                 .map(BackendCommandResult::WorkUnit)
                 .ok_or_else(|| anyhow!("unknown work unit `{work_unit_id}`")),
+            BackendCommand::GetProposalArtifactSummaryListForWorkUnit { work_unit_id } => guard
+                .proposal_artifact_summary_lists
+                .get(&work_unit_id)
+                .cloned()
+                .map(BackendCommandResult::ProposalArtifactSummaryListForWorkUnit)
+                .ok_or_else(|| {
+                    anyhow!("unknown proposal artifact summary list for work unit `{work_unit_id}`")
+                }),
             BackendCommand::GetProposalArtifactSummary { proposal_id } => guard
                 .proposal_artifact_summaries
                 .get(&proposal_id)
@@ -2766,15 +2806,76 @@ fn workunit_details_from_snapshot(
 fn proposal_artifact_summaries_from_snapshot(
     snapshot: &ipc::StateSnapshot,
 ) -> HashMap<String, ipc::SupervisorProposalArtifactSummary> {
-    workunit_details_from_snapshot(snapshot)
-        .into_values()
-        .flat_map(|detail| {
-            detail
-                .proposals
-                .into_iter()
-                .map(|proposal| proposal_artifact_summary_from_record(&proposal))
+    snapshot
+        .collaboration
+        .work_units
+        .iter()
+        .filter_map(|work_unit| {
+            let proposal = work_unit.proposal.as_ref()?;
+            Some(ipc::SupervisorProposalArtifactSummary {
+                proposal_id: proposal.latest_proposal_id.clone(),
+                proposal_status: proposal.latest_status,
+                prompt_artifact_present: false,
+                prompt_template_version: None,
+                prompt_hash: None,
+                request_body_hash: None,
+                response_artifact_present: false,
+                response_hash: None,
+                raw_response_body_present: false,
+                raw_response_body_hash: None,
+                reasoner_backend: String::new(),
+                reasoner_model: String::new(),
+                reasoner_response_id: None,
+                parsed_proposal_present: false,
+                approved_proposal_present: false,
+                generation_failure_stage: proposal.latest_failure_stage,
+            })
         })
         .map(|summary| (summary.proposal_id.clone(), summary))
+        .collect()
+}
+
+fn proposal_artifact_summary_lists_from_snapshot(
+    snapshot: &ipc::StateSnapshot,
+) -> HashMap<String, ipc::ProposalArtifactSummaryListForWorkunitResponse> {
+    snapshot
+        .collaboration
+        .work_units
+        .iter()
+        .map(|work_unit| {
+            let work_unit_id = work_unit.id.clone();
+            let summaries = work_unit
+                .proposal
+                .as_ref()
+                .map(|proposal| {
+                    vec![ipc::SupervisorProposalArtifactSummary {
+                        proposal_id: proposal.latest_proposal_id.clone(),
+                        proposal_status: proposal.latest_status,
+                        prompt_artifact_present: false,
+                        prompt_template_version: None,
+                        prompt_hash: None,
+                        request_body_hash: None,
+                        response_artifact_present: false,
+                        response_hash: None,
+                        raw_response_body_present: false,
+                        raw_response_body_hash: None,
+                        reasoner_backend: String::new(),
+                        reasoner_model: String::new(),
+                        reasoner_response_id: None,
+                        parsed_proposal_present: false,
+                        approved_proposal_present: false,
+                        generation_failure_stage: proposal.latest_failure_stage,
+                    }]
+                })
+                .unwrap_or_default();
+            (
+                work_unit_id.clone(),
+                ipc::ProposalArtifactSummaryListForWorkunitResponse {
+                    work_unit_id,
+                    summaries,
+                },
+            )
+        })
         .collect()
 }
 

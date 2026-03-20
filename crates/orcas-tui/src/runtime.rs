@@ -924,6 +924,35 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 )
                 .await
             }
+            Effect::LoadProposalArtifactSummaryListForWorkUnit { work_unit_id } => {
+                let effect = Effect::LoadProposalArtifactSummaryListForWorkUnit {
+                    work_unit_id: work_unit_id.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetProposalArtifactSummaryListForWorkUnit {
+                        work_unit_id: work_unit_id.clone(),
+                    },
+                    |response| match response {
+                        BackendCommandResult::ProposalArtifactSummaryListForWorkUnit(response) => {
+                            vec![Action::Event(UiEvent::ProposalArtifactSummaryListLoaded(
+                                response,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected proposal artifact summary list response: {other:?}"
+                        )))],
+                    },
+                    move |error| {
+                        Action::Event(UiEvent::ProposalArtifactSummaryListLoadFailed {
+                            work_unit_id: work_unit_id.clone(),
+                            message: error.to_string(),
+                        })
+                    },
+                )
+                .await
+            }
             Effect::LoadProposalArtifactDetail { proposal_id } => {
                 let effect = Effect::LoadProposalArtifactDetail {
                     proposal_id: proposal_id.clone(),
@@ -1513,6 +1542,9 @@ fn effect_label(effect: &Effect) -> &'static str {
         Effect::AttachThread { .. } => "attach_thread",
         Effect::LoadTurnState { .. } => "load_turn_state",
         Effect::LoadWorkUnitDetail { .. } => "load_work_unit_detail",
+        Effect::LoadProposalArtifactSummaryListForWorkUnit { .. } => {
+            "load_proposal_artifact_summary_list_for_workunit"
+        }
         Effect::LoadProposalArtifactSummary { .. } => "load_proposal_artifact_summary",
         Effect::LoadProposalArtifactDetail { .. } => "load_proposal_artifact_detail",
         Effect::SubmitPrompt { .. } => "submit_prompt",
@@ -1550,6 +1582,9 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         BackendCommand::AttachThread { .. } => "attach_thread",
         BackendCommand::GetTurn { .. } => "get_turn",
         BackendCommand::GetWorkUnit { .. } => "get_work_unit",
+        BackendCommand::GetProposalArtifactSummaryListForWorkUnit { .. } => {
+            "get_proposal_artifact_summary_list_for_workunit"
+        }
         BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
         BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
         BackendCommand::GetActiveTurns => "get_active_turns",

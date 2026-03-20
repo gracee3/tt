@@ -232,8 +232,16 @@ fn sample_proposal_summary(
     latest_status: SupervisorProposalStatus,
     latest_decision_type: Option<DecisionType>,
 ) -> ipc::WorkUnitProposalSummary {
+    sample_proposal_summary_with_id("proposal-1", latest_status, latest_decision_type)
+}
+
+fn sample_proposal_summary_with_id(
+    proposal_id: &str,
+    latest_status: SupervisorProposalStatus,
+    latest_decision_type: Option<DecisionType>,
+) -> ipc::WorkUnitProposalSummary {
     ipc::WorkUnitProposalSummary {
-        latest_proposal_id: "proposal-1".to_string(),
+        latest_proposal_id: proposal_id.to_string(),
         latest_status,
         latest_proposed_decision_type: latest_decision_type,
         latest_created_at: Utc::now(),
@@ -242,7 +250,7 @@ fn sample_proposal_summary(
         latest_failure_stage: None,
         has_open_proposal: latest_status == SupervisorProposalStatus::Open,
         open_proposal_id: (latest_status == SupervisorProposalStatus::Open)
-            .then(|| "proposal-1".to_string()),
+            .then(|| proposal_id.to_string()),
         open_proposed_decision_type: (latest_status == SupervisorProposalStatus::Open)
             .then_some(latest_decision_type)
             .flatten(),
@@ -567,7 +575,11 @@ fn sample_collaboration_snapshot() -> ipc::CollaborationSnapshot {
                 latest_report_id: Some("report-3".to_string()),
                 proposal: Some(ipc::WorkUnitProposalSummary {
                     latest_failure_stage: Some(SupervisorProposalFailureStage::Backend),
-                    ..sample_proposal_summary(SupervisorProposalStatus::GenerationFailed, None)
+                    ..sample_proposal_summary_with_id(
+                        "proposal-failure-1",
+                        SupervisorProposalStatus::GenerationFailed,
+                        None,
+                    )
                 }),
                 source_kind: ipc::PlanningSummarySourceKind::Collaboration,
                 updated_at: Utc::now(),
@@ -843,7 +855,7 @@ fn sample_workunit_detail(work_unit_id: &str) -> ipc::WorkunitGetResponse {
         }
         "wu-2" => {
             let mut failed = sample_proposal_record(
-                "proposal-1",
+                "proposal-failure-1",
                 "wu-2",
                 "report-3",
                 "assignment-3",
@@ -4731,9 +4743,71 @@ async fn review_proposal_summary_shows_bounded_artifact_metadata() {
     let commands = harness.recorded_commands().await;
     assert!(commands.iter().any(|command| matches!(
         command,
-        BackendCommand::GetProposalArtifactSummary { proposal_id }
-            if proposal_id == "proposal-1"
+        BackendCommand::GetProposalArtifactSummaryListForWorkUnit { work_unit_id }
+            if work_unit_id == "wu-1"
     )));
+}
+
+#[tokio::test]
+async fn review_queue_rows_show_artifact_triage_cues() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let review = harness.review_vm();
+    let proposal_row = review
+        .queue
+        .rows
+        .iter()
+        .find(|row| {
+            matches!(
+                row.selection,
+                ReviewSelection::Proposal {
+                    ref proposal_id,
+                    ..
+                } if proposal_id == "proposal-1"
+            )
+        })
+        .expect("proposal row");
+    assert!(proposal_row.badges.iter().any(|badge| badge == "art:pr"));
+    assert!(proposal_row.badges.iter().any(|badge| badge == "parse+"));
+    assert!(
+        proposal_row
+            .secondary
+            .as_deref()
+            .is_some_and(|secondary| secondary.contains("reasoner=test/test-supervisor"))
+    );
+
+    let failure_row = review
+        .queue
+        .rows
+        .iter()
+        .find(|row| {
+            matches!(
+                row.selection,
+                ReviewSelection::Failure {
+                    ref work_unit_id,
+                    ref proposal_id,
+                } if work_unit_id == "wu-2" && proposal_id == "proposal-failure-1"
+            )
+        })
+        .expect("failure row");
+    assert!(failure_row.badges.iter().any(|badge| badge == "art:pr"));
+    assert!(failure_row.badges.iter().any(|badge| badge == "parse-"));
+    assert!(
+        failure_row
+            .secondary
+            .as_deref()
+            .is_some_and(|secondary| secondary.contains("failure=backend"))
+    );
 }
 
 #[tokio::test]
@@ -4858,11 +4932,10 @@ async fn review_artifact_flow_uses_explicit_summary_and_detail_commands_not_snap
         .await;
 
     let commands = harness.recorded_commands().await;
-    assert!(
-        commands
-            .iter()
-            .any(|command| matches!(command, BackendCommand::GetProposalArtifactSummary { .. }))
-    );
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactSummaryListForWorkUnit { .. }
+    )));
     assert!(
         commands
             .iter()
