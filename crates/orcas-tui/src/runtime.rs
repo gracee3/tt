@@ -980,6 +980,52 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 )
                 .await
             }
+            Effect::ExportProposalArtifact {
+                proposal_id,
+                destination,
+            } => {
+                let effect = Effect::ExportProposalArtifact {
+                    proposal_id: proposal_id.clone(),
+                    destination: destination.clone(),
+                };
+                let success_proposal_id = proposal_id.clone();
+                let success_destination = destination.clone();
+                let failure_proposal_id = proposal_id.clone();
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetProposalArtifactExport {
+                        proposal_id: proposal_id.clone(),
+                    },
+                    move |response| match response {
+                        BackendCommandResult::ProposalArtifactExport(export) => {
+                            vec![Action::Event(
+                                match write_proposal_artifact_export(&success_destination, &export)
+                                {
+                                    Ok(()) => UiEvent::ProposalArtifactExported {
+                                        proposal_id: success_proposal_id.clone(),
+                                        destination: success_destination.clone(),
+                                    },
+                                    Err(error) => UiEvent::ProposalArtifactExportFailed {
+                                        proposal_id: success_proposal_id.clone(),
+                                        message: error.to_string(),
+                                    },
+                                },
+                            )]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected proposal artifact export response: {other:?}"
+                        )))],
+                    },
+                    move |error| {
+                        Action::Event(UiEvent::ProposalArtifactExportFailed {
+                            proposal_id: failure_proposal_id.clone(),
+                            message: error.to_string(),
+                        })
+                    },
+                )
+                .await
+            }
             effect @ Effect::LoadModels => {
                 Self::run_backend_effect(
                     backend,
@@ -1518,6 +1564,19 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 }
 
+fn write_proposal_artifact_export(
+    destination: &str,
+    export: &orcas_core::ipc::SupervisorProposalArtifactExport,
+) -> Result<()> {
+    let path = std::path::Path::new(destination);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let serialized = serde_json::to_string_pretty(export)?;
+    std::fs::write(path, serialized)?;
+    Ok(())
+}
+
 fn effect_label(effect: &Effect) -> &'static str {
     match effect {
         Effect::RefreshSnapshot => "refresh_snapshot",
@@ -1547,6 +1606,7 @@ fn effect_label(effect: &Effect) -> &'static str {
         }
         Effect::LoadProposalArtifactSummary { .. } => "load_proposal_artifact_summary",
         Effect::LoadProposalArtifactDetail { .. } => "load_proposal_artifact_detail",
+        Effect::ExportProposalArtifact { .. } => "export_proposal_artifact",
         Effect::SubmitPrompt { .. } => "submit_prompt",
         Effect::ProposeSteerDecision { .. } => "propose_steer_decision",
         Effect::ReplacePendingSteerDecision { .. } => "replace_pending_steer_decision",
@@ -1587,6 +1647,7 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         }
         BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
         BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
+        BackendCommand::GetProposalArtifactExport { .. } => "get_proposal_artifact_export",
         BackendCommand::GetActiveTurns => "get_active_turns",
         BackendCommand::LoadModels => "load_models",
         BackendCommand::StartDaemon => "start_daemon",
@@ -1680,6 +1741,14 @@ fn user_action_label(action: &UserAction) -> &'static str {
         UserAction::OpenSelectedProposalArtifactDetail => "open_selected_proposal_artifact_detail",
         UserAction::CloseReviewArtifactDetail => "close_review_artifact_detail",
         UserAction::ScrollReviewArtifactDetail(_) => "scroll_review_artifact_detail",
+        UserAction::OpenSelectedProposalArtifactExport => "open_selected_proposal_artifact_export",
+        UserAction::CloseReviewArtifactExport => "close_review_artifact_export",
+        UserAction::SubmitReviewArtifactExport => "submit_review_artifact_export",
+        UserAction::ReviewArtifactExportAppend(_) => "review_artifact_export_append",
+        UserAction::ReviewArtifactExportBackspace => "review_artifact_export_backspace",
+        UserAction::ReviewArtifactExportDelete => "review_artifact_export_delete",
+        UserAction::ReviewArtifactExportMoveLeft => "review_artifact_export_move_left",
+        UserAction::ReviewArtifactExportMoveRight => "review_artifact_export_move_right",
     }
 }
 

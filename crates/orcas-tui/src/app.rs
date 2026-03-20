@@ -214,12 +214,21 @@ pub struct ReviewViewState {
     pub scroll_offset: usize,
     pub selection_anchor: usize,
     pub artifact_detail: Option<ReviewArtifactDetailState>,
+    pub artifact_export: Option<ReviewArtifactExportState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewArtifactDetailState {
     pub proposal_id: String,
     pub scroll_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewArtifactExportState {
+    pub proposal_id: String,
+    pub destination: FooterFieldState,
+    pub in_flight: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -373,6 +382,14 @@ pub enum UserAction {
     OpenSelectedProposalArtifactDetail,
     CloseReviewArtifactDetail,
     ScrollReviewArtifactDetail(i16),
+    OpenSelectedProposalArtifactExport,
+    CloseReviewArtifactExport,
+    SubmitReviewArtifactExport,
+    ReviewArtifactExportAppend(char),
+    ReviewArtifactExportBackspace,
+    ReviewArtifactExportDelete,
+    ReviewArtifactExportMoveLeft,
+    ReviewArtifactExportMoveRight,
 }
 
 #[derive(Debug, Clone)]
@@ -463,6 +480,14 @@ pub enum UiEvent {
     },
     ProposalArtifactDetailLoaded(ipc::SupervisorProposalArtifactDetail),
     ProposalArtifactDetailLoadFailed {
+        proposal_id: String,
+        message: String,
+    },
+    ProposalArtifactExported {
+        proposal_id: String,
+        destination: String,
+    },
+    ProposalArtifactExportFailed {
         proposal_id: String,
         message: String,
     },
@@ -624,6 +649,10 @@ pub enum Effect {
     },
     LoadProposalArtifactDetail {
         proposal_id: String,
+    },
+    ExportProposalArtifact {
+        proposal_id: String,
+        destination: String,
     },
     SubmitPrompt {
         thread_id: String,
@@ -1192,6 +1221,7 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 });
                 return Vec::new();
             };
+            state.review_view.artifact_export = None;
             state.review_view.artifact_detail = Some(ReviewArtifactDetailState {
                 proposal_id: proposal_id.clone(),
                 scroll_offset: 0,
@@ -1234,6 +1264,111 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 } else {
                     detail.scroll_offset = detail.scroll_offset.saturating_add(delta as usize);
                 }
+            }
+            Vec::new()
+        }
+        UserAction::OpenSelectedProposalArtifactExport => {
+            let Some(proposal_id) = selected_review_proposal_id(state).map(ToOwned::to_owned)
+            else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a proposal or failure row to export artifacts.".to_string(),
+                });
+                return Vec::new();
+            };
+            state.review_view.artifact_detail = None;
+            state.review_view.artifact_export = Some(ReviewArtifactExportState {
+                proposal_id: proposal_id.clone(),
+                destination: FooterFieldState::new(default_review_artifact_export_path(
+                    proposal_id.as_str(),
+                )),
+                in_flight: false,
+                error: None,
+            });
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!(
+                    "Preparing JSON artifact export for proposal {}.",
+                    proposal_id
+                ),
+            });
+            Vec::new()
+        }
+        UserAction::CloseReviewArtifactExport => {
+            if state.review_view.artifact_export.take().is_some() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Info,
+                    message: "Cancelled proposal artifact export.".to_string(),
+                });
+            }
+            Vec::new()
+        }
+        UserAction::SubmitReviewArtifactExport => {
+            let Some(export) = state.review_view.artifact_export.as_mut() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "No proposal artifact export is active.".to_string(),
+                });
+                return Vec::new();
+            };
+            let destination = export.destination.value.trim().to_string();
+            if destination.is_empty() {
+                export.error = Some("Destination path must not be empty.".to_string());
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Destination path must not be empty.".to_string(),
+                });
+                return Vec::new();
+            }
+            export.destination = FooterFieldState::new(destination.clone());
+            export.in_flight = true;
+            export.error = None;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Exporting proposal artifact to {}...", destination),
+            });
+            vec![Effect::ExportProposalArtifact {
+                proposal_id: export.proposal_id.clone(),
+                destination,
+            }]
+        }
+        UserAction::ReviewArtifactExportAppend(ch) => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_insert(&mut export.destination, ch);
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportBackspace => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_backspace(&mut export.destination);
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportDelete => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_delete(&mut export.destination);
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportMoveLeft => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_move_left(&mut export.destination);
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportMoveRight => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_move_right(&mut export.destination);
+                export.error = None;
+                state.banner = None;
             }
             Vec::new()
         }
@@ -1962,6 +2097,38 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 ),
             });
         }
+        UiEvent::ProposalArtifactExported {
+            proposal_id,
+            destination,
+        } => {
+            if state
+                .review_view
+                .artifact_export
+                .as_ref()
+                .is_some_and(|export| export.proposal_id == proposal_id)
+            {
+                state.review_view.artifact_export = None;
+            }
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Exported proposal artifact {proposal_id} to {destination}."),
+            });
+        }
+        UiEvent::ProposalArtifactExportFailed {
+            proposal_id,
+            message,
+        } => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                if export.proposal_id == proposal_id {
+                    export.in_flight = false;
+                    export.error = Some(message.clone());
+                }
+            }
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Error,
+                message: format!("Proposal artifact export failed for {proposal_id}: {message}"),
+            });
+        }
         UiEvent::WorkUnitDetailLoaded(detail) => {
             state
                 .work_unit_details
@@ -2206,6 +2373,7 @@ fn reconcile_review_view(state: &mut AppState) {
         state.review_view.scroll_offset = 0;
         state.review_view.selection_anchor = 0;
         state.review_view.artifact_detail = None;
+        state.review_view.artifact_export = None;
         return;
     }
 
@@ -2237,6 +2405,21 @@ fn reconcile_review_view(state: &mut AppState) {
         })
     {
         state.review_view.artifact_detail = None;
+    }
+    if state
+        .review_view
+        .artifact_export
+        .as_ref()
+        .is_some_and(|export| {
+            state
+                .review_view
+                .selected
+                .as_ref()
+                .and_then(review_selection_proposal_id)
+                != Some(export.proposal_id.as_str())
+        })
+    {
+        state.review_view.artifact_export = None;
     }
 }
 
@@ -2755,6 +2938,14 @@ fn selected_review_proposal_id(state: &AppState) -> Option<&str> {
         .selected
         .as_ref()
         .and_then(review_selection_proposal_id)
+}
+
+fn default_review_artifact_export_path(proposal_id: &str) -> String {
+    std::env::temp_dir()
+        .join("orcas-proposal-exports")
+        .join(format!("{proposal_id}.json"))
+        .display()
+        .to_string()
 }
 
 fn expand_main_selection_ancestors(state: &mut AppState, selection: &MainHierarchySelection) {
@@ -4431,7 +4622,9 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
         | UiEvent::ProposalArtifactSummaryLoaded(_)
         | UiEvent::ProposalArtifactSummaryLoadFailed { .. }
         | UiEvent::ProposalArtifactDetailLoaded(_)
-        | UiEvent::ProposalArtifactDetailLoadFailed { .. } => return None,
+        | UiEvent::ProposalArtifactDetailLoadFailed { .. }
+        | UiEvent::ProposalArtifactExported { .. }
+        | UiEvent::ProposalArtifactExportFailed { .. } => return None,
         UiEvent::Ignored => return None,
         UiEvent::CodexSessionsChanged { .. } => return None,
         UiEvent::ReconnectScheduled { attempt, .. } => (
