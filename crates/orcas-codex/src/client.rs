@@ -586,3 +586,597 @@ impl CodexClient {
         let _ = self.event_tx.send(event);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+
+    use async_trait::async_trait;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    use orcas_core::{OrcasError, ReconnectPolicy};
+
+    use crate::approval::{ApprovalDecision, ApprovalRouter};
+    use crate::protocol::jsonrpc::{
+        JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    };
+    use crate::transport::{CodexTransport, TransportConnection};
+
+    use super::*;
+
+    struct ScriptedTransport {
+        endpoint: String,
+        connections: StdMutex<VecDeque<OrcasResult<TransportConnection>>>,
+    }
+
+    impl ScriptedTransport {
+        fn new(connections: Vec<OrcasResult<TransportConnection>>) -> Self {
+            Self {
+                endpoint: "test://codex".to_string(),
+                connections: StdMutex::new(connections.into()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl CodexTransport for ScriptedTransport {
+        async fn connect(&self) -> OrcasResult<TransportConnection> {
+            self.connections
+                .lock()
+                .expect("scripted transport lock poisoned")
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(OrcasError::Transport(
+                        "no scripted Codex connections remain".to_string(),
+                    ))
+                })
+        }
+
+        fn endpoint(&self) -> &str {
+            &self.endpoint
+        }
+    }
+
+    struct ScriptedServer {
+        inbound_tx: Option<mpsc::Sender<String>>,
+        outbound_rx: mpsc::Receiver<String>,
+    }
+
+    impl ScriptedServer {
+        async fn recv_message(&mut self) -> JsonRpcMessage {
+            let raw = self
+                .outbound_rx
+                .recv()
+                .await
+                .expect("expected client outbound payload");
+            serde_json::from_str(&raw).expect("client outbound should be valid JSON-RPC")
+        }
+
+        async fn send_message(&self, message: JsonRpcMessage) {
+            let raw = serde_json::to_string(&message).expect("serialize scripted server message");
+            self.send_raw(&raw).await;
+        }
+
+        async fn send_raw(&self, raw: &str) {
+            self.inbound_tx
+                .as_ref()
+                .expect("scripted server connection already closed")
+                .send(raw.to_string())
+                .await
+                .expect("send scripted inbound payload");
+        }
+
+        fn close(&mut self) {
+            self.inbound_tx = None;
+        }
+    }
+
+    fn scripted_connection() -> (TransportConnection, ScriptedServer) {
+        let (outbound_tx, outbound_rx) = mpsc::channel::<String>(32);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<String>(32);
+        (
+            TransportConnection {
+                outbound: outbound_tx,
+                inbound: inbound_rx,
+            },
+            ScriptedServer {
+                inbound_tx: Some(inbound_tx),
+                outbound_rx,
+            },
+        )
+    }
+
+    #[derive(Clone)]
+    struct StaticApprovalRouter {
+        decision: ApprovalDecision,
+    }
+
+    #[async_trait]
+    impl ApprovalRouter for StaticApprovalRouter {
+        async fn resolve(
+            &self,
+            _method: &str,
+            _params: Option<Value>,
+        ) -> OrcasResult<ApprovalDecision> {
+            Ok(self.decision.clone())
+        }
+    }
+
+    fn reconnect_policy(max_attempts: Option<u32>) -> ReconnectPolicy {
+        ReconnectPolicy {
+            initial_delay_ms: 0,
+            max_delay_ms: 0,
+            multiplier: 1.0,
+            max_attempts,
+        }
+    }
+
+    fn initialize_params() -> types::InitializeParams {
+        types::InitializeParams {
+            client_info: types::ClientInfo {
+                name: "orcas-tests".to_string(),
+                title: Some("Tests".to_string()),
+                version: "0.1.0".to_string(),
+            },
+            capabilities: Some(types::InitializeCapabilities {
+                experimental_api: true,
+                opt_out_notification_methods: None,
+            }),
+        }
+    }
+
+    fn sample_thread(id: &str, preview: &str) -> types::Thread {
+        types::Thread {
+            id: id.to_string(),
+            preview: preview.to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: types::ThreadStatus::Idle,
+            path: None,
+            cwd: "/tmp".to_string(),
+            cli_version: "0.1.0".to_string(),
+            source: None,
+            name: Some(format!("Thread {id}")),
+            turns: Vec::new(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    async fn recv_request(server: &mut ScriptedServer) -> JsonRpcRequest {
+        match server.recv_message().await {
+            JsonRpcMessage::Request(request) => request,
+            other => panic!("expected request, got {other:?}"),
+        }
+    }
+
+    async fn recv_notification(server: &mut ScriptedServer) -> JsonRpcNotification {
+        match server.recv_message().await {
+            JsonRpcMessage::Notification(notification) => notification,
+            other => panic!("expected notification, got {other:?}"),
+        }
+    }
+
+    async fn recv_connection_event(events: &mut EventSubscription) -> String {
+        loop {
+            let event = events.recv().await.expect("connection event");
+            if let OrcasEvent::ConnectionStateChanged(state) = event.event {
+                return state.status;
+            }
+        }
+    }
+
+    async fn complete_initialize(server: &mut ScriptedServer) -> RequestId {
+        let initialize = recv_request(server).await;
+        assert_eq!(initialize.method, methods::INITIALIZE);
+        let request_id = initialize.id.clone();
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request_id.clone(),
+                result: serde_json::to_value(types::InitializeResponse {
+                    server_info: Some(types::ServerInfo {
+                        name: Some("codex".to_string()),
+                        version: Some("1.0.0".to_string()),
+                    }),
+                    user_agent: Some("codex-tests".to_string()),
+                    platform_family: None,
+                    platform_os: None,
+                })
+                .expect("serialize initialize response"),
+            }))
+            .await;
+        let initialized = recv_notification(server).await;
+        assert_eq!(initialized.method, methods::INITIALIZED);
+        request_id
+    }
+
+    #[tokio::test]
+    async fn initialize_handshake_only_happens_once_after_explicit_initialize() {
+        let (connection, mut server) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![Ok(connection)])),
+            reconnect_policy(Some(0)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        client.connect().await.expect("connect client");
+        let response_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.initialize(initialize_params()).await })
+        };
+        let initialize_id = complete_initialize(&mut server).await;
+        let response = response_task
+            .await
+            .expect("join initialize task")
+            .expect("initialize response");
+        assert_eq!(
+            response.server_info.and_then(|info| info.name),
+            Some("codex".to_string())
+        );
+        assert_eq!(initialize_id, RequestId::Integer(1));
+
+        let model_list_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.model_list(types::ModelListParams::default()).await })
+        };
+        let model_request = recv_request(&mut server).await;
+        assert_eq!(model_request.method, methods::MODEL_LIST);
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: model_request.id,
+                result: serde_json::to_value(types::ModelListResponse {
+                    data: vec![types::Model {
+                        id: "gpt-5.4".to_string(),
+                        model: "gpt-5.4".to_string(),
+                        display_name: "GPT-5.4".to_string(),
+                        description: "test".to_string(),
+                        hidden: false,
+                        is_default: true,
+                    }],
+                    next_cursor: None,
+                })
+                .expect("serialize model list response"),
+            }))
+            .await;
+        let models = model_list_task
+            .await
+            .expect("join model list task")
+            .expect("model list response");
+        assert_eq!(models.data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_resolve_by_request_id() {
+        let (connection, mut server) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![Ok(connection)])),
+            reconnect_policy(Some(0)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        client.connect().await.expect("connect client");
+        let initialize_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.initialize(initialize_params()).await })
+        };
+        complete_initialize(&mut server).await;
+        initialize_task
+            .await
+            .expect("join initialize task")
+            .expect("initialize succeeds");
+
+        let model_list = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.model_list(types::ModelListParams::default()).await })
+        };
+        let thread_list = {
+            let client = Arc::clone(&client);
+            tokio::spawn(
+                async move { client.thread_list(types::ThreadListParams::default()).await },
+            )
+        };
+
+        let first = recv_request(&mut server).await;
+        let second = recv_request(&mut server).await;
+        assert_ne!(first.id, second.id);
+
+        for request in [&second, &first] {
+            let response = match request.method.as_str() {
+                methods::MODEL_LIST => JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: serde_json::to_value(types::ModelListResponse {
+                        data: vec![types::Model {
+                            id: "gpt-5.4-mini".to_string(),
+                            model: "gpt-5.4-mini".to_string(),
+                            display_name: "GPT-5.4 Mini".to_string(),
+                            description: "test".to_string(),
+                            hidden: false,
+                            is_default: false,
+                        }],
+                        next_cursor: None,
+                    })
+                    .expect("serialize model response"),
+                }),
+                methods::THREAD_LIST => JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: serde_json::to_value(types::ThreadListResponse {
+                        data: vec![sample_thread("thread-1", "hello")],
+                        next_cursor: None,
+                    })
+                    .expect("serialize thread response"),
+                }),
+                other => panic!("unexpected request method {other}"),
+            };
+            server.send_message(response).await;
+        }
+
+        let models = model_list
+            .await
+            .expect("join model list")
+            .expect("model list succeeds");
+        let threads = thread_list
+            .await
+            .expect("join thread list")
+            .expect("thread list succeeds");
+
+        assert_eq!(models.data[0].id, "gpt-5.4-mini");
+        assert_eq!(threads.data[0].id, "thread-1");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_timeout_cleans_up_pending_and_allows_future_requests() {
+        let (connection, mut server) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![Ok(connection)])),
+            reconnect_policy(Some(0)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        client.connect().await.expect("connect client");
+        let initialize_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.initialize(initialize_params()).await })
+        };
+        complete_initialize(&mut server).await;
+        initialize_task
+            .await
+            .expect("join initialize task")
+            .expect("initialize succeeds");
+
+        let timed_out_request = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.model_list(types::ModelListParams::default()).await })
+        };
+        let model_request = recv_request(&mut server).await;
+        assert_eq!(model_request.method, methods::MODEL_LIST);
+
+        tokio::time::advance(CodexClient::REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let error = timed_out_request
+            .await
+            .expect("join timed out request")
+            .expect_err("request should time out");
+        assert!(
+            matches!(error, OrcasError::Transport(message) if message.contains("timed out waiting for `model/list` response"))
+        );
+
+        let thread_list = {
+            let client = Arc::clone(&client);
+            tokio::spawn(
+                async move { client.thread_list(types::ThreadListParams::default()).await },
+            )
+        };
+        let thread_request = recv_request(&mut server).await;
+        assert_eq!(thread_request.method, methods::THREAD_LIST);
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: thread_request.id,
+                result: serde_json::to_value(types::ThreadListResponse {
+                    data: vec![sample_thread("thread-after-timeout", "recovered")],
+                    next_cursor: None,
+                })
+                .expect("serialize thread list response"),
+            }))
+            .await;
+        let response = thread_list
+            .await
+            .expect("join recovery request")
+            .expect("recovery request succeeds");
+        assert_eq!(response.data[0].id, "thread-after-timeout");
+    }
+
+    #[tokio::test]
+    async fn reconnect_reinitializes_before_followup_requests() {
+        let (connection_one, mut server_one) = scripted_connection();
+        let (connection_two, mut server_two) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![
+                Ok(connection_one),
+                Ok(connection_two),
+            ])),
+            reconnect_policy(Some(1)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        let mut events = client.subscribe();
+        client.connect().await.expect("connect client");
+        assert_eq!(recv_connection_event(&mut events).await, "connecting");
+        assert_eq!(recv_connection_event(&mut events).await, "connected");
+
+        let initialize_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.initialize(initialize_params()).await })
+        };
+        complete_initialize(&mut server_one).await;
+        initialize_task
+            .await
+            .expect("join initialize task")
+            .expect("initialize succeeds");
+
+        server_one.close();
+        assert_eq!(recv_connection_event(&mut events).await, "disconnected");
+        assert_eq!(recv_connection_event(&mut events).await, "connecting");
+        assert_eq!(recv_connection_event(&mut events).await, "connected");
+
+        let model_list = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.model_list(types::ModelListParams::default()).await })
+        };
+        complete_initialize(&mut server_two).await;
+        let request = recv_request(&mut server_two).await;
+        assert_eq!(request.method, methods::MODEL_LIST);
+        server_two
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: serde_json::to_value(types::ModelListResponse {
+                    data: vec![types::Model {
+                        id: "gpt-reconnected".to_string(),
+                        model: "gpt-reconnected".to_string(),
+                        display_name: "GPT Reconnected".to_string(),
+                        description: "test".to_string(),
+                        hidden: false,
+                        is_default: false,
+                    }],
+                    next_cursor: None,
+                })
+                .expect("serialize model list response"),
+            }))
+            .await;
+
+        let response = model_list
+            .await
+            .expect("join reconnect request")
+            .expect("request succeeds after reconnect");
+        assert_eq!(response.data[0].id, "gpt-reconnected");
+    }
+
+    #[tokio::test]
+    async fn notifications_and_server_requests_are_mapped_to_events_and_responses() {
+        let (connection, mut server) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![Ok(connection)])),
+            reconnect_policy(Some(0)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        let mut events = client.subscribe();
+        client.connect().await.expect("connect client");
+        assert_eq!(recv_connection_event(&mut events).await, "connecting");
+        assert_eq!(recv_connection_event(&mut events).await, "connected");
+
+        server.send_raw("not-json").await;
+        match events.recv().await.expect("warning event").event {
+            OrcasEvent::Warning { message } => {
+                assert!(message.contains("failed to decode JSON-RPC message"));
+            }
+            other => panic!("expected warning event, got {other:?}"),
+        }
+
+        let thread = sample_thread("thread-42", "preview");
+        server
+            .send_message(JsonRpcMessage::Notification(JsonRpcNotification::new(
+                methods::THREAD_STARTED,
+                Some(
+                    serde_json::to_value(types::ThreadStartedNotification {
+                        thread: thread.clone(),
+                    })
+                    .expect("serialize thread started notification"),
+                ),
+            )))
+            .await;
+        match events.recv().await.expect("thread started event").event {
+            OrcasEvent::ThreadStarted { thread_id, preview } => {
+                assert_eq!(thread_id, "thread-42");
+                assert_eq!(preview, "preview");
+            }
+            other => panic!("expected thread started event, got {other:?}"),
+        }
+        assert_eq!(
+            client
+                .snapshot_thread("thread-42")
+                .await
+                .expect("thread snapshot cached")
+                .preview,
+            "preview"
+        );
+
+        server
+            .send_message(JsonRpcMessage::Request(JsonRpcRequest::new(
+                RequestId::Integer(77),
+                "approval/request",
+                Some(json!({ "path": "src/lib.rs" })),
+            )))
+            .await;
+        match events.recv().await.expect("server request event").event {
+            OrcasEvent::ServerRequest { method } => {
+                assert_eq!(method, "approval/request");
+            }
+            other => panic!("expected server request event, got {other:?}"),
+        }
+        match server.recv_message().await {
+            JsonRpcMessage::Response(JsonRpcResponse { id, result, .. }) => {
+                assert_eq!(id, RequestId::Integer(77));
+                assert_eq!(result, json!({"approved": true}));
+            }
+            other => panic!("expected approval response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_fails_pending_request() {
+        let (connection, mut server) = scripted_connection();
+        let client = CodexClient::new(
+            Arc::new(ScriptedTransport::new(vec![Ok(connection)])),
+            reconnect_policy(Some(0)),
+            Arc::new(StaticApprovalRouter {
+                decision: ApprovalDecision::Result(json!({"approved": true})),
+            }),
+        );
+
+        client.connect().await.expect("connect client");
+        let initialize_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.initialize(initialize_params()).await })
+        };
+        complete_initialize(&mut server).await;
+        initialize_task
+            .await
+            .expect("join initialize task")
+            .expect("initialize succeeds");
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.model_list(types::ModelListParams::default()).await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, methods::MODEL_LIST);
+        server.close();
+
+        let error = pending
+            .await
+            .expect("join pending request")
+            .expect_err("disconnect should fail pending request");
+        assert!(
+            matches!(error, OrcasError::Transport(message) if message.contains("transport disconnected"))
+        );
+    }
+}

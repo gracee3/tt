@@ -749,3 +749,344 @@ impl OrcasIpcClient {
         serde_json::from_value(response).map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use serde_json::json;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+    use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+
+    use orcas_core::ipc::{
+        self, CollaborationSnapshot, DaemonEvent, DaemonEventEnvelope, DaemonRuntimeMetadata,
+        SessionState, StateSnapshot, ThreadSummary, ThreadView,
+    };
+
+    use super::*;
+
+    struct IpcTestServer {
+        lines: Lines<BufReader<OwnedReadHalf>>,
+        write: Option<OwnedWriteHalf>,
+    }
+
+    impl IpcTestServer {
+        async fn recv_message(&mut self) -> JsonRpcMessage {
+            let line = self
+                .lines
+                .next_line()
+                .await
+                .expect("read server line")
+                .expect("expected client request line");
+            serde_json::from_str(&line).expect("client request should be valid JSON-RPC")
+        }
+
+        async fn send_message(&mut self, message: JsonRpcMessage) {
+            let raw = serde_json::to_string(&message).expect("serialize server message");
+            self.send_raw(&raw).await;
+        }
+
+        async fn send_raw(&mut self, raw: &str) {
+            let write = self
+                .write
+                .as_mut()
+                .expect("server write half already closed");
+            write
+                .write_all(raw.as_bytes())
+                .await
+                .expect("write raw server payload");
+            write.write_all(b"\n").await.expect("write server newline");
+            write.flush().await.expect("flush server payload");
+        }
+
+        fn close(&mut self) {
+            self.write = None;
+        }
+    }
+
+    fn test_client_and_server() -> (Arc<OrcasIpcClient>, IpcTestServer) {
+        let (client_stream, server_stream) = UnixStream::pair().expect("create UnixStream pair");
+        let client = OrcasIpcClient::from_stream(client_stream).expect("create ipc client");
+        let (read_half, write_half) = server_stream.into_split();
+        (
+            client,
+            IpcTestServer {
+                lines: BufReader::new(read_half).lines(),
+                write: Some(write_half),
+            },
+        )
+    }
+
+    fn sample_daemon_status() -> ipc::DaemonStatusResponse {
+        ipc::DaemonStatusResponse {
+            socket_path: "/tmp/orcas.sock".to_string(),
+            metadata_path: "/tmp/orcas.json".to_string(),
+            codex_endpoint: "ws://codex.test".to_string(),
+            codex_binary_path: "/usr/bin/codex".to_string(),
+            upstream: orcas_core::ConnectionState {
+                endpoint: "ws://codex.test".to_string(),
+                status: "connected".to_string(),
+                detail: None,
+            },
+            client_count: 2,
+            known_threads: 1,
+            runtime: DaemonRuntimeMetadata {
+                pid: 1000,
+                started_at: Utc::now(),
+                version: "0.1.0".to_string(),
+                build_fingerprint: "test-build".to_string(),
+                binary_path: "/usr/bin/orcasd".to_string(),
+                socket_path: "/tmp/orcas.sock".to_string(),
+                metadata_path: "/tmp/orcas.json".to_string(),
+                git_commit: Some("deadbeef".to_string()),
+            },
+        }
+    }
+
+    fn sample_thread_summary(id: &str) -> ThreadSummary {
+        ThreadSummary {
+            id: id.to_string(),
+            preview: "thread preview".to_string(),
+            name: Some("Thread".to_string()),
+            model_provider: "openai".to_string(),
+            cwd: "/tmp".to_string(),
+            status: "idle".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            scope: "workspace".to_string(),
+            archived: false,
+            loaded_status: ipc::ThreadLoadedStatus::Idle,
+            active_flags: Vec::new(),
+            active_turn_id: None,
+            last_seen_turn_id: None,
+            recent_output: Some("output".to_string()),
+            recent_event: Some("event".to_string()),
+            turn_in_flight: false,
+            monitor_state: ipc::ThreadMonitorState::Detached,
+            last_sync_at: Utc::now(),
+            source_kind: Some("workspace".to_string()),
+            raw_summary: None,
+        }
+    }
+
+    fn sample_snapshot() -> StateSnapshot {
+        StateSnapshot {
+            daemon: sample_daemon_status(),
+            session: SessionState::default(),
+            threads: vec![sample_thread_summary("thread-1")],
+            active_thread: Some(ThreadView {
+                summary: sample_thread_summary("thread-1"),
+                history_loaded: true,
+                turns: Vec::new(),
+            }),
+            collaboration: CollaborationSnapshot::default(),
+            recent_events: Vec::new(),
+        }
+    }
+
+    async fn recv_request(server: &mut IpcTestServer) -> JsonRpcRequest {
+        match server.recv_message().await {
+            JsonRpcMessage::Request(request) => request,
+            other => panic!("expected request, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_status_round_trip_uses_jsonrpc_newline_framing() {
+        let (client, mut server) = test_client_and_server();
+
+        let response_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.daemon_status().await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::DAEMON_STATUS);
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: serde_json::to_value(sample_daemon_status())
+                    .expect("serialize daemon status response"),
+            }))
+            .await;
+
+        let response = response_task
+            .await
+            .expect("join daemon status task")
+            .expect("daemon status succeeds");
+        assert_eq!(response.client_count, 2);
+        assert_eq!(response.runtime.pid, 1000);
+    }
+
+    #[tokio::test]
+    async fn jsonrpc_errors_are_propagated() {
+        let (client, mut server) = test_client_and_server();
+
+        let response_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.daemon_status().await })
+        };
+        let request = recv_request(&mut server).await;
+        server
+            .send_message(JsonRpcMessage::Error(JsonRpcError {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                error: JsonRpcErrorObject {
+                    code: -32001,
+                    message: "daemon unavailable".to_string(),
+                    data: None,
+                },
+            }))
+            .await;
+
+        let error = response_task
+            .await
+            .expect("join daemon status task")
+            .expect_err("request should fail");
+        assert!(
+            matches!(error, OrcasError::Protocol(message) if message.contains("json-rpc error -32001: daemon unavailable"))
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_events_returns_snapshot_and_fanouts_notifications() {
+        let (client, mut server) = test_client_and_server();
+        let mut secondary = client.subscribe();
+
+        let subscribe_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.subscribe_events(true).await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::EVENTS_SUBSCRIBE);
+        assert_eq!(
+            request.params.expect("subscribe params")["include_snapshot"],
+            json!(true)
+        );
+        let snapshot = sample_snapshot();
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: serde_json::to_value(ipc::EventsSubscribeResponse {
+                    subscribed: true,
+                    snapshot: Some(snapshot.clone()),
+                })
+                .expect("serialize events subscribe response"),
+            }))
+            .await;
+
+        let (mut primary, returned_snapshot) = subscribe_task
+            .await
+            .expect("join subscribe task")
+            .expect("subscribe succeeds");
+        let returned_snapshot = returned_snapshot.expect("snapshot should be included");
+        assert_eq!(returned_snapshot.threads[0].id, snapshot.threads[0].id);
+
+        for message in ["first", "second"] {
+            server
+                .send_message(JsonRpcMessage::Notification(JsonRpcNotification::new(
+                    ipc::methods::EVENTS_NOTIFICATION,
+                    Some(
+                        serde_json::to_value(ipc::EventsNotification {
+                            event: DaemonEventEnvelope::new(DaemonEvent::Warning {
+                                message: message.to_string(),
+                            }),
+                        })
+                        .expect("serialize events notification"),
+                    ),
+                )))
+                .await;
+        }
+
+        let primary_first = primary.recv().await.expect("primary first notification");
+        let secondary_first = secondary
+            .recv()
+            .await
+            .expect("secondary first notification");
+        let primary_second = primary.recv().await.expect("primary second notification");
+
+        match primary_first.event {
+            DaemonEvent::Warning { message } => assert_eq!(message, "first"),
+            other => panic!("expected warning event, got {other:?}"),
+        }
+        match secondary_first.event {
+            DaemonEvent::Warning { message } => assert_eq!(message, "first"),
+            other => panic!("expected warning event, got {other:?}"),
+        }
+        match primary_second.event {
+            DaemonEvent::Warning { message } => assert_eq!(message, "second"),
+            other => panic!("expected warning event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn server_requests_are_rejected_with_method_not_found() {
+        let (client, mut server) = test_client_and_server();
+        drop(client);
+
+        server
+            .send_message(JsonRpcMessage::Request(JsonRpcRequest::new(
+                RequestId::Integer(41),
+                "daemon/push",
+                None,
+            )))
+            .await;
+
+        match server.recv_message().await {
+            JsonRpcMessage::Error(JsonRpcError { id, error, .. }) => {
+                assert_eq!(id, RequestId::Integer(41));
+                assert_eq!(error.code, -32601);
+                assert_eq!(error.message, "Orcas IPC client does not serve requests");
+            }
+            other => panic!("expected method-not-found error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_payload_fails_pending_request() {
+        let (client, mut server) = test_client_and_server();
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.state_get().await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::STATE_GET);
+        server.send_raw("not-json").await;
+
+        let error = pending
+            .await
+            .expect("join pending request")
+            .expect_err("invalid payload should fail request");
+        match error {
+            OrcasError::Transport(message) => {
+                assert!(!message.is_empty());
+                assert_ne!(message, "Orcas daemon connection closed");
+            }
+            other => panic!("expected transport error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn server_close_fails_pending_request() {
+        let (client, mut server) = test_client_and_server();
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.state_get().await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::STATE_GET);
+        server.close();
+
+        let error = pending
+            .await
+            .expect("join pending request")
+            .expect_err("closed server should fail request");
+        assert!(
+            matches!(error, OrcasError::Transport(message) if message.contains("Orcas daemon connection closed"))
+        );
+    }
+}
