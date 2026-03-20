@@ -51,3 +51,73 @@ impl From<OrcasError> for ApprovalDecision {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{ApprovalDecision, ApprovalRouter, RejectingApprovalRouter};
+    use orcas_core::OrcasError;
+
+    #[tokio::test]
+    async fn rejecting_router_returns_method_specific_server_error() {
+        let router = RejectingApprovalRouter;
+
+        let decision = router
+            .resolve("approval/request", Some(json!({"scope":"sandbox"})))
+            .await
+            .expect("router should return decision");
+
+        match decision {
+            ApprovalDecision::Error {
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(code, -32_000);
+                assert_eq!(
+                    message,
+                    "orcas does not yet handle server request `approval/request`"
+                );
+                assert!(data.is_none());
+            }
+            other => panic!("unexpected approval decision: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_conversion_builds_standard_error_shape() {
+        let decision = ApprovalDecision::from("approval rejected");
+
+        match decision {
+            ApprovalDecision::Error {
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(code, -32_000);
+                assert_eq!(message, "approval rejected");
+                assert!(data.is_none());
+            }
+            other => panic!("unexpected approval decision: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orcas_error_conversion_preserves_display_message() {
+        let decision = ApprovalDecision::from(OrcasError::Transport("socket unavailable".into()));
+
+        match decision {
+            ApprovalDecision::Error {
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(code, -32_000);
+                assert_eq!(message, "transport error: socket unavailable");
+                assert!(data.is_none());
+            }
+            other => panic!("unexpected approval decision: {other:?}"),
+        }
+    }
+}
