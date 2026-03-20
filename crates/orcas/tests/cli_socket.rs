@@ -858,6 +858,156 @@ async fn real_cli_can_approve_pending_review_item() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn real_cli_can_reject_pending_review_item() {
+    let (_fake_codex, mut daemon, assignment) =
+        spawn_codex_review_ready_daemon("cli-review-reject").await;
+    let pending_decision_id =
+        pending_review_decision_id(&daemon, &assignment.assignment.assignment_id).await;
+
+    let reject_output = run_orcas(
+        &daemon,
+        &[
+            "codex",
+            "review",
+            "reject",
+            "--decision",
+            &pending_decision_id,
+            "--reviewed-by",
+            "cli_operator",
+            "--review-note",
+            "Reject the bounded pending review item",
+        ],
+    );
+    assert!(
+        reject_output.status.success(),
+        "stderr: {}",
+        stderr(&reject_output)
+    );
+
+    let reject_stdout = stdout(&reject_output);
+    assert!(reject_stdout.contains(&format!("decision_id: {}", pending_decision_id)));
+    assert!(reject_stdout.contains(&format!(
+        "assignment_id: {}",
+        assignment.assignment.assignment_id
+    )));
+    assert!(reject_stdout.contains("kind: NextTurn"));
+    assert!(reject_stdout.contains("proposal_kind: Bootstrap"));
+    assert!(reject_stdout.contains("status: Rejected"));
+    assert!(reject_stdout.contains("actionable: no"));
+    assert!(reject_stdout.contains("rejected_at:"));
+
+    let get_output = run_orcas(
+        &daemon,
+        &["codex", "review", "get", "--decision", &pending_decision_id],
+    );
+    assert!(
+        get_output.status.success(),
+        "stderr: {}",
+        stderr(&get_output)
+    );
+
+    let get_stdout = stdout(&get_output);
+    assert!(get_stdout.contains(&format!("decision_id: {}", pending_decision_id)));
+    assert!(get_stdout.contains("status: Rejected"));
+    assert!(get_stdout.contains("actionable: no"));
+    assert!(get_stdout.contains("rejected_at:"));
+    assert!(get_stdout.contains("related_history:"));
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn real_cli_review_queue_and_history_reflect_approval_transition() {
+    let (_fake_codex, mut daemon, assignment) =
+        spawn_codex_review_ready_daemon("cli-review-transition").await;
+    let pending_decision_id =
+        pending_review_decision_id(&daemon, &assignment.assignment.assignment_id).await;
+
+    let queue_before = run_orcas(
+        &daemon,
+        &[
+            "codex",
+            "review",
+            "queue",
+            "--assignment",
+            &assignment.assignment.assignment_id,
+        ],
+    );
+    assert!(
+        queue_before.status.success(),
+        "stderr: {}",
+        stderr(&queue_before)
+    );
+    let queue_before_stdout = stdout(&queue_before);
+    assert!(queue_before_stdout.contains(&pending_decision_id));
+    assert!(queue_before_stdout.contains("ProposedToHuman"));
+
+    let approve_output = run_orcas(
+        &daemon,
+        &[
+            "codex",
+            "review",
+            "approve",
+            "--decision",
+            &pending_decision_id,
+            "--reviewed-by",
+            "cli_operator",
+            "--review-note",
+            "Approve to clear the actionable queue",
+        ],
+    );
+    assert!(
+        approve_output.status.success(),
+        "stderr: {}",
+        stderr(&approve_output)
+    );
+
+    let queue_after = run_orcas(
+        &daemon,
+        &[
+            "codex",
+            "review",
+            "queue",
+            "--assignment",
+            &assignment.assignment.assignment_id,
+        ],
+    );
+    assert!(
+        queue_after.status.success(),
+        "stderr: {}",
+        stderr(&queue_after)
+    );
+    let queue_after_stdout = stdout(&queue_after);
+    assert!(!queue_after_stdout.contains(&pending_decision_id));
+
+    let history_after = run_orcas(
+        &daemon,
+        &[
+            "codex",
+            "review",
+            "history",
+            "--assignment",
+            &assignment.assignment.assignment_id,
+        ],
+    );
+    assert!(
+        history_after.status.success(),
+        "stderr: {}",
+        stderr(&history_after)
+    );
+    let history_after_stdout = stdout(&history_after);
+    assert!(history_after_stdout.contains(&format!(
+        "history_for_assignment: {}",
+        assignment.assignment.assignment_id
+    )));
+    assert!(history_after_stdout.contains(&pending_decision_id));
+    assert!(history_after_stdout.contains("Sent"));
+    assert!(history_after_stdout.contains("NextTurn/Bootstrap"));
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn real_cli_reports_missing_review_item_with_nonzero_exit() {
     let (_fake_codex, mut daemon, _assignment) =
         spawn_codex_review_ready_daemon("cli-review-missing").await;
