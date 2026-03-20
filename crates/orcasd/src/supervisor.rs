@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
-use crate::assignment_comm::json_fingerprint;
+use crate::assignment_comm::{json_fingerprint, stable_fingerprint};
 use orcas_core::supervisor::{
     DecisionPolicy, DraftAssignment, PriorDecisionContext, PriorReportContext,
     RecentPrimaryHistory, RelatedWorkUnitContext, SupervisorArtifactRef,
@@ -16,7 +16,8 @@ use orcas_core::supervisor::{
     SupervisorDependencyContextItem, SupervisorOperatorRequest, SupervisorPackLimits,
     SupervisorPackTruncation, SupervisorPromptRenderArtifact, SupervisorPromptRenderSpec,
     SupervisorProposal, SupervisorProposalEdits, SupervisorProposalFailureStage,
-    SupervisorProposalRecord, SupervisorSourceReportContext, SupervisorStateAnchor,
+    SupervisorProposalRecord, SupervisorResponseArtifact, SupervisorResponseContentPart,
+    SupervisorResponseOutputItem, SupervisorSourceReportContext, SupervisorStateAnchor,
     SupervisorWorkUnitContext, SupervisorWorkerSessionContext, SupervisorWorkstreamContext,
 };
 use orcas_core::{
@@ -51,6 +52,7 @@ pub struct SupervisorReasonerResult {
     pub usage: Option<SupervisorReasonerUsage>,
     pub output_text: Option<String>,
     pub prompt_render: SupervisorPromptRenderArtifact,
+    pub response_artifact: SupervisorResponseArtifact,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +64,7 @@ pub struct SupervisorReasonerFailure {
     pub response_id: Option<String>,
     pub output_text: Option<String>,
     pub prompt_render: Option<SupervisorPromptRenderArtifact>,
+    pub response_artifact: Option<SupervisorResponseArtifact>,
 }
 
 #[async_trait]
@@ -141,6 +144,7 @@ impl ResponsesApiReasoner {
         response_id: Option<String>,
         output_text: Option<String>,
         prompt_render: Option<SupervisorPromptRenderArtifact>,
+        response_artifact: Option<SupervisorResponseArtifact>,
     ) -> SupervisorReasonerFailure {
         SupervisorReasonerFailure {
             stage,
@@ -150,6 +154,7 @@ impl ResponsesApiReasoner {
             response_id,
             output_text,
             prompt_render,
+            response_artifact,
         }
     }
 }
@@ -184,6 +189,7 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 None,
                 None,
                 None,
+                None,
             )
         })?;
         let api_key = self.api_key().map_err(|error| {
@@ -201,6 +207,7 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 None,
                 None,
                 Some(prompt_render.clone()),
+                None,
             )
         })?;
         let (body, request_body_hash) = self.request_body(&prompt_render).map_err(|error| {
@@ -218,6 +225,7 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 None,
                 None,
                 Some(prompt_render.clone()),
+                None,
             )
         })?;
         let prompt_render = SupervisorPromptRenderArtifact {
@@ -246,8 +254,10 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                     None,
                     None,
                     Some(prompt_render.clone()),
+                    None,
                 )
             })?;
+        let captured_at = Utc::now();
 
         let status = response.status();
         let raw = response.text().await.map_err(|error| {
@@ -265,10 +275,21 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 None,
                 None,
                 Some(prompt_render.clone()),
+                None,
             )
         })?;
+        let parsed_response = serde_json::from_str::<Value>(&raw);
 
         if !status.is_success() {
+            let response_artifact = render_supervisor_response_artifact(
+                "responses_api",
+                self.config.supervisor.model.as_str(),
+                parsed_response.as_ref().ok(),
+                Some(raw.as_str()),
+                None,
+                captured_at,
+            )
+            .ok();
             warn!(
                 work_unit_id = %pack.primary_work_unit.id,
                 source_report_id = %pack.source_report.id,
@@ -286,10 +307,11 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 None,
                 Some(raw),
                 Some(prompt_render.clone()),
+                response_artifact,
             ));
         }
 
-        let value: Value = serde_json::from_str(&raw).map_err(|error| {
+        let value = parsed_response.map_err(|error| {
             warn!(
                 work_unit_id = %pack.primary_work_unit.id,
                 source_report_id = %pack.source_report.id,
@@ -298,16 +320,35 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                 error = %error,
                 "supervisor proposal generation failed"
             );
+            let response_artifact = render_supervisor_response_artifact(
+                "responses_api",
+                self.config.supervisor.model.as_str(),
+                None,
+                Some(raw.as_str()),
+                None,
+                captured_at,
+            )
+            .ok();
             self.failure(
                 SupervisorProposalFailureStage::ResponseMalformed,
                 format!("failed to decode supervisor Responses API response JSON: {error}"),
                 None,
                 Some(raw.clone()),
                 Some(prompt_render.clone()),
+                response_artifact,
             )
         })?;
         if let Some(error) = value.get("error") {
             if !error.is_null() {
+                let response_artifact = render_supervisor_response_artifact(
+                    "responses_api",
+                    self.config.supervisor.model.as_str(),
+                    Some(&value),
+                    Some(raw.as_str()),
+                    None,
+                    captured_at,
+                )
+                .ok();
                 warn!(
                     work_unit_id = %pack.primary_work_unit.id,
                     source_report_id = %pack.source_report.id,
@@ -328,11 +369,21 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                         .map(ToOwned::to_owned),
                     Some(raw.clone()),
                     Some(prompt_render.clone()),
+                    response_artifact,
                 ));
             }
         }
 
         let Some(output_text) = extract_output_text(&value) else {
+            let response_artifact = render_supervisor_response_artifact(
+                "responses_api",
+                self.config.supervisor.model.as_str(),
+                Some(&value),
+                Some(raw.as_str()),
+                None,
+                captured_at,
+            )
+            .ok();
             warn!(
                 work_unit_id = %pack.primary_work_unit.id,
                 source_report_id = %pack.source_report.id,
@@ -353,8 +404,38 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                     .map(ToOwned::to_owned),
                 Some(raw),
                 Some(prompt_render.clone()),
+                response_artifact,
             ));
         };
+        let response_artifact = render_supervisor_response_artifact(
+            "responses_api",
+            self.config.supervisor.model.as_str(),
+            Some(&value),
+            Some(raw.as_str()),
+            Some(output_text.as_str()),
+            captured_at,
+        )
+        .map_err(|error| {
+            warn!(
+                work_unit_id = %pack.primary_work_unit.id,
+                source_report_id = %pack.source_report.id,
+                stage = "render_response_artifact",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                error = %error,
+                "supervisor proposal generation failed"
+            );
+            self.failure(
+                SupervisorProposalFailureStage::Backend,
+                error.to_string(),
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                Some(output_text.clone()),
+                Some(prompt_render.clone()),
+                None,
+            )
+        })?;
         let proposal: SupervisorProposal = serde_json::from_str(&output_text).map_err(|error| {
             warn!(
                 work_unit_id = %pack.primary_work_unit.id,
@@ -377,6 +458,7 @@ impl SupervisorReasoner for ResponsesApiReasoner {
                     .map(ToOwned::to_owned),
                 Some(output_text.clone()),
                 Some(prompt_render.clone()),
+                Some(response_artifact.clone()),
             )
         })?;
         let usage = value.get("usage").map(extract_usage);
@@ -414,6 +496,7 @@ impl SupervisorReasoner for ResponsesApiReasoner {
             usage,
             output_text: Some(output_text),
             prompt_render,
+            response_artifact,
         })
     }
 }
@@ -424,6 +507,17 @@ struct SupervisorPromptFingerprint<'a> {
     instructions_text: &'a str,
     user_content_text: &'a str,
     context_pack_text: &'a str,
+}
+
+#[derive(Serialize)]
+struct SupervisorResponseArtifactFingerprint<'a> {
+    backend_kind: &'a str,
+    model: &'a str,
+    response_id: &'a Option<String>,
+    usage: &'a Option<SupervisorReasonerUsage>,
+    output_items: &'a [SupervisorResponseOutputItem],
+    extracted_output_text: &'a Option<String>,
+    raw_response_body: &'a Option<String>,
 }
 
 pub fn render_supervisor_prompt(
@@ -459,6 +553,56 @@ pub fn render_supervisor_prompt(
         prompt_hash,
         request_body_hash: None,
         rendered_at,
+    })
+}
+
+pub fn render_supervisor_response_artifact(
+    backend_kind: &str,
+    fallback_model: &str,
+    parsed_response: Option<&Value>,
+    raw_response_body: Option<&str>,
+    extracted_output_text: Option<&str>,
+    captured_at: DateTime<Utc>,
+) -> OrcasResult<SupervisorResponseArtifact> {
+    let model = parsed_response
+        .and_then(|value| value.get("model"))
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_model)
+        .to_string();
+    let response_id = parsed_response
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let usage = parsed_response
+        .and_then(|value| value.get("usage"))
+        .map(extract_usage);
+    let output_items = parsed_response
+        .map(extract_response_output_items)
+        .unwrap_or_default();
+    let raw_response_body = raw_response_body.map(ToOwned::to_owned);
+    let raw_response_body_hash = raw_response_body.as_deref().map(stable_fingerprint);
+    let extracted_output_text = extracted_output_text.map(ToOwned::to_owned);
+    let response_hash = json_fingerprint(&SupervisorResponseArtifactFingerprint {
+        backend_kind,
+        model: &model,
+        response_id: &response_id,
+        usage: &usage,
+        output_items: &output_items,
+        extracted_output_text: &extracted_output_text,
+        raw_response_body: &raw_response_body,
+    })?;
+
+    Ok(SupervisorResponseArtifact {
+        backend_kind: backend_kind.to_string(),
+        model,
+        response_id,
+        usage,
+        output_items,
+        extracted_output_text,
+        response_hash,
+        raw_response_body,
+        raw_response_body_hash,
+        captured_at,
     })
 }
 
@@ -1434,6 +1578,57 @@ fn extract_output_text(value: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn extract_response_output_items(value: &Value) -> Vec<SupervisorResponseOutputItem> {
+    value
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|output| output.iter().map(normalize_response_output_item).collect())
+        .unwrap_or_default()
+}
+
+fn normalize_response_output_item(value: &Value) -> SupervisorResponseOutputItem {
+    let content = value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|content| {
+            content
+                .iter()
+                .map(normalize_response_content_part)
+                .collect()
+        })
+        .unwrap_or_default();
+    SupervisorResponseOutputItem {
+        item_type: value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        role: value
+            .get("role")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        content,
+    }
+}
+
+fn normalize_response_content_part(value: &Value) -> SupervisorResponseContentPart {
+    SupervisorResponseContentPart {
+        part_type: value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        text: value
+            .get("text")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    }
+}
+
 fn extract_usage(value: &Value) -> SupervisorReasonerUsage {
     SupervisorReasonerUsage {
         input_tokens: value.get("input_tokens").and_then(Value::as_u64),
@@ -1630,8 +1825,8 @@ mod tests {
     use super::{
         PROPOSAL_SCHEMA_VERSION, SUPERVISOR_PROMPT_TEMPLATE_VERSION, apply_edits,
         build_decision_policy, compile_assignment_instructions, decision_requires_assignment,
-        expected_work_unit_status, render_supervisor_prompt, state_anchor_freshness_error,
-        validate_proposal,
+        expected_work_unit_status, render_supervisor_prompt, render_supervisor_response_artifact,
+        state_anchor_freshness_error, validate_proposal,
     };
 
     fn fixed_now() -> chrono::DateTime<Utc> {
@@ -1926,6 +2121,60 @@ mod tests {
         assert!(first.user_content_text.contains(&first.context_pack_text));
         assert!(first.context_pack_text.contains("\"schema_version\""));
         assert!(!first.prompt_hash.is_empty());
+    }
+
+    #[test]
+    fn supervisor_response_artifact_is_deterministic_for_same_response() {
+        let raw = serde_json::json!({
+            "id": "resp-1",
+            "model": "test-supervisor",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 34,
+                "total_tokens": 46
+            },
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": "{\"schema_version\":\"supervisor_proposal.v1\"}"
+                }]
+            }]
+        });
+        let raw_text = serde_json::to_string(&raw).expect("serialize response");
+        let first = render_supervisor_response_artifact(
+            "responses_api",
+            "test-supervisor",
+            Some(&raw),
+            Some(raw_text.as_str()),
+            Some("{\"schema_version\":\"supervisor_proposal.v1\"}"),
+            fixed_now(),
+        )
+        .expect("first response artifact");
+        let second = render_supervisor_response_artifact(
+            "responses_api",
+            "test-supervisor",
+            Some(&raw),
+            Some(raw_text.as_str()),
+            Some("{\"schema_version\":\"supervisor_proposal.v1\"}"),
+            fixed_now(),
+        )
+        .expect("second response artifact");
+
+        assert_eq!(first, second);
+        assert_eq!(first.response_id.as_deref(), Some("resp-1"));
+        assert_eq!(
+            first.extracted_output_text.as_deref(),
+            Some("{\"schema_version\":\"supervisor_proposal.v1\"}")
+        );
+        assert_eq!(first.output_items.len(), 1);
+        assert_eq!(first.output_items[0].item_type, "message");
+        assert_eq!(first.output_items[0].content[0].part_type, "output_text");
+        assert!(first.raw_response_body.is_some());
+        assert!(first.raw_response_body_hash.is_some());
+        assert!(!first.response_hash.is_empty());
     }
 
     fn sample_proposal(decision: DecisionType) -> SupervisorProposal {

@@ -4841,6 +4841,7 @@ impl OrcasDaemonService {
                         None,
                         failure.output_text.clone(),
                         failure.prompt_render.clone(),
+                        failure.response_artifact.clone(),
                         None,
                         SupervisorProposalFailure {
                             stage: failure.stage,
@@ -4878,6 +4879,7 @@ impl OrcasDaemonService {
                     result.usage.clone(),
                     result.output_text.clone(),
                     Some(result.prompt_render.clone()),
+                    Some(result.response_artifact.clone()),
                     Some(result.proposal.clone()),
                     SupervisorProposalFailure {
                         stage: SupervisorProposalFailureStage::ProposalValidation,
@@ -4905,6 +4907,7 @@ impl OrcasDaemonService {
             reasoner_output_text: result.output_text,
             context_pack,
             prompt_render: Some(result.prompt_render),
+            response_artifact: Some(result.response_artifact),
             proposal: Some(result.proposal),
             approval_edits: None,
             approved_proposal: None,
@@ -7717,6 +7720,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         reasoner_usage: Option<SupervisorReasonerUsage>,
         reasoner_output_text: Option<String>,
         prompt_render: Option<orcas_core::SupervisorPromptRenderArtifact>,
+        response_artifact: Option<orcas_core::SupervisorResponseArtifact>,
         proposal: Option<SupervisorProposal>,
         failure: SupervisorProposalFailure,
     ) -> OrcasResult<SupervisorProposalRecord> {
@@ -7735,6 +7739,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             reasoner_output_text,
             context_pack,
             prompt_render,
+            response_artifact,
             proposal,
             approval_edits: None,
             approved_proposal: None,
@@ -9469,7 +9474,7 @@ mod tests {
     use crate::authority_store::AuthoritySqliteStore;
     use crate::supervisor::{
         SupervisorReasoner, SupervisorReasonerFailure, SupervisorReasonerResult,
-        render_supervisor_prompt,
+        render_supervisor_prompt, render_supervisor_response_artifact,
     };
     use orcas_codex::{
         CodexClient, CodexDaemonManager, CodexTransport, DaemonLaunch, DaemonStatus,
@@ -10097,6 +10102,64 @@ mod tests {
             .expect("valid prompt render timestamp")
     }
 
+    fn fixed_supervisor_response_captured_at() -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2025, 4, 5, 6, 7, 9)
+            .single()
+            .expect("valid response artifact timestamp")
+    }
+
+    fn sample_response_artifact(
+        model: &str,
+        response_id: &str,
+        output_text: Option<&str>,
+    ) -> orcas_core::SupervisorResponseArtifact {
+        let raw_response = output_text.map(|output_text| {
+            serde_json::json!({
+                "id": response_id,
+                "model": model,
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": output_text,
+                    }],
+                }],
+            })
+        });
+        let raw_response_body = raw_response.as_ref().map(ToString::to_string);
+        render_supervisor_response_artifact(
+            "test",
+            model,
+            raw_response.as_ref(),
+            raw_response_body.as_deref(),
+            output_text,
+            fixed_supervisor_response_captured_at(),
+        )
+        .expect("render sample response artifact")
+    }
+
+    fn sample_failure_response_artifact(
+        model: &str,
+        response_id: &str,
+        output_text: Option<&str>,
+    ) -> orcas_core::SupervisorResponseArtifact {
+        render_supervisor_response_artifact(
+            "test",
+            model,
+            None,
+            output_text,
+            output_text,
+            fixed_supervisor_response_captured_at(),
+        )
+        .map(|artifact| orcas_core::SupervisorResponseArtifact {
+            response_id: Some(response_id.to_string()),
+            ..artifact
+        })
+        .expect("render failure response artifact")
+    }
+
     #[derive(Clone)]
     enum StaticSupervisorReasonerOutcome {
         Success {
@@ -10115,6 +10178,7 @@ mod tests {
         outcome: Mutex<Option<StaticSupervisorReasonerOutcome>>,
         last_pack: Mutex<Option<SupervisorContextPack>>,
         last_prompt_render: Mutex<Option<orcas_core::supervisor::SupervisorPromptRenderArtifact>>,
+        last_response_artifact: Mutex<Option<orcas_core::SupervisorResponseArtifact>>,
         propose_calls: AtomicUsize,
     }
 
@@ -10150,6 +10214,10 @@ mod tests {
             self.last_prompt_render.lock().await.clone()
         }
 
+        async fn last_response_artifact(&self) -> Option<orcas_core::SupervisorResponseArtifact> {
+            self.last_response_artifact.lock().await.clone()
+        }
+
         fn propose_call_count(&self) -> usize {
             self.propose_calls.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -10172,37 +10240,61 @@ mod tests {
                 Some(StaticSupervisorReasonerOutcome::Success {
                     proposal,
                     output_text,
-                }) => Ok(SupervisorReasonerResult {
-                    proposal,
-                    backend_kind: "test".to_string(),
-                    model: "test-supervisor".to_string(),
-                    response_id: Some("resp-test".to_string()),
-                    usage: None,
-                    output_text,
-                    prompt_render,
-                }),
+                }) => {
+                    let response_artifact = sample_response_artifact(
+                        "test-supervisor",
+                        "resp-test",
+                        output_text.as_deref(),
+                    );
+                    *self.last_response_artifact.lock().await = Some(response_artifact.clone());
+                    Ok(SupervisorReasonerResult {
+                        proposal,
+                        backend_kind: "test".to_string(),
+                        model: "test-supervisor".to_string(),
+                        response_id: Some("resp-test".to_string()),
+                        usage: None,
+                        output_text,
+                        prompt_render,
+                        response_artifact,
+                    })
+                }
                 Some(StaticSupervisorReasonerOutcome::Failure {
                     stage,
                     message,
                     output_text,
-                }) => Err(SupervisorReasonerFailure {
-                    stage,
-                    message,
-                    backend_kind: "test".to_string(),
-                    model: "test-supervisor".to_string(),
-                    response_id: Some("resp-test".to_string()),
-                    output_text,
-                    prompt_render: Some(prompt_render),
-                }),
-                None => Err(SupervisorReasonerFailure {
-                    stage: SupervisorProposalFailureStage::Backend,
-                    message: "missing test supervisor reasoner outcome".to_string(),
-                    backend_kind: "test".to_string(),
-                    model: "test-supervisor".to_string(),
-                    response_id: Some("resp-test".to_string()),
-                    output_text: None,
-                    prompt_render: Some(prompt_render),
-                }),
+                }) => {
+                    let response_artifact = output_text.as_deref().map(|output_text| {
+                        sample_failure_response_artifact(
+                            "test-supervisor",
+                            "resp-test",
+                            Some(output_text),
+                        )
+                    });
+                    *self.last_response_artifact.lock().await = response_artifact.clone();
+                    Err(SupervisorReasonerFailure {
+                        stage,
+                        message,
+                        backend_kind: "test".to_string(),
+                        model: "test-supervisor".to_string(),
+                        response_id: Some("resp-test".to_string()),
+                        output_text,
+                        prompt_render: Some(prompt_render),
+                        response_artifact,
+                    })
+                }
+                None => {
+                    *self.last_response_artifact.lock().await = None;
+                    Err(SupervisorReasonerFailure {
+                        stage: SupervisorProposalFailureStage::Backend,
+                        message: "missing test supervisor reasoner outcome".to_string(),
+                        backend_kind: "test".to_string(),
+                        model: "test-supervisor".to_string(),
+                        response_id: Some("resp-test".to_string()),
+                        output_text: None,
+                        prompt_render: Some(prompt_render),
+                        response_artifact: None,
+                    })
+                }
             }
         }
     }
@@ -10241,6 +10333,11 @@ mod tests {
             let prompt_render =
                 render_supervisor_prompt(&pack, fixed_supervisor_prompt_rendered_at())
                     .expect("render pack-driven supervisor prompt");
+            let response_artifact = sample_response_artifact(
+                "test-pack-driven",
+                "resp-pack-driven",
+                Some(&output_text),
+            );
             Ok(SupervisorReasonerResult {
                 proposal,
                 backend_kind: "test".to_string(),
@@ -10249,6 +10346,7 @@ mod tests {
                 usage: None,
                 output_text: Some(output_text),
                 prompt_render,
+                response_artifact,
             })
         }
     }
@@ -11352,7 +11450,15 @@ ORCAS_REPORT_END"#
             .last_prompt_render()
             .await
             .expect("captured prompt render");
+        let expected_response_artifact = reasoner
+            .last_response_artifact()
+            .await
+            .expect("captured response artifact");
         assert_eq!(stored.prompt_render.as_ref(), Some(&expected_prompt_render));
+        assert_eq!(
+            stored.response_artifact.as_ref(),
+            Some(&expected_response_artifact)
+        );
         let prompt_render = stored.prompt_render.as_ref().expect("stored prompt render");
         assert_eq!(
             prompt_render.render_spec.template_version,
@@ -11400,6 +11506,20 @@ ORCAS_REPORT_END"#
                 .contains("SupervisorContextPack:")
         );
         assert!(!prompt_render.prompt_hash.is_empty());
+        let response_artifact = stored
+            .response_artifact
+            .as_ref()
+            .expect("stored response artifact");
+        assert_eq!(
+            response_artifact.extracted_output_text.as_deref(),
+            stored.reasoner_output_text.as_deref()
+        );
+        assert_eq!(response_artifact.backend_kind, stored.reasoner_backend);
+        assert_eq!(response_artifact.model, stored.reasoner_model);
+        assert_eq!(response_artifact.response_id, stored.reasoner_response_id);
+        assert_eq!(response_artifact.usage, stored.reasoner_usage);
+        assert!(!response_artifact.response_hash.is_empty());
+        assert!(response_artifact.raw_response_body.is_some());
     }
 
     #[tokio::test]
@@ -11509,6 +11629,7 @@ ORCAS_REPORT_END"#
         assert!(response.next_assignment.is_some());
         let stored = latest_proposal_record_for_workunit(&service, &work_unit.id).await;
         assert!(stored.prompt_render.is_some());
+        assert!(stored.response_artifact.is_some());
     }
 
     #[tokio::test]
@@ -12016,6 +12137,14 @@ ORCAS_REPORT_END"#
             .await
             .expect("captured failed prompt render");
         assert_eq!(failed.prompt_render.as_ref(), Some(&expected_prompt_render));
+        let expected_response_artifact = reasoner
+            .last_response_artifact()
+            .await
+            .expect("captured failed response artifact");
+        assert_eq!(
+            failed.response_artifact.as_ref(),
+            Some(&expected_response_artifact)
+        );
     }
 
     #[tokio::test]
@@ -12048,8 +12177,64 @@ ORCAS_REPORT_END"#
             .last_prompt_render()
             .await
             .expect("captured failed prompt render");
+        let expected_response_artifact = reasoner
+            .last_response_artifact()
+            .await
+            .expect("captured failed response artifact");
         assert_eq!(failed.status, SupervisorProposalStatus::GenerationFailed);
         assert_eq!(failed.prompt_render.as_ref(), Some(&expected_prompt_render));
+        assert_eq!(
+            failed.response_artifact.as_ref(),
+            Some(&expected_response_artifact)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_output_generation_failure_with_manual_fixture_persists_response_artifact() {
+        let reasoner = Arc::new(StaticSupervisorReasoner::default());
+        let service = test_service_with_reasoner(reasoner.clone()).await;
+        let (_workstream, work_unit, _assignment, report) =
+            seed_manual_proposal_fixture(&service, "malformed-fail-manual").await;
+
+        reasoner
+            .set_failure(
+                SupervisorProposalFailureStage::ProposalMalformed,
+                "failed to decode supervisor proposal JSON: missing field `summary`",
+                Some("{\"schema_version\":\"supervisor_proposal.v1\"}".to_string()),
+            )
+            .await;
+        let _ = service
+            .proposal_create(ipc::ProposalCreateRequest {
+                work_unit_id: work_unit.id.clone(),
+                source_report_id: Some(report.id.clone()),
+                requested_by: Some("tester".to_string()),
+                note: None,
+                supersede_open: false,
+            })
+            .await
+            .expect_err("malformed output failure");
+
+        let failed = latest_proposal_record_for_workunit(&service, &work_unit.id).await;
+        let expected_response_artifact = reasoner
+            .last_response_artifact()
+            .await
+            .expect("captured failed response artifact");
+        assert_eq!(failed.status, SupervisorProposalStatus::GenerationFailed);
+        assert_eq!(
+            failed.generation_failure.as_ref().expect("failure").stage,
+            SupervisorProposalFailureStage::ProposalMalformed
+        );
+        assert_eq!(
+            failed.response_artifact.as_ref(),
+            Some(&expected_response_artifact)
+        );
+        assert_eq!(
+            failed
+                .response_artifact
+                .as_ref()
+                .and_then(|artifact| artifact.extracted_output_text.as_deref()),
+            Some("{\"schema_version\":\"supervisor_proposal.v1\"}")
+        );
     }
 
     #[tokio::test]
@@ -12084,6 +12269,14 @@ ORCAS_REPORT_END"#
             SupervisorProposalFailureStage::ProposalMalformed
         );
         assert!(failed.proposal.is_none());
+        assert!(failed.response_artifact.is_some());
+        assert_eq!(
+            failed
+                .response_artifact
+                .as_ref()
+                .and_then(|artifact| artifact.extracted_output_text.as_deref()),
+            Some("{\"schema_version\":\"supervisor_proposal.v1\"}")
+        );
     }
 
     #[tokio::test]
@@ -12141,6 +12334,7 @@ ORCAS_REPORT_END"#
                 .decision_type,
             DecisionType::MarkComplete
         );
+        assert!(failed.response_artifact.is_some());
     }
 
     #[tokio::test]
@@ -13213,6 +13407,7 @@ ORCAS_REPORT_END"#
         assert!(!snapshot_json.contains("reasoner_output_text"));
         assert!(!snapshot_json.contains("Objective:"));
         assert!(!snapshot_json.contains("prompt_render"));
+        assert!(!snapshot_json.contains("response_artifact"));
         assert!(!snapshot_json.contains("You are the Orcas supervisor reasoner."));
         assert!(!snapshot_json.contains("SupervisorContextPack:"));
     }
@@ -13241,8 +13436,10 @@ ORCAS_REPORT_END"#
 
         let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot json");
         assert!(!snapshot_json.contains("prompt_render"));
+        assert!(!snapshot_json.contains("response_artifact"));
         assert!(!snapshot_json.contains("You are the Orcas supervisor reasoner."));
         assert!(!snapshot_json.contains("SupervisorContextPack:"));
+        assert!(!snapshot_json.contains("\"output\":["));
     }
 
     #[tokio::test]

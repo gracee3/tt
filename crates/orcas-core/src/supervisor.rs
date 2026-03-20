@@ -294,7 +294,7 @@ pub struct SupervisorProposal {
     pub open_questions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SupervisorReasonerUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -323,6 +323,43 @@ pub struct SupervisorPromptRenderArtifact {
     #[serde(default)]
     pub request_body_hash: Option<String>,
     pub rendered_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorResponseContentPart {
+    pub part_type: String,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorResponseOutputItem {
+    pub item_type: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub content: Vec<SupervisorResponseContentPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorResponseArtifact {
+    pub backend_kind: String,
+    pub model: String,
+    pub response_id: Option<String>,
+    #[serde(default)]
+    pub usage: Option<SupervisorReasonerUsage>,
+    #[serde(default)]
+    pub output_items: Vec<SupervisorResponseOutputItem>,
+    #[serde(default)]
+    pub extracted_output_text: Option<String>,
+    pub response_hash: String,
+    #[serde(default)]
+    pub raw_response_body: Option<String>,
+    #[serde(default)]
+    pub raw_response_body_hash: Option<String>,
+    pub captured_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -371,6 +408,8 @@ pub struct SupervisorProposalRecord {
     pub context_pack: SupervisorContextPack,
     #[serde(default)]
     pub prompt_render: Option<SupervisorPromptRenderArtifact>,
+    #[serde(default)]
+    pub response_artifact: Option<SupervisorResponseArtifact>,
     #[serde(default)]
     pub proposal: Option<SupervisorProposal>,
     #[serde(default)]
