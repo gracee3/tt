@@ -1686,8 +1686,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             reconcile_main_view(state);
         }
         UiEvent::AuthorityWorkUnitDetailLoaded(detail) => {
-            // Authority detail caches are separate from the hierarchy snapshot;
-            // load them explicitly so edit forms always read a current record.
             state
                 .authority_main
                 .work_unit_details
@@ -1695,8 +1693,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             reconcile_main_view(state);
         }
         UiEvent::AuthorityTrackedThreadDetailLoaded(detail) => {
-            // Authority detail caches are separate from the hierarchy snapshot;
-            // load them explicitly so edit forms always read a current record.
             state
                 .authority_main
                 .tracked_thread_details
@@ -1730,11 +1726,12 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 message: format!("Confirm delete for `{}`.", delete_plan.target.label),
             });
         }
+        // Authority mutations follow the same pattern across workstream,
+        // work unit, and tracked-thread records: keep user intent, clear the
+        // stale footer, and reload hierarchy/detail caches rather than trying
+        // to mutate the event payload in place.
         UiEvent::AuthorityWorkstreamCreated(workstream)
         | UiEvent::AuthorityWorkstreamEdited(workstream) => {
-            // Keep the user's intent, clear the stale edit footer, and reload
-            // the hierarchy/detail caches instead of trying to mutate them in
-            // place from an event payload.
             state.authority_main.footer = MainFooterState::Inspect;
             state.main_view.pending_selection = Some(MainHierarchySelection::Workstream {
                 workstream_id: workstream.id.to_string(),
@@ -1752,9 +1749,10 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 workstream_id: workstream.id.to_string(),
             });
         }
+        // Authority delete boundaries follow the same pattern across workstream,
+        // work unit, and tracked-thread records: close stale detail panes and
+        // preserve a valid fallback selection instead of keeping deleted rows alive.
         UiEvent::AuthorityWorkstreamDeleted(workstream) => {
-            // Delete boundaries must close the old detail pane and preserve a
-            // valid fallback selection instead of keeping a deleted row alive.
             let fallback = selected_main_delete_fallback(state);
             state.authority_main.footer = MainFooterState::Inspect;
             state
@@ -1770,9 +1768,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         }
         UiEvent::AuthorityWorkUnitCreated(work_unit)
         | UiEvent::AuthorityWorkUnitEdited(work_unit) => {
-            // Keep the user's intent, clear the stale edit footer, and reload
-            // the hierarchy/detail caches instead of trying to mutate them in
-            // place from an event payload.
             state.authority_main.footer = MainFooterState::Inspect;
             state.main_view.pending_selection = Some(MainHierarchySelection::WorkUnit {
                 workstream_id: work_unit.workstream_id.to_string(),
@@ -1792,8 +1787,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             });
         }
         UiEvent::AuthorityWorkUnitDeleted(work_unit) => {
-            // Delete boundaries must close the old detail pane and preserve a
-            // valid fallback selection instead of keeping a deleted row alive.
             let fallback = selected_main_delete_fallback(state);
             state.authority_main.footer = MainFooterState::Inspect;
             state
@@ -1809,9 +1802,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
         }
         UiEvent::AuthorityTrackedThreadCreated(tracked_thread)
         | UiEvent::AuthorityTrackedThreadEdited(tracked_thread) => {
-            // Keep the user's intent, clear the stale edit footer, and reload
-            // the hierarchy/detail caches instead of trying to mutate them in
-            // place from an event payload.
             let parent_workstream_id =
                 workstream_id_for_work_unit(state, tracked_thread.work_unit_id.as_str())
                     .unwrap_or_default();
@@ -1835,8 +1825,6 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             });
         }
         UiEvent::AuthorityTrackedThreadDeleted(tracked_thread) => {
-            // Delete boundaries must close the old detail pane and preserve a
-            // valid fallback selection instead of keeping a deleted row alive.
             let fallback = selected_main_delete_fallback(state);
             state.authority_main.footer = MainFooterState::Inspect;
             state
