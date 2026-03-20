@@ -881,99 +881,6 @@ impl SupervisorService {
         Ok(())
     }
 
-    pub async fn legacy_workstream_list(&self) -> Result<()> {
-        Self::print_legacy_workflow_notice("workstreams");
-        let client = self.daemon_state_client().await?;
-        let response = client.workstream_list().await?;
-        for workstream in response.workstreams {
-            println!(
-                "{}\t{:?}\t{}\t{}",
-                workstream.id, workstream.status, workstream.priority, workstream.title
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn legacy_workstream_get(&self, workstream_id: &str) -> Result<()> {
-        Self::print_legacy_workflow_notice("workstreams");
-        let client = self.daemon_state_client().await?;
-        let response = client
-            .workstream_get(&ipc::WorkstreamGetRequest {
-                workstream_id: workstream_id.to_string(),
-            })
-            .await?;
-        println!("workstream_id: {}", response.workstream.id);
-        println!("title: {}", response.workstream.title);
-        println!("objective: {}", response.workstream.objective);
-        println!("status: {:?}", response.workstream.status);
-        println!("priority: {}", response.workstream.priority);
-        println!("work_units: {}", response.work_units.len());
-        for work_unit in response.work_units {
-            println!(
-                "work_unit\t{}\t{:?}\tdeps={}\t{}",
-                work_unit.id,
-                work_unit.status,
-                work_unit.dependencies.len(),
-                work_unit.title
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn legacy_workunit_list(&self, workstream_id: Option<&str>) -> Result<()> {
-        Self::print_legacy_workflow_notice("workunits");
-        let client = self.daemon_state_client().await?;
-        let response = client
-            .workunit_list(&ipc::WorkunitListRequest {
-                workstream_id: workstream_id.map(ToOwned::to_owned),
-            })
-            .await?;
-        for work_unit in response.work_units {
-            println!(
-                "{}\t{:?}\tdeps={}\treport={}\t{}",
-                work_unit.id,
-                work_unit.status,
-                work_unit.dependencies.len(),
-                work_unit.latest_report_id.unwrap_or_default(),
-                work_unit.title
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn legacy_workunit_get(&self, work_unit_id: &str) -> Result<()> {
-        Self::print_legacy_workflow_notice("workunits");
-        let client = self.daemon_state_client().await?;
-        let response = client
-            .workunit_get(&ipc::WorkunitGetRequest {
-                work_unit_id: work_unit_id.to_string(),
-            })
-            .await?;
-        println!("work_unit_id: {}", response.work_unit.id);
-        println!("workstream_id: {}", response.work_unit.workstream_id);
-        println!("title: {}", response.work_unit.title);
-        println!("task_statement: {}", response.work_unit.task_statement);
-        println!("status: {:?}", response.work_unit.status);
-        println!(
-            "dependencies: {}",
-            if response.work_unit.dependencies.is_empty() {
-                String::new()
-            } else {
-                response.work_unit.dependencies.join(",")
-            }
-        );
-        if let Some(assignment_id) = response.work_unit.current_assignment_id.as_ref() {
-            println!("current_assignment_id: {assignment_id}");
-        }
-        if let Some(report_id) = response.work_unit.latest_report_id.as_ref() {
-            println!("latest_report_id: {report_id}");
-        }
-        println!("assignments: {}", response.assignments.len());
-        println!("reports: {}", response.reports.len());
-        println!("decisions: {}", response.decisions.len());
-        Ok(())
-    }
-
     pub async fn assignment_start(
         &self,
         work_unit_id: &str,
@@ -1205,6 +1112,28 @@ impl SupervisorService {
             })
             .await?;
         Self::print_proposal_record(&response.proposal);
+        Ok(())
+    }
+
+    pub async fn proposal_artifact_summary_get(&self, proposal_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .proposal_artifact_summary_get(&ipc::ProposalArtifactSummaryGetRequest {
+                proposal_id: proposal_id.to_string(),
+            })
+            .await?;
+        Self::print_proposal_artifact_summary(&response.summary);
+        Ok(())
+    }
+
+    pub async fn proposal_artifact_detail_get(&self, proposal_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .proposal_artifact_detail_get(&ipc::ProposalArtifactDetailGetRequest {
+                proposal_id: proposal_id.to_string(),
+            })
+            .await?;
+        Self::print_proposal_artifact_detail(&response.detail);
         Ok(())
     }
 
@@ -2299,13 +2228,6 @@ impl SupervisorService {
         )
     }
 
-    fn print_legacy_workflow_notice(noun: &str) {
-        println!("surface: legacy_collaboration_compatibility");
-        println!(
-            "note: `{noun}` here uses a read-only legacy collaboration compatibility path; canonical planning hierarchy create/edit/delete uses the authority-backed `orcas {noun}` commands."
-        );
-    }
-
     fn print_supervisor_turn_decision(
         decision: &SupervisorTurnDecision,
         summary: Option<&ipc::SupervisorTurnDecisionSummary>,
@@ -2721,6 +2643,157 @@ impl SupervisorService {
         }
         if let Some(assignment_id) = proposal.approved_assignment_id.as_ref() {
             println!("approved_assignment_id: {assignment_id}");
+        }
+    }
+
+    fn print_proposal_artifact_summary(summary: &ipc::SupervisorProposalArtifactSummary) {
+        println!("proposal_id: {}", summary.proposal_id);
+        println!("proposal_status: {:?}", summary.proposal_status);
+        println!(
+            "prompt_artifact_present: {}",
+            summary.prompt_artifact_present
+        );
+        if let Some(version) = summary.prompt_template_version.as_ref() {
+            println!("prompt_template_version: {version}");
+        }
+        if let Some(hash) = summary.prompt_hash.as_ref() {
+            println!("prompt_hash: {hash}");
+        }
+        if let Some(hash) = summary.request_body_hash.as_ref() {
+            println!("request_body_hash: {hash}");
+        }
+        println!(
+            "response_artifact_present: {}",
+            summary.response_artifact_present
+        );
+        if let Some(hash) = summary.response_hash.as_ref() {
+            println!("response_hash: {hash}");
+        }
+        println!(
+            "raw_response_body_present: {}",
+            summary.raw_response_body_present
+        );
+        if let Some(hash) = summary.raw_response_body_hash.as_ref() {
+            println!("raw_response_body_hash: {hash}");
+        }
+        println!("reasoner_backend: {}", summary.reasoner_backend);
+        println!("reasoner_model: {}", summary.reasoner_model);
+        if let Some(response_id) = summary.reasoner_response_id.as_ref() {
+            println!("reasoner_response_id: {response_id}");
+        }
+        println!(
+            "parsed_proposal_present: {}",
+            summary.parsed_proposal_present
+        );
+        println!(
+            "approved_proposal_present: {}",
+            summary.approved_proposal_present
+        );
+        if let Some(stage) = summary.generation_failure_stage {
+            println!("generation_failure_stage: {:?}", stage);
+        }
+    }
+
+    fn print_proposal_artifact_detail(detail: &ipc::SupervisorProposalArtifactDetail) {
+        println!("proposal_id: {}", detail.proposal_id);
+        println!("proposal_status: {:?}", detail.proposal_status);
+        println!("created_at: {}", detail.created_at);
+        if let Some(validated_at) = detail.validated_at.as_ref() {
+            println!("validated_at: {validated_at}");
+        }
+        if let Some(reviewed_at) = detail.reviewed_at.as_ref() {
+            println!("reviewed_at: {reviewed_at}");
+        }
+        println!("reasoner_backend: {}", detail.reasoner_backend);
+        println!("reasoner_model: {}", detail.reasoner_model);
+        if let Some(response_id) = detail.reasoner_response_id.as_ref() {
+            println!("reasoner_response_id: {response_id}");
+        }
+        if let Some(prompt_render) = detail.prompt_render.as_ref() {
+            println!(
+                "prompt_template_version: {}",
+                prompt_render.render_spec.template_version
+            );
+            println!(
+                "prompt_context_schema_version: {}",
+                prompt_render.render_spec.context_schema_version
+            );
+            println!(
+                "prompt_proposal_schema_version: {}",
+                prompt_render.render_spec.proposal_schema_version
+            );
+            println!("prompt_hash: {}", prompt_render.prompt_hash);
+            if let Some(hash) = prompt_render.request_body_hash.as_ref() {
+                println!("request_body_hash: {hash}");
+            }
+            println!("prompt_rendered_at: {}", prompt_render.rendered_at);
+            println!(
+                "prompt_instructions_text: {}",
+                prompt_render.instructions_text
+            );
+            println!(
+                "prompt_user_content_text: {}",
+                prompt_render.user_content_text
+            );
+            println!(
+                "prompt_context_pack_text: {}",
+                prompt_render.context_pack_text
+            );
+        } else {
+            println!("prompt_render: none");
+        }
+        if let Some(response_artifact) = detail.response_artifact.as_ref() {
+            println!("response_hash: {}", response_artifact.response_hash);
+            println!("response_backend_kind: {}", response_artifact.backend_kind);
+            println!("response_model: {}", response_artifact.model);
+            if let Some(response_id) = response_artifact.response_id.as_ref() {
+                println!("response_artifact_id: {response_id}");
+            }
+            if let Some(usage) = response_artifact.usage.as_ref() {
+                println!("response_usage_input_tokens: {:?}", usage.input_tokens);
+                println!("response_usage_output_tokens: {:?}", usage.output_tokens);
+                println!("response_usage_total_tokens: {:?}", usage.total_tokens);
+            }
+            println!("response_captured_at: {}", response_artifact.captured_at);
+            if !response_artifact.output_items.is_empty() {
+                println!(
+                    "response_output_items: {}",
+                    serde_json::to_string(&response_artifact.output_items)
+                        .expect("serialize response output items")
+                );
+            }
+            if let Some(output_text) = response_artifact.extracted_output_text.as_ref() {
+                println!("response_extracted_output_text: {output_text}");
+            }
+            if let Some(raw_body_hash) = response_artifact.raw_response_body_hash.as_ref() {
+                println!("raw_response_body_hash: {raw_body_hash}");
+            }
+            if let Some(raw_body) = response_artifact.raw_response_body.as_ref() {
+                println!("raw_response_body: {raw_body}");
+            }
+        } else {
+            println!("response_artifact: none");
+        }
+        if let Some(output_text) = detail.reasoner_output_text.as_ref() {
+            println!("reasoner_output_text: {output_text}");
+        }
+        if let Some(parsed_proposal) = detail.parsed_proposal.as_ref() {
+            println!(
+                "parsed_proposal: {}",
+                serde_json::to_string(parsed_proposal).expect("serialize parsed proposal")
+            );
+        } else {
+            println!("parsed_proposal: none");
+        }
+        if let Some(approved_proposal) = detail.approved_proposal.as_ref() {
+            println!(
+                "approved_proposal: {}",
+                serde_json::to_string(approved_proposal).expect("serialize approved proposal")
+            );
+        }
+        if let Some(failure) = detail.generation_failure.as_ref() {
+            println!("generation_failure_stage: {:?}", failure.stage);
+            println!("generation_failure_message: {}", failure.message);
         }
     }
 

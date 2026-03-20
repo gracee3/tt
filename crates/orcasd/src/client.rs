@@ -308,42 +308,6 @@ impl OrcasIpcClient {
             .await
     }
 
-    pub async fn workstream_create(
-        &self,
-        params: &ipc::WorkstreamCreateRequest,
-    ) -> OrcasResult<ipc::WorkstreamCreateResponse> {
-        self.request(ipc::methods::WORKSTREAM_CREATE, params).await
-    }
-
-    pub async fn workstream_list(&self) -> OrcasResult<ipc::WorkstreamListResponse> {
-        self.request(
-            ipc::methods::WORKSTREAM_LIST,
-            &ipc::WorkstreamListRequest::default(),
-        )
-        .await
-    }
-
-    pub async fn workstream_get(
-        &self,
-        params: &ipc::WorkstreamGetRequest,
-    ) -> OrcasResult<ipc::WorkstreamGetResponse> {
-        self.request(ipc::methods::WORKSTREAM_GET, params).await
-    }
-
-    pub async fn workunit_create(
-        &self,
-        params: &ipc::WorkunitCreateRequest,
-    ) -> OrcasResult<ipc::WorkunitCreateResponse> {
-        self.request(ipc::methods::WORKUNIT_CREATE, params).await
-    }
-
-    pub async fn workunit_list(
-        &self,
-        params: &ipc::WorkunitListRequest,
-    ) -> OrcasResult<ipc::WorkunitListResponse> {
-        self.request(ipc::methods::WORKUNIT_LIST, params).await
-    }
-
     pub async fn workunit_get(
         &self,
         params: &ipc::WorkunitGetRequest,
@@ -591,6 +555,22 @@ impl OrcasIpcClient {
         params: &ipc::ProposalGetRequest,
     ) -> OrcasResult<ipc::ProposalGetResponse> {
         self.request(ipc::methods::PROPOSAL_GET, params).await
+    }
+
+    pub async fn proposal_artifact_summary_get(
+        &self,
+        params: &ipc::ProposalArtifactSummaryGetRequest,
+    ) -> OrcasResult<ipc::ProposalArtifactSummaryGetResponse> {
+        self.request(ipc::methods::PROPOSAL_ARTIFACT_SUMMARY_GET, params)
+            .await
+    }
+
+    pub async fn proposal_artifact_detail_get(
+        &self,
+        params: &ipc::ProposalArtifactDetailGetRequest,
+    ) -> OrcasResult<ipc::ProposalArtifactDetailGetResponse> {
+        self.request(ipc::methods::PROPOSAL_ARTIFACT_DETAIL_GET, params)
+            .await
     }
 
     pub async fn proposal_list_for_workunit(

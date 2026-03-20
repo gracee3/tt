@@ -98,14 +98,6 @@ enum TopCommand {
         #[command(subcommand)]
         command: TrackedThreadsCommand,
     },
-    LegacyWorkstreams {
-        #[command(subcommand)]
-        command: LegacyWorkstreamsCommand,
-    },
-    LegacyWorkunits {
-        #[command(subcommand)]
-        command: LegacyWorkunitsCommand,
-    },
     Assignments {
         #[command(subcommand)]
         command: AssignmentsCommand,
@@ -189,20 +181,6 @@ enum TrackedThreadsCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Compatibility list/get commands for legacy collaboration workstreams")]
-enum LegacyWorkstreamsCommand {
-    List,
-    Get(WorkstreamRefArgs),
-}
-
-#[derive(Debug, Subcommand)]
-#[command(about = "Compatibility list/get commands for legacy collaboration work units")]
-enum LegacyWorkunitsCommand {
-    List(WorkunitListArgs),
-    Get(WorkunitRefArgs),
-}
-
-#[derive(Debug, Subcommand)]
 enum AssignmentsCommand {
     Start(AssignmentStartArgs),
     Get(AssignmentRefArgs),
@@ -224,6 +202,8 @@ enum DecisionsCommand {
 enum ProposalsCommand {
     Create(ProposalCreateArgs),
     Get(ProposalRefArgs),
+    ArtifactSummary(ProposalRefArgs),
+    ArtifactDetail(ProposalRefArgs),
     ListForWorkunit(WorkunitRefArgs),
     Approve(ProposalApproveArgs),
     Reject(ProposalRejectArgs),
@@ -906,28 +886,6 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        TopCommand::LegacyWorkstreams { command } => {
-            let service = SupervisorService::load(&overrides).await?;
-            match command {
-                LegacyWorkstreamsCommand::List => service.legacy_workstream_list().await?,
-                LegacyWorkstreamsCommand::Get(args) => {
-                    service.legacy_workstream_get(&args.workstream).await?
-                }
-            }
-        }
-        TopCommand::LegacyWorkunits { command } => {
-            let service = SupervisorService::load(&overrides).await?;
-            match command {
-                LegacyWorkunitsCommand::List(args) => {
-                    service
-                        .legacy_workunit_list(args.workstream.as_deref())
-                        .await?;
-                }
-                LegacyWorkunitsCommand::Get(args) => {
-                    service.legacy_workunit_get(&args.workunit).await?
-                }
-            }
-        }
         TopCommand::Assignments { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
@@ -999,6 +957,14 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 ProposalsCommand::Get(args) => service.proposal_get(&args.proposal).await?,
+                ProposalsCommand::ArtifactSummary(args) => {
+                    service
+                        .proposal_artifact_summary_get(&args.proposal)
+                        .await?;
+                }
+                ProposalsCommand::ArtifactDetail(args) => {
+                    service.proposal_artifact_detail_get(&args.proposal).await?;
+                }
                 ProposalsCommand::ListForWorkunit(args) => {
                     service.proposal_list_for_workunit(&args.workunit).await?;
                 }
@@ -1243,8 +1209,6 @@ mod tests {
         assert!(help.contains("workstreams"));
         assert!(help.contains("workunits"));
         assert!(help.contains("tracked-threads"));
-        assert!(help.contains("legacy-workstreams"));
-        assert!(help.contains("legacy-workunits"));
     }
 
     #[test]
@@ -1257,20 +1221,6 @@ mod tests {
             .to_string();
 
         assert!(help.contains("Canonical authority-backed CRUD for planning workstreams"));
-    }
-
-    #[test]
-    fn legacy_workstreams_help_marks_surface_as_compatibility() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("legacy-workstreams")
-            .expect("legacy-workstreams subcommand")
-            .render_help()
-            .to_string();
-
-        assert!(
-            help.contains("Compatibility list/get commands for legacy collaboration workstreams")
-        );
     }
 
     #[test]
@@ -1371,13 +1321,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_workstream_create_is_not_exposed() {
+    fn legacy_workstream_namespace_is_not_exposed() {
         assert!(Cli::try_parse_from(["orcas", "legacy-workstreams", "create"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "legacy-workstreams", "list"]).is_err());
     }
 
     #[test]
-    fn legacy_workunit_create_is_not_exposed() {
+    fn legacy_workunit_namespace_is_not_exposed() {
         assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "create"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "list"]).is_err());
     }
 
     #[test]
@@ -1548,6 +1500,46 @@ mod tests {
                 assert_eq!(args.assignment.as_deref(), Some("cta-1"));
                 assert_eq!(args.limit, Some(20));
                 assert!(args.include_superseded);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_proposal_artifact_summary_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "proposals",
+            "artifact-summary",
+            "--proposal",
+            "proposal-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Proposals {
+                command: ProposalsCommand::ArtifactSummary(args),
+            } => {
+                assert_eq!(args.proposal, "proposal-1");
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_proposal_artifact_detail_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "proposals",
+            "artifact-detail",
+            "--proposal",
+            "proposal-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Proposals {
+                command: ProposalsCommand::ArtifactDetail(args),
+            } => {
+                assert_eq!(args.proposal, "proposal-1");
             }
             other => panic!("unexpected command parse: {other:?}"),
         }

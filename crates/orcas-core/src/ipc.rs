@@ -13,8 +13,9 @@ use crate::collaboration::{
 use crate::communication::AssignmentCommunicationRecord;
 use crate::events::ConnectionState;
 use crate::supervisor::{
-    SupervisorProposalEdits, SupervisorProposalFailureStage, SupervisorProposalRecord,
-    SupervisorProposalStatus,
+    SupervisorPromptRenderArtifact, SupervisorProposal, SupervisorProposalEdits,
+    SupervisorProposalFailure, SupervisorProposalFailureStage, SupervisorProposalRecord,
+    SupervisorProposalStatus, SupervisorResponseArtifact,
 };
 
 pub mod methods {
@@ -42,11 +43,6 @@ pub mod methods {
     pub const TURN_START: &str = "turn/start";
     pub const TURN_STEER: &str = "turn/steer";
     pub const TURN_INTERRUPT: &str = "turn/interrupt";
-    pub const WORKSTREAM_CREATE: &str = "workstream/create";
-    pub const WORKSTREAM_LIST: &str = "workstream/list";
-    pub const WORKSTREAM_GET: &str = "workstream/get";
-    pub const WORKUNIT_CREATE: &str = "workunit/create";
-    pub const WORKUNIT_LIST: &str = "workunit/list";
     pub const WORKUNIT_GET: &str = "workunit/get";
     pub const AUTHORITY_HIERARCHY_GET: &str = "authority/hierarchy/get";
     pub const AUTHORITY_DELETE_PLAN: &str = "authority/delete/plan";
@@ -89,6 +85,8 @@ pub mod methods {
     pub const DECISION_APPLY: &str = "decision/apply";
     pub const PROPOSAL_CREATE: &str = "proposal/create";
     pub const PROPOSAL_GET: &str = "proposal/get";
+    pub const PROPOSAL_ARTIFACT_SUMMARY_GET: &str = "proposal/artifact_summary/get";
+    pub const PROPOSAL_ARTIFACT_DETAIL_GET: &str = "proposal/artifact_detail/get";
     pub const PROPOSAL_LIST_FOR_WORKUNIT: &str = "proposal/list_for_workunit";
     pub const PROPOSAL_APPROVE: &str = "proposal/approve";
     pub const PROPOSAL_REJECT: &str = "proposal/reject";
@@ -510,6 +508,55 @@ pub struct ProposalSummary {
     pub has_approval_edits: bool,
     pub generation_failure_stage: Option<SupervisorProposalFailureStage>,
     pub reasoner_model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorProposalArtifactSummary {
+    pub proposal_id: String,
+    pub proposal_status: SupervisorProposalStatus,
+    #[serde(default)]
+    pub prompt_artifact_present: bool,
+    pub prompt_template_version: Option<String>,
+    pub prompt_hash: Option<String>,
+    pub request_body_hash: Option<String>,
+    #[serde(default)]
+    pub response_artifact_present: bool,
+    pub response_hash: Option<String>,
+    #[serde(default)]
+    pub raw_response_body_present: bool,
+    pub raw_response_body_hash: Option<String>,
+    pub reasoner_backend: String,
+    pub reasoner_model: String,
+    pub reasoner_response_id: Option<String>,
+    #[serde(default)]
+    pub parsed_proposal_present: bool,
+    #[serde(default)]
+    pub approved_proposal_present: bool,
+    pub generation_failure_stage: Option<SupervisorProposalFailureStage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorProposalArtifactDetail {
+    pub proposal_id: String,
+    pub proposal_status: SupervisorProposalStatus,
+    pub created_at: DateTime<Utc>,
+    pub validated_at: Option<DateTime<Utc>>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub reasoner_backend: String,
+    pub reasoner_model: String,
+    pub reasoner_response_id: Option<String>,
+    #[serde(default)]
+    pub prompt_render: Option<SupervisorPromptRenderArtifact>,
+    #[serde(default)]
+    pub response_artifact: Option<SupervisorResponseArtifact>,
+    #[serde(default)]
+    pub reasoner_output_text: Option<String>,
+    #[serde(default)]
+    pub parsed_proposal: Option<SupervisorProposal>,
+    #[serde(default)]
+    pub approved_proposal: Option<SupervisorProposal>,
+    #[serde(default)]
+    pub generation_failure: Option<SupervisorProposalFailure>,
 }
 
 #[cfg(test)]
@@ -1526,6 +1573,26 @@ pub struct ProposalGetRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalGetResponse {
     pub proposal: SupervisorProposalRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalArtifactSummaryGetRequest {
+    pub proposal_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalArtifactSummaryGetResponse {
+    pub summary: SupervisorProposalArtifactSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalArtifactDetailGetRequest {
+    pub proposal_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalArtifactDetailGetResponse {
+    pub detail: SupervisorProposalArtifactDetail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
