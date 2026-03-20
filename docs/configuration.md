@@ -8,7 +8,7 @@ The practical rule is:
 
 1. Use the config file for persistent defaults.
 2. Use environment variables for per-process overrides.
-3. Use CLI flags for one-off supervisor sessions.
+3. Use CLI flags for one-off operator sessions.
 
 For site-wide packaging, the conventional optional locations are `/etc/orcas/config.toml` and `/etc/orcas/`. Those paths are not required for a working local install, but they are the right place to add a system-level layer if packaging grows one later.
 
@@ -23,7 +23,7 @@ Examples:
 ```bash
 RUST_LOG=info orcasd
 RUST_LOG=orcasd=debug,tokio=info orcasd
-RUST_LOG=orcas=debug orcas supervisor doctor
+RUST_LOG=orcas=debug orcas doctor
 ```
 
 The logging layer also understands the following Orcas-specific flags:

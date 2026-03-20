@@ -33,7 +33,7 @@ Check Orcas-level daemon state through the CLI.
 
 ```bash
 orcas daemon status
-orcas supervisor doctor
+orcas doctor
 ```
 
 The doctor command reports the config path, state path, socket path, daemon log path, and current Codex endpoint.
@@ -105,11 +105,11 @@ install -m 0755 bin/orcasd ~/.local/bin/orcasd
 
 ## Debugging Workflow
 
-When something fails, isolate the daemon from the supervisor.
+When something fails, isolate the daemon from the operator CLI.
 
 1. Run the daemon in the foreground and watch its log file.
 2. Increase verbosity with `RUST_LOG=debug`.
-3. Check whether the supervisor can connect to the local socket.
+3. Check whether the CLI can connect to the local socket.
 4. Verify whether the upstream Codex endpoint is reachable from the daemon.
 
 Example:
@@ -117,10 +117,10 @@ Example:
 ```bash
 RUST_LOG=debug orcasd
 orcas daemon status
-orcas supervisor doctor
+orcas doctor
 ```
 
-If the supervisor can talk to the daemon but the daemon reports an upstream failure, the problem is usually in the Codex endpoint or the local Codex binary path. If the supervisor cannot reach the daemon at all, focus on the socket path, unit state, and daemon log first.
+If the CLI can talk to the daemon but the daemon reports an upstream failure, the problem is usually in the Codex endpoint or the local Codex binary path. If the CLI cannot reach the daemon at all, focus on the socket path, unit state, and daemon log first.
 
 ## Upgrade Considerations
 

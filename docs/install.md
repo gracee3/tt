@@ -6,7 +6,7 @@ Orcas can be installed from a release tarball, a Debian package, or a source bui
 
 The build produces three executables:
 
-1. `orcas` for the supervisor CLI.
+1. `orcas` for the operator CLI.
 2. `orcasd` for the daemon service.
 3. `orcas-tui` for the interactive TUI.
 
@@ -17,7 +17,7 @@ Download the release tarball for your platform, then extract it and run the bina
 ```bash
 tar -xzf orcas-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 cd orcas-v0.1.0-x86_64-unknown-linux-gnu
-./bin/orcas supervisor doctor
+./bin/orcas doctor
 ./bin/orcasd
 ```
 

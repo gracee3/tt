@@ -32,7 +32,7 @@ On Linux, the easiest install path is a `.deb` package. If you are working from 
 ```bash
 sudo dpkg -i ./orcas_0.1.0_amd64.deb
 sudo systemctl enable --now orcas-daemon.service
-orcas supervisor doctor
+orcas doctor
 ```
 
 Or, from a tarball release:
@@ -40,11 +40,11 @@ Or, from a tarball release:
 ```bash
 tar -xzf orcas-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 cd orcas-v0.1.0-x86_64-unknown-linux-gnu
-./bin/orcas supervisor doctor
+./bin/orcas doctor
 ./bin/orcasd
 ```
 
-Once the daemon is running, `orcas supervisor doctor` is the quickest way to confirm that Orcas can see its configuration, runtime paths, socket, and Codex endpoint. From there, you can stay in the CLI or open the TUI.
+Once the daemon is running, `orcas doctor` is the quickest way to confirm that Orcas can see its configuration, runtime paths, socket, and Codex endpoint. From there, you can stay in the CLI or open the TUI.
 
 ```bash
 orcas-tui

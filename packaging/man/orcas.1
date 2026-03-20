@@ -9,7 +9,7 @@ The
 .B orcas
 command is the operator-facing CLI for the Orcas control plane. It connects to
 the local Orcas daemon over the Unix socket, inspects runtime state, and
-issues supervisor actions such as daemon lifecycle commands and workflow
+issues operator actions such as daemon lifecycle commands and workflow
 queries.
 
 Orcas does not talk to Codex directly. The daemon owns authoritative state,
@@ -20,7 +20,7 @@ acts as a client of that daemon.
 Check the local Orcas environment:
 
 .P
-.B orcas supervisor doctor
+.B orcas doctor
 
 .P
 Query daemon status:
@@ -40,7 +40,7 @@ Start or inspect the daemon:
 Set debug logging for a single session:
 
 .P
-.B RUST_LOG=debug orcas supervisor doctor
+.B RUST_LOG=debug orcas doctor
 .SH FILES
 .TP
 .I ~/.config/orcas/config.toml
