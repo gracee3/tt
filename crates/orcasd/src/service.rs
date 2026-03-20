@@ -3410,6 +3410,12 @@ impl OrcasDaemonService {
         &self,
         params: ipc::SupervisorDecisionRecordNoActionRequest,
     ) -> OrcasResult<ipc::SupervisorDecisionRecordNoActionResponse> {
+        let started_at = Instant::now();
+        info!(
+            decision_id = %params.decision_id,
+            action = "record_no_action",
+            "starting supervisor review action"
+        );
         enum RecordNoActionOutcome {
             Recorded {
                 superseded: SupervisorTurnDecision,
@@ -3442,12 +3448,28 @@ impl OrcasDaemonService {
                     ))
                 })?;
             if existing.kind != SupervisorTurnDecisionKind::NextTurn {
+                warn!(
+                    decision_id = %existing.decision_id,
+                    assignment_id = %existing.assignment_id,
+                    action = "record_no_action",
+                    reason = "decision is not next-turn",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "supervisor decision `{}` is not a next-turn decision",
                     existing.decision_id
                 )));
             }
             if existing.status != SupervisorTurnDecisionStatus::ProposedToHuman {
+                warn!(
+                    decision_id = %existing.decision_id,
+                    assignment_id = %existing.assignment_id,
+                    action = "record_no_action",
+                    reason = "decision is not pending human review",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "supervisor decision `{}` is not pending human review",
                     existing.decision_id
@@ -3460,6 +3482,14 @@ impl OrcasDaemonService {
                 .get(&existing.assignment_id)
                 .cloned()
                 .ok_or_else(|| {
+                    warn!(
+                        decision_id = %existing.decision_id,
+                        assignment_id = %existing.assignment_id,
+                        action = "record_no_action",
+                        reason = "assignment no longer exists",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "assignment `{}` no longer exists",
                         existing.assignment_id
@@ -3470,6 +3500,15 @@ impl OrcasDaemonService {
                 .get(&existing.codex_thread_id)
                 .cloned()
                 .ok_or_else(|| {
+                    warn!(
+                        decision_id = %existing.decision_id,
+                        assignment_id = %existing.assignment_id,
+                        action = "record_no_action",
+                        thread_id = %existing.codex_thread_id,
+                        reason = "thread is not loaded in Orcas state",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "thread `{}` is not loaded in Orcas state",
                         existing.codex_thread_id
@@ -3615,6 +3654,15 @@ impl OrcasDaemonService {
                     &recorded,
                 )
                 .await;
+                info!(
+                    decision_id = %recorded.decision_id,
+                    assignment_id = %recorded.assignment_id,
+                    action = "record_no_action",
+                    result = "recorded",
+                    superseded_decision_id = %superseded.decision_id,
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action persisted"
+                );
                 Ok(ipc::SupervisorDecisionRecordNoActionResponse { decision: recorded })
             }
             RecordNoActionOutcome::Stale {
@@ -3635,6 +3683,15 @@ impl OrcasDaemonService {
                     &decision,
                 )
                 .await;
+                warn!(
+                    decision_id = %decision.decision_id,
+                    assignment_id = %decision.assignment_id,
+                    action = "record_no_action",
+                    result = "stale",
+                    reason = %reason,
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action failed"
+                );
                 Err(OrcasError::Protocol(format!(
                     "supervisor decision `{}` became stale and no_action was not recorded: {reason}",
                     decision.decision_id
@@ -3647,6 +3704,12 @@ impl OrcasDaemonService {
         &self,
         params: ipc::SupervisorDecisionManualRefreshRequest,
     ) -> OrcasResult<ipc::SupervisorDecisionManualRefreshResponse> {
+        let started_at = Instant::now();
+        info!(
+            assignment_id = %params.assignment_id,
+            action = "manual_refresh",
+            "starting supervisor review action"
+        );
         let (decision, updated_assignment) = {
             let now = Utc::now();
             let requested_by = params
@@ -3660,12 +3723,26 @@ impl OrcasDaemonService {
                 .get(&params.assignment_id)
                 .cloned()
                 .ok_or_else(|| {
+                    warn!(
+                        assignment_id = %params.assignment_id,
+                        action = "manual_refresh",
+                        reason = "unknown Codex thread assignment",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "unknown Codex thread assignment `{}`",
                         params.assignment_id
                     ))
                 })?;
             if !Self::codex_assignment_supports_decisions(assignment.status) {
+                warn!(
+                    assignment_id = %assignment.assignment_id,
+                    action = "manual_refresh",
+                    reason = "assignment is not active",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "Codex thread assignment `{}` is not active",
                     assignment.assignment_id
@@ -3675,6 +3752,13 @@ impl OrcasDaemonService {
                 &state.collaboration,
                 &assignment.assignment_id,
             ) {
+                warn!(
+                    assignment_id = %assignment.assignment_id,
+                    action = "manual_refresh",
+                    reason = "open supervisor decision already exists",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "assignment `{}` already has open supervisor decision `{}`",
                     assignment.assignment_id, conflict_id
@@ -3685,12 +3769,28 @@ impl OrcasDaemonService {
                 .get(&assignment.codex_thread_id)
                 .cloned()
                 .ok_or_else(|| {
+                    warn!(
+                        assignment_id = %assignment.assignment_id,
+                        thread_id = %assignment.codex_thread_id,
+                        action = "manual_refresh",
+                        reason = "thread is not loaded in Orcas state",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "thread `{}` is not loaded in Orcas state",
                         assignment.codex_thread_id
                     ))
                 })?;
             if thread.summary.active_turn_id.is_some() {
+                warn!(
+                    assignment_id = %assignment.assignment_id,
+                    thread_id = %thread.summary.id,
+                    action = "manual_refresh",
+                    reason = "thread has active turn",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "thread `{}` has an active turn and cannot manual-refresh a next-turn proposal",
                     thread.summary.id
@@ -3704,6 +3804,13 @@ impl OrcasDaemonService {
             )
             .is_none()
             {
+                warn!(
+                    assignment_id = %assignment.assignment_id,
+                    action = "manual_refresh",
+                    reason = "no recorded no_action for current basis",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "assignment `{}` has no recorded no_action for the current basis",
                     assignment.assignment_id
@@ -3777,6 +3884,14 @@ impl OrcasDaemonService {
             &decision,
         )
         .await;
+        info!(
+            decision_id = %decision.decision_id,
+            assignment_id = %decision.assignment_id,
+            action = "manual_refresh",
+            result = "created",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "supervisor review action persisted"
+        );
         Ok(ipc::SupervisorDecisionManualRefreshResponse { decision })
     }
 
@@ -3784,6 +3899,12 @@ impl OrcasDaemonService {
         &self,
         params: ipc::SupervisorDecisionApproveAndSendRequest,
     ) -> OrcasResult<ipc::SupervisorDecisionApproveAndSendResponse> {
+        let started_at = Instant::now();
+        info!(
+            decision_id = %params.decision_id,
+            action = "approve_and_send",
+            "starting supervisor review action"
+        );
         let decision = self
             .state
             .read()
@@ -3793,12 +3914,27 @@ impl OrcasDaemonService {
             .get(&params.decision_id)
             .cloned()
             .ok_or_else(|| {
+                warn!(
+                    decision_id = %params.decision_id,
+                    action = "approve_and_send",
+                    reason = "unknown supervisor decision",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action failed"
+                );
                 OrcasError::Protocol(format!(
                     "unknown supervisor decision `{}`",
                     params.decision_id
                 ))
             })?;
         if decision.status != SupervisorTurnDecisionStatus::ProposedToHuman {
+            warn!(
+                decision_id = %decision.decision_id,
+                assignment_id = %decision.assignment_id,
+                action = "approve_and_send",
+                reason = "decision is not pending human review",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "supervisor review action rejected"
+            );
             return Err(OrcasError::Protocol(format!(
                 "supervisor decision `{}` is not pending human review",
                 decision.decision_id
@@ -3808,6 +3944,15 @@ impl OrcasDaemonService {
             let stale = self
                 .mark_supervisor_decision_stale(&decision.decision_id, &reason)
                 .await?;
+            warn!(
+                decision_id = %stale.decision_id,
+                assignment_id = %stale.assignment_id,
+                action = "approve_and_send",
+                result = "stale",
+                reason = %reason,
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "supervisor review action failed"
+            );
             return Err(OrcasError::Protocol(format!(
                 "supervisor decision `{}` became stale and was not sent: {}",
                 stale.decision_id, reason
@@ -3821,12 +3966,27 @@ impl OrcasDaemonService {
                 .supervisor_turn_decisions
                 .get_mut(&params.decision_id)
                 .ok_or_else(|| {
+                    warn!(
+                        decision_id = %params.decision_id,
+                        action = "approve_and_send",
+                        reason = "unknown supervisor decision during approval",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "unknown supervisor decision `{}`",
                         params.decision_id
                     ))
                 })?;
             if decision_record.status != SupervisorTurnDecisionStatus::ProposedToHuman {
+                warn!(
+                    decision_id = %decision_record.decision_id,
+                    assignment_id = %decision_record.assignment_id,
+                    action = "approve_and_send",
+                    reason = "decision is no longer pending human review",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "supervisor decision `{}` is no longer pending human review",
                     decision_record.decision_id
@@ -3838,6 +3998,14 @@ impl OrcasDaemonService {
         let sent_turn_id = match decision.kind {
             SupervisorTurnDecisionKind::NextTurn => {
                 let proposed_text = decision.proposed_text.clone().ok_or_else(|| {
+                    warn!(
+                        decision_id = %decision.decision_id,
+                        assignment_id = %decision.assignment_id,
+                        action = "approve_and_send",
+                        reason = "next-turn decision has no proposed text",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "supervisor decision `{}` has no proposed text to send",
                         decision.decision_id
@@ -3864,6 +4032,15 @@ impl OrcasDaemonService {
                         {
                             decision_record.status = SupervisorTurnDecisionStatus::ProposedToHuman;
                         }
+                        warn!(
+                            decision_id = %decision.decision_id,
+                            assignment_id = %decision.assignment_id,
+                            action = "approve_and_send",
+                            result = "send_failed",
+                            duration_ms = started_at.elapsed().as_millis() as u64,
+                            error = %error,
+                            "supervisor review action failed"
+                        );
                         return Err(error);
                     }
                 }
@@ -3871,6 +4048,14 @@ impl OrcasDaemonService {
             }
             SupervisorTurnDecisionKind::SteerActiveTurn => {
                 let basis_turn_id = decision.basis_turn_id.clone().ok_or_else(|| {
+                    warn!(
+                        decision_id = %decision.decision_id,
+                        assignment_id = %decision.assignment_id,
+                        action = "approve_and_send",
+                        reason = "steer decision missing basis_turn_id",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "steer decision `{}` is missing basis_turn_id",
                         decision.decision_id
@@ -3882,6 +4067,14 @@ impl OrcasDaemonService {
                     .map(|text| text.trim())
                     .filter(|text| !text.is_empty())
                     .ok_or_else(|| {
+                        warn!(
+                            decision_id = %decision.decision_id,
+                            assignment_id = %decision.assignment_id,
+                            action = "approve_and_send",
+                            reason = "steer decision has no proposed text",
+                            duration_ms = started_at.elapsed().as_millis() as u64,
+                            "supervisor review action failed"
+                        );
                         OrcasError::Protocol(format!(
                             "steer decision `{}` has no proposed text to send",
                             decision.decision_id
@@ -3908,12 +4101,29 @@ impl OrcasDaemonService {
                         {
                             decision_record.status = SupervisorTurnDecisionStatus::ProposedToHuman;
                         }
+                        warn!(
+                            decision_id = %decision.decision_id,
+                            assignment_id = %decision.assignment_id,
+                            action = "approve_and_send",
+                            result = "send_failed",
+                            duration_ms = started_at.elapsed().as_millis() as u64,
+                            error = %error,
+                            "supervisor review action failed"
+                        );
                         return Err(error);
                     }
                 }
             }
             SupervisorTurnDecisionKind::InterruptActiveTurn => {
                 let basis_turn_id = decision.basis_turn_id.clone().ok_or_else(|| {
+                    warn!(
+                        decision_id = %decision.decision_id,
+                        assignment_id = %decision.assignment_id,
+                        action = "approve_and_send",
+                        reason = "interrupt decision missing basis_turn_id",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "interrupt decision `{}` is missing basis_turn_id",
                         decision.decision_id
@@ -3938,6 +4148,15 @@ impl OrcasDaemonService {
                         {
                             decision_record.status = SupervisorTurnDecisionStatus::ProposedToHuman;
                         }
+                        warn!(
+                            decision_id = %decision.decision_id,
+                            assignment_id = %decision.assignment_id,
+                            action = "approve_and_send",
+                            result = "send_failed",
+                            duration_ms = started_at.elapsed().as_millis() as u64,
+                            error = %error,
+                            "supervisor review action failed"
+                        );
                         return Err(error);
                     }
                 }
@@ -3953,6 +4172,14 @@ impl OrcasDaemonService {
                 {
                     decision_record.status = SupervisorTurnDecisionStatus::ProposedToHuman;
                 }
+                warn!(
+                    decision_id = %decision.decision_id,
+                    assignment_id = %decision.assignment_id,
+                    action = "approve_and_send",
+                    reason = "no_action decisions are not sendable",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(
                     "no_action decisions are not sendable in this slice".to_string(),
                 ));
@@ -4039,6 +4266,15 @@ impl OrcasDaemonService {
             &sent,
         )
         .await;
+        info!(
+            decision_id = %sent.decision_id,
+            assignment_id = %sent.assignment_id,
+            action = "approve_and_send",
+            result = "sent",
+            sent_turn_id = sent.sent_turn_id.as_deref().unwrap_or("none"),
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "supervisor review action persisted"
+        );
         Ok(ipc::SupervisorDecisionApproveAndSendResponse { decision: sent })
     }
 
@@ -4046,6 +4282,12 @@ impl OrcasDaemonService {
         &self,
         params: ipc::SupervisorDecisionRejectRequest,
     ) -> OrcasResult<ipc::SupervisorDecisionRejectResponse> {
+        let started_at = Instant::now();
+        info!(
+            decision_id = %params.decision_id,
+            action = "reject_decision",
+            "starting supervisor review action"
+        );
         let (decision, updated_assignment) = {
             let now = Utc::now();
             let reviewed_by = params
@@ -4059,12 +4301,27 @@ impl OrcasDaemonService {
                 .get(&params.decision_id)
                 .cloned()
                 .ok_or_else(|| {
+                    warn!(
+                        decision_id = %params.decision_id,
+                        action = "reject_decision",
+                        reason = "unknown supervisor decision",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "supervisor review action failed"
+                    );
                     OrcasError::Protocol(format!(
                         "unknown supervisor decision `{}`",
                         params.decision_id
                     ))
                 })?;
             if existing.status != SupervisorTurnDecisionStatus::ProposedToHuman {
+                warn!(
+                    decision_id = %existing.decision_id,
+                    assignment_id = %existing.assignment_id,
+                    action = "reject_decision",
+                    reason = "decision is not pending human review",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "supervisor review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "supervisor decision `{}` is not pending human review",
                     existing.decision_id
@@ -4116,6 +4373,14 @@ impl OrcasDaemonService {
             &decision,
         )
         .await;
+        info!(
+            decision_id = %decision.decision_id,
+            assignment_id = %decision.assignment_id,
+            action = "reject_decision",
+            result = "rejected",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "supervisor review action persisted"
+        );
         Ok(ipc::SupervisorDecisionRejectResponse { decision })
     }
 
@@ -4953,10 +5218,17 @@ impl OrcasDaemonService {
         &self,
         params: ipc::ProposalApproveRequest,
     ) -> OrcasResult<ipc::ProposalApproveResponse> {
+        let started_at = Instant::now();
         let reviewed_by = params
             .reviewed_by
             .clone()
             .unwrap_or_else(|| "supervisor_cli".to_string());
+        info!(
+            proposal_id = %params.proposal_id,
+            action = "approve_proposal",
+            reviewed_by = %reviewed_by,
+            "starting review action"
+        );
 
         let (proposal, collaboration, stale_proposals) = {
             let mut state = self.state.write().await;
@@ -4992,6 +5264,14 @@ impl OrcasDaemonService {
         }
 
         if proposal.status != SupervisorProposalStatus::Open {
+            warn!(
+                proposal_id = %proposal.id,
+                work_unit_id = %proposal.primary_work_unit_id,
+                action = "approve_proposal",
+                reason = "proposal is not open",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "review action rejected"
+            );
             return Err(OrcasError::Protocol(format!(
                 "proposal `{}` is not open and cannot be approved",
                 proposal.id
@@ -4999,13 +5279,34 @@ impl OrcasDaemonService {
         }
 
         let original_proposal = proposal.proposal.as_ref().ok_or_else(|| {
+            warn!(
+                proposal_id = %proposal.id,
+                work_unit_id = %proposal.primary_work_unit_id,
+                action = "approve_proposal",
+                reason = "proposal payload missing",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "review action failed"
+            );
             OrcasError::Protocol(format!(
                 "proposal `{}` does not contain a model-generated proposal payload",
                 proposal.id
             ))
         })?;
         let approved_proposal = apply_edits(original_proposal, &params.edits);
-        validate_proposal(&approved_proposal, &proposal.context_pack, &collaboration)?;
+        if let Err(error) =
+            validate_proposal(&approved_proposal, &proposal.context_pack, &collaboration)
+        {
+            warn!(
+                proposal_id = %proposal.id,
+                work_unit_id = %proposal.primary_work_unit_id,
+                action = "approve_proposal",
+                reason = "approved proposal failed validation",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                error = %error,
+                "review action failed"
+            );
+            return Err(error);
+        }
 
         let (instructions, worker_id, worker_kind, communication_seed) =
             if approved_proposal.proposed_decision.requires_assignment {
@@ -5105,6 +5406,20 @@ impl OrcasDaemonService {
         }
         self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Approved, &updated_proposal)
             .await;
+        info!(
+            proposal_id = %updated_proposal.id,
+            work_unit_id = %updated_proposal.primary_work_unit_id,
+            action = "approve_proposal",
+            result = "approved",
+            decision_id = %decision_response.decision.id,
+            next_assignment_id = decision_response
+                .next_assignment
+                .as_ref()
+                .map(|assignment| assignment.id.as_str())
+                .unwrap_or("none"),
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "review action persisted"
+        );
 
         Ok(ipc::ProposalApproveResponse {
             proposal: updated_proposal,
@@ -5117,10 +5432,17 @@ impl OrcasDaemonService {
         &self,
         params: ipc::ProposalRejectRequest,
     ) -> OrcasResult<ipc::ProposalRejectResponse> {
+        let started_at = Instant::now();
         let reviewed_by = params
             .reviewed_by
             .clone()
             .unwrap_or_else(|| "supervisor_cli".to_string());
+        info!(
+            proposal_id = %params.proposal_id,
+            action = "reject_proposal",
+            reviewed_by = %reviewed_by,
+            "starting review action"
+        );
         let stale_proposals = {
             let mut state = self.state.write().await;
             let work_unit_id = state
@@ -5147,9 +5469,24 @@ impl OrcasDaemonService {
                 .supervisor_proposals
                 .get_mut(&params.proposal_id)
                 .ok_or_else(|| {
+                    warn!(
+                        proposal_id = %params.proposal_id,
+                        action = "reject_proposal",
+                        reason = "unknown proposal",
+                        duration_ms = started_at.elapsed().as_millis() as u64,
+                        "review action failed"
+                    );
                     OrcasError::Protocol(format!("unknown proposal `{}`", params.proposal_id))
                 })?;
             if proposal_record.status != SupervisorProposalStatus::Open {
+                warn!(
+                    proposal_id = %proposal_record.id,
+                    work_unit_id = %proposal_record.primary_work_unit_id,
+                    action = "reject_proposal",
+                    reason = "proposal is not open",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "review action rejected"
+                );
                 return Err(OrcasError::Protocol(format!(
                     "proposal `{}` is not open and cannot be rejected",
                     proposal_record.id
@@ -5164,6 +5501,14 @@ impl OrcasDaemonService {
         self.persist_collaboration_state().await?;
         self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Rejected, &proposal)
             .await;
+        info!(
+            proposal_id = %proposal.id,
+            work_unit_id = %proposal.primary_work_unit_id,
+            action = "reject_proposal",
+            result = "rejected",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "review action persisted"
+        );
         Ok(ipc::ProposalRejectResponse { proposal })
     }
 
@@ -5179,6 +5524,14 @@ impl OrcasDaemonService {
         params: ipc::DecisionApplyRequest,
         next_assignment_seed: Option<AssignmentCommunicationSeed>,
     ) -> OrcasResult<ipc::DecisionApplyResponse> {
+        let started_at = Instant::now();
+        info!(
+            work_unit_id = %params.work_unit_id,
+            report_id = params.report_id.as_deref().unwrap_or("latest"),
+            action = "apply_decision",
+            decision_type = ?params.decision_type,
+            "starting decision apply workflow"
+        );
         let (response, closed_assignment, work_unit_event, workstream_event, stale_proposals) = {
             let now = Utc::now();
             let mut state = self.state.write().await;
@@ -5394,6 +5747,21 @@ impl OrcasDaemonService {
             self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Stale, proposal)
                 .await;
         }
+        info!(
+            decision_id = %response.decision.id,
+            work_unit_id = %response.decision.work_unit_id,
+            action = "apply_decision",
+            decision_type = ?response.decision.decision_type,
+            result = "persisted",
+            next_assignment_id = response
+                .next_assignment
+                .as_ref()
+                .map(|assignment| assignment.id.as_str())
+                .unwrap_or("none"),
+            stale_proposal_count = stale_proposals.len(),
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "decision apply workflow persisted"
+        );
         Ok(response)
     }
 
