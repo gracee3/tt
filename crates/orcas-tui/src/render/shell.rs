@@ -221,6 +221,29 @@ fn help_navigation_line_compact(view: TopLevelView) -> &'static str {
 
 fn key_bindings_hint(state: &AppState) -> Vec<Span<'static>> {
     match state.current_view {
+        TopLevelView::Overview
+            if state.main_view.program_view == crate::app::ProgramView::Review
+                && state.review_view.artifact_detail.is_some() =>
+        {
+            let mut spans = action_hint("esc/v", "close artifacts");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("up/down", "scroll artifacts"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("pgup/pgdn", "scroll faster"));
+            spans
+        }
+        TopLevelView::Overview
+            if state.main_view.program_view == crate::app::ProgramView::Review =>
+        {
+            let mut spans = action_hint("up/down", "review selection");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("v", "artifact detail"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("a/d", "approve/reject decision"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("r", "refresh"));
+            spans
+        }
         TopLevelView::Overview => action_hint("r", "refresh"),
         TopLevelView::Threads => {
             if state.steer_compose.is_some() {

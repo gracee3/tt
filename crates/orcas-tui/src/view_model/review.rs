@@ -3,11 +3,12 @@ use orcas_core::{
     ReportConfidence, ReportDisposition, ReportParseResult, SupervisorProposalFailureStage,
     SupervisorProposalStatus, ipc,
 };
+use orcas_core::{SupervisorPromptRenderArtifact, SupervisorResponseArtifact};
 
 use super::main::{MainStatusSegmentViewModel, ProgramTabViewModel};
 use super::shared::{
-    PanelViewModel, abbreviate, compact_line, connection_status, event_log, status_banner,
-    timestamp_label,
+    PanelViewModel, abbreviate, compact_line, connection_status, event_log, short_id,
+    status_banner, timestamp_label,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct ReviewViewModel {
     pub header: ReviewHeaderViewModel,
     pub queue: ReviewQueueViewModel,
     pub detail_panel: PanelViewModel,
+    pub artifact_detail_overlay: Option<ReviewArtifactDetailOverlayViewModel>,
     pub footer: ReviewFooterViewModel,
 }
 
@@ -68,6 +70,13 @@ pub struct ReviewActionViewModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewArtifactDetailOverlayViewModel {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewQueueDisplayRowViewModel {
     Section(ReviewQueueSectionViewModel),
     Row(ReviewQueueRowViewModel),
@@ -85,6 +94,7 @@ pub fn review_view(state: &AppState) -> ReviewViewModel {
         header: review_header(state),
         queue: review_queue(state),
         detail_panel: review_detail_panel(state),
+        artifact_detail_overlay: review_artifact_detail_overlay(state),
         footer: review_footer(state),
     }
 }
@@ -468,6 +478,7 @@ fn proposal_detail_panel(
     if let Some(reviewed_at) = record.reviewed_at {
         lines.push(format!("reviewed: {}", timestamp_label(reviewed_at)));
     }
+    lines.extend(proposal_artifact_summary_lines(state, proposal_id));
 
     PanelViewModel {
         title: format!(
@@ -625,6 +636,7 @@ fn failure_detail_panel(state: &AppState, work_unit_id: &str, proposal_id: &str)
             abbreviate(&compact_line(output), 120)
         ));
     }
+    lines.extend(proposal_artifact_summary_lines(state, proposal_id));
 
     PanelViewModel {
         title: format!(
@@ -635,6 +647,301 @@ fn failure_detail_panel(state: &AppState, work_unit_id: &str, proposal_id: &str)
         ),
         lines,
     }
+}
+
+fn review_artifact_detail_overlay(
+    state: &AppState,
+) -> Option<ReviewArtifactDetailOverlayViewModel> {
+    let detail_state = state.review_view.artifact_detail.as_ref()?;
+    let proposal_id = detail_state.proposal_id.as_str();
+    let mut lines = vec![format!("proposal_id: {proposal_id}")];
+    if state
+        .loading_proposal_artifact_details
+        .contains(proposal_id)
+    {
+        lines.push("status: loading explicit proposal artifact detail".to_string());
+    } else if let Some(error) = state.proposal_artifact_detail_errors.get(proposal_id) {
+        lines.push("status: detail unavailable".to_string());
+        lines.push(format!("error: {}", abbreviate(&compact_line(error), 140)));
+    } else if let Some(detail) = state.proposal_artifact_details.get(proposal_id) {
+        lines.push(format!(
+            "proposal_status: {}",
+            proposal_status_label(detail.proposal_status)
+        ));
+        lines.push(format!("reasoner_backend: {}", detail.reasoner_backend));
+        lines.push(format!("reasoner_model: {}", detail.reasoner_model));
+        if let Some(response_id) = detail.reasoner_response_id.as_ref() {
+            lines.push(format!("reasoner_response_id: {response_id}"));
+        }
+        lines.push(format!("created: {}", timestamp_label(detail.created_at)));
+        if let Some(validated_at) = detail.validated_at {
+            lines.push(format!("validated: {}", timestamp_label(validated_at)));
+        }
+        if let Some(reviewed_at) = detail.reviewed_at {
+            lines.push(format!("reviewed: {}", timestamp_label(reviewed_at)));
+        }
+        append_prompt_render_section(&mut lines, detail.prompt_render.as_ref());
+        append_response_artifact_section(&mut lines, detail.response_artifact.as_ref());
+        append_multiline_section(
+            &mut lines,
+            "extracted_output_text",
+            detail.reasoner_output_text.as_deref(),
+        );
+        append_json_section(
+            &mut lines,
+            "parsed_proposal",
+            detail.parsed_proposal.as_ref(),
+        );
+        append_json_section(
+            &mut lines,
+            "approved_proposal",
+            detail.approved_proposal.as_ref(),
+        );
+        if let Some(failure) = detail.generation_failure.as_ref() {
+            lines.push("generation_failure:".to_string());
+            lines.push(format!(
+                "  stage={}",
+                proposal_failure_stage_label(failure.stage)
+            ));
+            for line in compact_line(&failure.message)
+                .lines()
+                .flat_map(|line| wrap_text_lines(line, 136))
+            {
+                lines.push(format!("  {line}"));
+            }
+        }
+    } else {
+        lines.push("status: detail has not been fetched yet".to_string());
+        lines.push(
+            "hint: press v on a proposal or failure row to fetch artifact evidence.".to_string(),
+        );
+    }
+
+    Some(ReviewArtifactDetailOverlayViewModel {
+        title: format!("Proposal Artifact Detail {}", short_id(proposal_id)),
+        lines,
+        scroll_offset: detail_state.scroll_offset,
+    })
+}
+
+fn proposal_artifact_summary_lines(state: &AppState, proposal_id: &str) -> Vec<String> {
+    let mut lines = vec!["artifact_summary:".to_string()];
+    if state
+        .loading_proposal_artifact_summaries
+        .contains(proposal_id)
+    {
+        lines.push("  status=loading".to_string());
+        return lines;
+    }
+    if let Some(error) = state.proposal_artifact_summary_errors.get(proposal_id) {
+        lines.push(format!(
+            "  status=unavailable error={}",
+            abbreviate(&compact_line(error), 104)
+        ));
+        return lines;
+    }
+    let Some(summary) = state.proposal_artifact_summaries.get(proposal_id) else {
+        lines.push("  status=not_loaded".to_string());
+        lines.push("  hint=press v to load full artifact detail".to_string());
+        return lines;
+    };
+
+    lines.push(format!(
+        "  prompt={} template={} hash={}",
+        presence_label(summary.prompt_artifact_present),
+        summary.prompt_template_version.as_deref().unwrap_or("-"),
+        summary
+            .prompt_hash
+            .as_deref()
+            .map(short_id)
+            .unwrap_or_else(|| "-".to_string()),
+    ));
+    if let Some(request_body_hash) = summary.request_body_hash.as_ref() {
+        lines.push(format!(
+            "  request_body_hash={}",
+            short_id(request_body_hash)
+        ));
+    }
+    lines.push(format!(
+        "  response={} hash={} raw_body={}",
+        presence_label(summary.response_artifact_present),
+        summary
+            .response_hash
+            .as_deref()
+            .map(short_id)
+            .unwrap_or_else(|| "-".to_string()),
+        presence_label(summary.raw_response_body_present),
+    ));
+    lines.push(format!(
+        "  backend={} model={} response_id={}",
+        summary.reasoner_backend,
+        summary.reasoner_model,
+        summary
+            .reasoner_response_id
+            .as_deref()
+            .map(short_id)
+            .unwrap_or_else(|| "-".to_string())
+    ));
+    lines.push(format!(
+        "  parsed={} approved={} failure_stage={}",
+        presence_label(summary.parsed_proposal_present),
+        presence_label(summary.approved_proposal_present),
+        summary
+            .generation_failure_stage
+            .map(proposal_failure_stage_label)
+            .unwrap_or("-")
+    ));
+    lines
+}
+
+fn append_prompt_render_section(
+    lines: &mut Vec<String>,
+    prompt_render: Option<&SupervisorPromptRenderArtifact>,
+) {
+    lines.push("prompt_render:".to_string());
+    let Some(prompt_render) = prompt_render else {
+        lines.push("  none".to_string());
+        return;
+    };
+    lines.push(format!(
+        "  template_version={} context_schema={} proposal_schema={}",
+        prompt_render.render_spec.template_version,
+        prompt_render.render_spec.context_schema_version,
+        prompt_render.render_spec.proposal_schema_version
+    ));
+    lines.push(format!("  prompt_hash={}", prompt_render.prompt_hash));
+    if let Some(request_body_hash) = prompt_render.request_body_hash.as_ref() {
+        lines.push(format!("  request_body_hash={request_body_hash}"));
+    }
+    lines.push(format!(
+        "  rendered_at={}",
+        timestamp_label(prompt_render.rendered_at)
+    ));
+    append_multiline_section(
+        lines,
+        "prompt_instructions_text",
+        Some(&prompt_render.instructions_text),
+    );
+    append_multiline_section(
+        lines,
+        "prompt_user_content_text",
+        Some(&prompt_render.user_content_text),
+    );
+    append_multiline_section(
+        lines,
+        "prompt_context_pack_text",
+        Some(&prompt_render.context_pack_text),
+    );
+}
+
+fn append_response_artifact_section(
+    lines: &mut Vec<String>,
+    response_artifact: Option<&SupervisorResponseArtifact>,
+) {
+    lines.push("response_artifact:".to_string());
+    let Some(response_artifact) = response_artifact else {
+        lines.push("  none".to_string());
+        return;
+    };
+    lines.push(format!(
+        "  hash={} backend={} model={}",
+        response_artifact.response_hash, response_artifact.backend_kind, response_artifact.model
+    ));
+    lines.push(format!(
+        "  response_id={} captured_at={}",
+        response_artifact.response_id.as_deref().unwrap_or("-"),
+        timestamp_label(response_artifact.captured_at)
+    ));
+    if let Some(usage) = response_artifact.usage.as_ref() {
+        lines.push(format!(
+            "  usage input={:?} output={:?} total={:?}",
+            usage.input_tokens, usage.output_tokens, usage.total_tokens
+        ));
+    }
+    append_json_section(
+        lines,
+        "response_output_items",
+        Some(&response_artifact.output_items),
+    );
+    append_multiline_section(
+        lines,
+        "response_extracted_output_text",
+        response_artifact.extracted_output_text.as_deref(),
+    );
+    if let Some(raw_hash) = response_artifact.raw_response_body_hash.as_ref() {
+        lines.push(format!("  raw_response_body_hash={raw_hash}"));
+    }
+    append_multiline_section(
+        lines,
+        "raw_response_body",
+        response_artifact.raw_response_body.as_deref(),
+    );
+}
+
+fn append_multiline_section(lines: &mut Vec<String>, label: &str, value: Option<&str>) {
+    lines.push(format!("{label}:"));
+    let Some(value) = value else {
+        lines.push("  none".to_string());
+        return;
+    };
+    for raw_line in value.lines() {
+        let wrapped = wrap_text_lines(raw_line, 136);
+        if wrapped.is_empty() {
+            lines.push("  ".to_string());
+        } else {
+            for line in wrapped {
+                lines.push(format!("  {line}"));
+            }
+        }
+    }
+}
+
+fn append_json_section<T: std::fmt::Debug>(
+    lines: &mut Vec<String>,
+    label: &str,
+    value: Option<&T>,
+) {
+    lines.push(format!("{label}:"));
+    let Some(value) = value else {
+        lines.push("  none".to_string());
+        return;
+    };
+    let serialized = format!("{value:#?}");
+    for line in serialized.lines() {
+        lines.push(format!("  {line}"));
+    }
+}
+
+fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut wrapped = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let next_len = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if next_len > max_chars && !current.is_empty() {
+            wrapped.push(current);
+            current = word.to_string();
+        } else if current.is_empty() {
+            current = word.to_string();
+        } else {
+            current.push(' ');
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        wrapped.push(current);
+    }
+    wrapped
+}
+
+fn presence_label(present: bool) -> &'static str {
+    if present { "present" } else { "absent" }
 }
 
 fn review_required_detail_panel(
@@ -736,6 +1043,23 @@ fn review_required_detail_panel(
 }
 
 fn review_footer(state: &AppState) -> ReviewFooterViewModel {
+    if state.review_view.artifact_detail.is_some() {
+        return ReviewFooterViewModel {
+            title: "Artifact Detail".to_string(),
+            lines: vec![
+                "Explicit artifact detail is open for the selected proposal.".to_string(),
+                "This overlay shows persisted prompt/response evidence, extracted output, parsed proposal state, and any failure context."
+                    .to_string(),
+            ],
+            actions: vec![ReviewActionViewModel {
+                key: "v".to_string(),
+                label: "close artifact detail".to_string(),
+            }],
+            hint_line: "esc close  v close  up/down scroll  pageup/pagedown scroll  ? help"
+                .to_string(),
+        };
+    }
+
     let (lines, actions, hint_line) = match state.review_view.selected.as_ref() {
         Some(ReviewSelection::Decision { decision_id }) => {
             let actionable = decision_summary(state, decision_id).is_some_and(|decision| {
@@ -778,20 +1102,26 @@ fn review_footer(state: &AppState) -> ReviewFooterViewModel {
         Some(ReviewSelection::Proposal { .. }) => (
             vec![
                 "Selected item is an open supervisor proposal.".to_string(),
-                "Use the detail pane to review summary, timing, and decision type; proposal mutation remains in the existing workflow."
+                "Use the detail pane to review summary, timing, and decision type; press v to inspect persisted prompt/response evidence without leaving the review flow."
                     .to_string(),
             ],
-            Vec::new(),
-            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+            vec![ReviewActionViewModel {
+                key: "v".to_string(),
+                label: "view artifact detail".to_string(),
+            }],
+            "up/down move  v view artifacts  tab switch tabs  r refresh  ? help".to_string(),
         ),
         Some(ReviewSelection::Failure { .. }) => (
             vec![
                 "Selected item is a proposal generation failure.".to_string(),
-                "Use the failure stage and source linkage to decide whether to retry generation or inspect the originating work context."
+                "Use the failure stage and source linkage to decide whether to retry generation or inspect the originating work context; press v for full reasoning evidence."
                     .to_string(),
             ],
-            Vec::new(),
-            "up/down move  tab switch tabs  r refresh  ? help".to_string(),
+            vec![ReviewActionViewModel {
+                key: "v".to_string(),
+                label: "view artifact detail".to_string(),
+            }],
+            "up/down move  v view artifacts  tab switch tabs  r refresh  ? help".to_string(),
         ),
         Some(ReviewSelection::ReviewRequired { .. }) => (
             vec![

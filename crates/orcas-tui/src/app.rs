@@ -213,6 +213,13 @@ pub struct ReviewViewState {
     pub selected: Option<ReviewSelection>,
     pub scroll_offset: usize,
     pub selection_anchor: usize,
+    pub artifact_detail: Option<ReviewArtifactDetailState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewArtifactDetailState {
+    pub proposal_id: String,
+    pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -244,6 +251,12 @@ pub struct AppState {
     pub reconnect_attempt: u32,
     pub session: ipc::SessionState,
     pub collaboration: ipc::CollaborationSnapshot,
+    pub proposal_artifact_summaries: HashMap<String, ipc::SupervisorProposalArtifactSummary>,
+    pub proposal_artifact_details: HashMap<String, ipc::SupervisorProposalArtifactDetail>,
+    pub loading_proposal_artifact_summaries: BTreeSet<String>,
+    pub loading_proposal_artifact_details: BTreeSet<String>,
+    pub proposal_artifact_summary_errors: HashMap<String, String>,
+    pub proposal_artifact_detail_errors: HashMap<String, String>,
     pub authority_main: AuthorityMainState,
     pub threads: Vec<ipc::ThreadSummary>,
     pub daemon_models: Vec<ipc::ModelSummary>,
@@ -353,6 +366,9 @@ pub enum UserAction {
     ManualRefreshForSelectedThread,
     ApproveSelectedSupervisorDecision,
     RejectSelectedSupervisorDecision,
+    OpenSelectedProposalArtifactDetail,
+    CloseReviewArtifactDetail,
+    ScrollReviewArtifactDetail(i16),
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +446,16 @@ pub enum UiEvent {
         action: ipc::ProposalLifecycleAction,
         proposal: ipc::ProposalSummary,
         work_unit: ipc::WorkUnitSummary,
+    },
+    ProposalArtifactSummaryLoaded(ipc::SupervisorProposalArtifactSummary),
+    ProposalArtifactSummaryLoadFailed {
+        proposal_id: String,
+        message: String,
+    },
+    ProposalArtifactDetailLoaded(ipc::SupervisorProposalArtifactDetail),
+    ProposalArtifactDetailLoadFailed {
+        proposal_id: String,
+        message: String,
     },
     WorkUnitDetailLoaded(ipc::WorkunitGetResponse),
     TurnUpdated {
@@ -580,6 +606,12 @@ pub enum Effect {
     },
     LoadWorkUnitDetail {
         work_unit_id: String,
+    },
+    LoadProposalArtifactSummary {
+        proposal_id: String,
+    },
+    LoadProposalArtifactDetail {
+        proposal_id: String,
     },
     SubmitPrompt {
         thread_id: String,
@@ -1139,6 +1171,60 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
             });
             vec![Effect::RejectSupervisorDecision { decision_id }]
         }
+        UserAction::OpenSelectedProposalArtifactDetail => {
+            let Some(proposal_id) = selected_review_proposal_id(state).map(ToOwned::to_owned)
+            else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a proposal or failure row to inspect artifacts.".to_string(),
+                });
+                return Vec::new();
+            };
+            state.review_view.artifact_detail = Some(ReviewArtifactDetailState {
+                proposal_id: proposal_id.clone(),
+                scroll_offset: 0,
+            });
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!("Opening artifact evidence for proposal {}...", proposal_id),
+            });
+            if state.proposal_artifact_details.contains_key(&proposal_id)
+                || state
+                    .loading_proposal_artifact_details
+                    .contains(proposal_id.as_str())
+            {
+                Vec::new()
+            } else {
+                state
+                    .proposal_artifact_detail_errors
+                    .remove(proposal_id.as_str());
+                state
+                    .loading_proposal_artifact_details
+                    .insert(proposal_id.clone());
+                vec![Effect::LoadProposalArtifactDetail { proposal_id }]
+            }
+        }
+        UserAction::CloseReviewArtifactDetail => {
+            if state.review_view.artifact_detail.take().is_some() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Info,
+                    message: "Closed proposal artifact detail.".to_string(),
+                });
+            }
+            Vec::new()
+        }
+        UserAction::ScrollReviewArtifactDetail(delta) => {
+            if let Some(detail) = state.review_view.artifact_detail.as_mut() {
+                if delta.is_negative() {
+                    detail.scroll_offset = detail
+                        .scroll_offset
+                        .saturating_sub(delta.unsigned_abs() as usize);
+                } else {
+                    detail.scroll_offset = detail.scroll_offset.saturating_add(delta as usize);
+                }
+            }
+            Vec::new()
+        }
     }
 }
 
@@ -1163,6 +1249,12 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.daemon = Some(snapshot.daemon);
             state.session = snapshot.session;
             state.collaboration = snapshot.collaboration;
+            state.proposal_artifact_summaries.clear();
+            state.proposal_artifact_details.clear();
+            state.loading_proposal_artifact_summaries.clear();
+            state.loading_proposal_artifact_details.clear();
+            state.proposal_artifact_summary_errors.clear();
+            state.proposal_artifact_detail_errors.clear();
             state.threads = snapshot.threads;
             state.thread_details.clear();
             state.turn_states.clear();
@@ -1201,6 +1293,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             reconcile_collaboration_selection(state);
             reconcile_main_view(state);
             effects.extend(load_selected_work_unit_detail_if_needed(state));
+            effects.extend(load_selected_review_artifact_summary_if_needed(state));
             effects.push(Effect::LoadActiveTurns);
             effects.push(Effect::LoadAuthorityHierarchy);
             state.banner = None;
@@ -1219,6 +1312,13 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.models_loading = false;
             state.daemon_phase = DaemonConnectionPhase::Reconnecting;
             state.prompt_in_flight = false;
+            state.proposal_artifact_summaries.clear();
+            state.proposal_artifact_details.clear();
+            state.loading_proposal_artifact_summaries.clear();
+            state.loading_proposal_artifact_details.clear();
+            state.proposal_artifact_summary_errors.clear();
+            state.proposal_artifact_detail_errors.clear();
+            state.review_view.artifact_detail = None;
             invalidate_authority_view_state(state, true);
             if let Some(daemon) = state.daemon.as_mut() {
                 daemon.upstream.status = "disconnected".to_string();
@@ -1292,6 +1392,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 .workstream_details
                 .insert(detail.workstream.id.to_string(), detail);
             reconcile_main_view(state);
+            effects.extend(load_selected_review_artifact_summary_if_needed(state));
         }
         UiEvent::AuthorityWorkUnitDetailLoaded(detail) => {
             state
@@ -1729,6 +1830,22 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             ..
         } => {
             let selected = state.selected_work_unit_id.as_deref() == Some(work_unit.id.as_str());
+            state
+                .proposal_artifact_summaries
+                .remove(proposal.id.as_str());
+            state.proposal_artifact_details.remove(proposal.id.as_str());
+            state
+                .loading_proposal_artifact_summaries
+                .remove(proposal.id.as_str());
+            state
+                .loading_proposal_artifact_details
+                .remove(proposal.id.as_str());
+            state
+                .proposal_artifact_summary_errors
+                .remove(proposal.id.as_str());
+            state
+                .proposal_artifact_detail_errors
+                .remove(proposal.id.as_str());
             upsert_work_unit_summary(&mut state.collaboration.work_units, work_unit);
             reconcile_main_view(state);
             if selected {
@@ -1738,12 +1855,70 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                     .work_unit_details
                     .remove(&proposal.primary_work_unit_id);
             }
+            effects.extend(load_selected_review_artifact_summary_if_needed(state));
+        }
+        UiEvent::ProposalArtifactSummaryLoaded(summary) => {
+            state
+                .loading_proposal_artifact_summaries
+                .remove(summary.proposal_id.as_str());
+            state
+                .proposal_artifact_summary_errors
+                .remove(summary.proposal_id.as_str());
+            state
+                .proposal_artifact_summaries
+                .insert(summary.proposal_id.clone(), summary);
+        }
+        UiEvent::ProposalArtifactSummaryLoadFailed {
+            proposal_id,
+            message,
+        } => {
+            state
+                .loading_proposal_artifact_summaries
+                .remove(proposal_id.as_str());
+            state
+                .proposal_artifact_summary_errors
+                .insert(proposal_id.clone(), message.clone());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Warning,
+                message: format!(
+                    "Proposal artifact summary unavailable for {proposal_id}: {message}"
+                ),
+            });
+        }
+        UiEvent::ProposalArtifactDetailLoaded(detail) => {
+            state
+                .loading_proposal_artifact_details
+                .remove(detail.proposal_id.as_str());
+            state
+                .proposal_artifact_detail_errors
+                .remove(detail.proposal_id.as_str());
+            state
+                .proposal_artifact_details
+                .insert(detail.proposal_id.clone(), detail);
+        }
+        UiEvent::ProposalArtifactDetailLoadFailed {
+            proposal_id,
+            message,
+        } => {
+            state
+                .loading_proposal_artifact_details
+                .remove(proposal_id.as_str());
+            state
+                .proposal_artifact_detail_errors
+                .insert(proposal_id.clone(), message.clone());
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Warning,
+                message: format!(
+                    "Proposal artifact detail unavailable for {proposal_id}: {message}"
+                ),
+            });
         }
         UiEvent::WorkUnitDetailLoaded(detail) => {
             state
                 .work_unit_details
                 .insert(detail.work_unit.id.clone(), detail);
             reconcile_main_view(state);
+            effects.extend(load_selected_review_artifact_summary_if_needed(state));
         }
         UiEvent::TurnUpdated { thread_id, turn } => {
             ensure_thread_detail(state, &thread_id);
@@ -1981,6 +2156,7 @@ fn reconcile_review_view(state: &mut AppState) {
         state.review_view.selected = None;
         state.review_view.scroll_offset = 0;
         state.review_view.selection_anchor = 0;
+        state.review_view.artifact_detail = None;
         return;
     }
 
@@ -1998,6 +2174,21 @@ fn reconcile_review_view(state: &mut AppState) {
         })
         .unwrap_or_else(|| visible_rows[0].clone());
     restore_review_selection(state, selection);
+    if state
+        .review_view
+        .artifact_detail
+        .as_ref()
+        .is_some_and(|detail| {
+            state
+                .review_view
+                .selected
+                .as_ref()
+                .and_then(review_selection_proposal_id)
+                != Some(detail.proposal_id.as_str())
+        })
+    {
+        state.review_view.artifact_detail = None;
+    }
 }
 
 pub(crate) fn review_queue_selections(state: &AppState) -> Vec<ReviewSelection> {
@@ -2411,10 +2602,48 @@ fn apply_review_selection(
         ReviewSelection::Proposal { work_unit_id, .. }
         | ReviewSelection::Failure { work_unit_id, .. }
         | ReviewSelection::ReviewRequired { work_unit_id, .. } => {
-            load_work_unit_detail_if_needed_for(state, &work_unit_id)
+            let mut effects = load_work_unit_detail_if_needed_for(state, &work_unit_id);
+            effects.extend(load_selected_review_artifact_summary_if_needed(state));
+            effects
         }
         ReviewSelection::Decision { .. } => Vec::new(),
     }
+}
+
+fn load_selected_review_artifact_summary_if_needed(state: &mut AppState) -> Vec<Effect> {
+    let Some(proposal_id) = selected_review_proposal_id(state).map(ToOwned::to_owned) else {
+        return Vec::new();
+    };
+    if state.proposal_artifact_summaries.contains_key(&proposal_id)
+        || state
+            .loading_proposal_artifact_summaries
+            .contains(proposal_id.as_str())
+    {
+        return Vec::new();
+    }
+    state
+        .proposal_artifact_summary_errors
+        .remove(proposal_id.as_str());
+    state
+        .loading_proposal_artifact_summaries
+        .insert(proposal_id.clone());
+    vec![Effect::LoadProposalArtifactSummary { proposal_id }]
+}
+
+pub(crate) fn review_selection_proposal_id(selection: &ReviewSelection) -> Option<&str> {
+    match selection {
+        ReviewSelection::Proposal { proposal_id, .. }
+        | ReviewSelection::Failure { proposal_id, .. } => Some(proposal_id.as_str()),
+        ReviewSelection::Decision { .. } | ReviewSelection::ReviewRequired { .. } => None,
+    }
+}
+
+fn selected_review_proposal_id(state: &AppState) -> Option<&str> {
+    state
+        .review_view
+        .selected
+        .as_ref()
+        .and_then(review_selection_proposal_id)
 }
 
 fn expand_main_selection_ancestors(state: &mut AppState, selection: &MainHierarchySelection) {
@@ -4085,7 +4314,11 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
         | UiEvent::AuthorityWorkUnitDetailLoaded(_)
         | UiEvent::AuthorityTrackedThreadDetailLoaded(_)
         | UiEvent::AuthorityDeletePlanLoaded(_) => return None,
-        UiEvent::WorkUnitDetailLoaded(_) => return None,
+        UiEvent::WorkUnitDetailLoaded(_)
+        | UiEvent::ProposalArtifactSummaryLoaded(_)
+        | UiEvent::ProposalArtifactSummaryLoadFailed { .. }
+        | UiEvent::ProposalArtifactDetailLoaded(_)
+        | UiEvent::ProposalArtifactDetailLoadFailed { .. } => return None,
         UiEvent::Ignored => return None,
         UiEvent::CodexSessionsChanged { .. } => return None,
         UiEvent::ReconnectScheduled { attempt, .. } => (

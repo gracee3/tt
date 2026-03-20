@@ -16,9 +16,11 @@ use orcas_core::{
     DraftAssignment, ProposedDecision, RecentPrimaryHistory, Report, ReportConfidence,
     ReportDisposition, ReportParseResult, SupervisorAssignmentContext, SupervisorContextPack,
     SupervisorDependencyContext, SupervisorPackLimits, SupervisorPackTruncation,
-    SupervisorProposal, SupervisorProposalFailure, SupervisorProposalFailureStage,
-    SupervisorProposalRecord, SupervisorProposalStatus, SupervisorProposalTrigger,
-    SupervisorProposalTriggerKind, SupervisorSourceReportContext, SupervisorStateAnchor,
+    SupervisorPromptRenderArtifact, SupervisorPromptRenderSpec, SupervisorProposal,
+    SupervisorProposalFailure, SupervisorProposalFailureStage, SupervisorProposalRecord,
+    SupervisorProposalStatus, SupervisorProposalTrigger, SupervisorProposalTriggerKind,
+    SupervisorReasonerUsage, SupervisorResponseArtifact, SupervisorResponseContentPart,
+    SupervisorResponseOutputItem, SupervisorSourceReportContext, SupervisorStateAnchor,
     SupervisorSummary, SupervisorWorkUnitContext, SupervisorWorkerSessionContext,
     SupervisorWorkstreamContext, WorkUnit, WorkUnitStatus, WorkstreamStatus, ipc,
 };
@@ -313,6 +315,50 @@ fn sample_proposal_record(
         warnings: Vec::new(),
         open_questions: Vec::new(),
     };
+    let prompt_render = SupervisorPromptRenderArtifact {
+        render_spec: SupervisorPromptRenderSpec {
+            template_version: "supervisor_prompt.v1".to_string(),
+            context_schema_version: "supervisor_context_pack.v1".to_string(),
+            proposal_schema_name: "supervisor_proposal".to_string(),
+            proposal_schema_version: "supervisor_proposal.v1".to_string(),
+            response_format: "json_schema".to_string(),
+            strict_schema: true,
+            context_serialization: "json_pretty".to_string(),
+            style: "instructions_plus_context_pack".to_string(),
+        },
+        instructions_text: "You are the Orcas supervisor reasoner.".to_string(),
+        user_content_text: "Return a supervisor proposal JSON object.".to_string(),
+        context_pack_text: "{\n  \"schema_version\": \"supervisor_context_pack.v1\"\n}".to_string(),
+        prompt_hash: format!("prompt-hash-{id}"),
+        request_body_hash: Some(format!("request-body-hash-{id}")),
+        rendered_at: now,
+    };
+    let response_artifact = SupervisorResponseArtifact {
+        backend_kind: "test".to_string(),
+        model: "test-supervisor".to_string(),
+        response_id: Some(format!("resp-{id}")),
+        usage: Some(SupervisorReasonerUsage {
+            input_tokens: Some(42),
+            output_tokens: Some(17),
+            total_tokens: Some(59),
+        }),
+        output_items: vec![SupervisorResponseOutputItem {
+            item_type: "message".to_string(),
+            role: Some("assistant".to_string()),
+            status: Some("completed".to_string()),
+            content: vec![SupervisorResponseContentPart {
+                part_type: "output_text".to_string(),
+                text: Some("structured proposal output".to_string()),
+            }],
+        }],
+        extracted_output_text: Some("{\"schema_version\":\"supervisor_proposal.v1\"}".to_string()),
+        response_hash: format!("response-hash-{id}"),
+        raw_response_body: Some(format!(
+            "{{\"id\":\"resp-{id}\",\"output\":[{{\"type\":\"message\"}}]}}"
+        )),
+        raw_response_body_hash: Some(format!("raw-response-hash-{id}")),
+        captured_at: now,
+    };
 
     SupervisorProposalRecord {
         id: id.to_string(),
@@ -454,6 +500,8 @@ fn sample_proposal_record(
             relevant_artifacts: Vec::new(),
             operator_request: None,
         },
+        prompt_render: Some(prompt_render),
+        response_artifact: Some(response_artifact),
         proposal: Some(proposal),
         approval_edits: None,
         approved_proposal: None,
@@ -793,52 +841,67 @@ fn sample_workunit_detail(work_unit_id: &str) -> ipc::WorkunitGetResponse {
                 proposals: vec![failed, open],
             }
         }
-        "wu-2" => ipc::WorkunitGetResponse {
-            work_unit: WorkUnit {
-                id: "wu-2".to_string(),
-                workstream_id: "ws-1".to_string(),
-                title: "Event wiring".to_string(),
-                task_statement: "Surface collaboration events in the daemon event stream."
-                    .to_string(),
-                status: WorkUnitStatus::Ready,
-                dependencies: vec!["wu-1".to_string()],
-                latest_report_id: Some("report-3".to_string()),
-                current_assignment_id: Some("assignment-3".to_string()),
-                created_at: now,
-                updated_at: now,
-            },
-            assignments: vec![Assignment {
-                id: "assignment-3".to_string(),
-                work_unit_id: "wu-2".to_string(),
-                worker_id: "worker-a".to_string(),
-                worker_session_id: "session-1".to_string(),
-                instructions: "Prepare event surface".to_string(),
-                communication_seed: None,
-                status: AssignmentStatus::Created,
-                attempt_number: 3,
-                created_at: now,
-                updated_at: now,
-            }],
-            reports: vec![Report {
-                id: "report-3".to_string(),
-                work_unit_id: "wu-2".to_string(),
-                assignment_id: "assignment-3".to_string(),
-                worker_id: "worker-a".to_string(),
-                disposition: ReportDisposition::Completed,
-                summary: "Clean report for event wiring.".to_string(),
-                findings: Vec::new(),
-                blockers: Vec::new(),
-                questions: Vec::new(),
-                recommended_next_actions: Vec::new(),
-                confidence: ReportConfidence::High,
-                raw_output: "{}".to_string(),
-                parse_result: ReportParseResult::Parsed,
-                needs_supervisor_review: false,
-                created_at: now,
-            }],
-            decisions: Vec::new(),
-            proposals: Vec::new(),
-        },
+        "wu-2" => {
+            let mut failed = sample_proposal_record(
+                "proposal-1",
+                "wu-2",
+                "report-3",
+                "assignment-3",
+                DecisionType::Continue,
+                SupervisorProposalStatus::GenerationFailed,
+            );
+            failed.proposal = None;
+            failed.generation_failure = Some(SupervisorProposalFailure {
+                stage: SupervisorProposalFailureStage::Backend,
+                message: "request timed out while supervisor proposal was generating".to_string(),
+            });
+            ipc::WorkunitGetResponse {
+                work_unit: WorkUnit {
+                    id: "wu-2".to_string(),
+                    workstream_id: "ws-1".to_string(),
+                    title: "Event wiring".to_string(),
+                    task_statement: "Surface collaboration events in the daemon event stream."
+                        .to_string(),
+                    status: WorkUnitStatus::Ready,
+                    dependencies: vec!["wu-1".to_string()],
+                    latest_report_id: Some("report-3".to_string()),
+                    current_assignment_id: Some("assignment-3".to_string()),
+                    created_at: now,
+                    updated_at: now,
+                },
+                assignments: vec![Assignment {
+                    id: "assignment-3".to_string(),
+                    work_unit_id: "wu-2".to_string(),
+                    worker_id: "worker-a".to_string(),
+                    worker_session_id: "session-1".to_string(),
+                    instructions: "Prepare event surface".to_string(),
+                    communication_seed: None,
+                    status: AssignmentStatus::Created,
+                    attempt_number: 3,
+                    created_at: now,
+                    updated_at: now,
+                }],
+                reports: vec![Report {
+                    id: "report-3".to_string(),
+                    work_unit_id: "wu-2".to_string(),
+                    assignment_id: "assignment-3".to_string(),
+                    worker_id: "worker-a".to_string(),
+                    disposition: ReportDisposition::Completed,
+                    summary: "Clean report for event wiring.".to_string(),
+                    findings: Vec::new(),
+                    blockers: Vec::new(),
+                    questions: Vec::new(),
+                    recommended_next_actions: Vec::new(),
+                    confidence: ReportConfidence::High,
+                    raw_output: "{}".to_string(),
+                    parse_result: ReportParseResult::Parsed,
+                    needs_supervisor_review: false,
+                    created_at: now,
+                }],
+                decisions: Vec::new(),
+                proposals: vec![failed],
+            }
+        }
         _ => panic!("unknown sample work unit"),
     }
 }
@@ -4612,6 +4675,202 @@ async fn proposal_detail_fallback_is_informative_without_cached_detail() {
             .lines
             .iter()
             .any(|line| line.contains("operator_read: supervisor has an open proposal context"))
+    );
+}
+
+#[tokio::test]
+async fn review_proposal_summary_shows_bounded_artifact_metadata() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+
+    let review = harness.review_vm();
+    assert!(review.detail_panel.title.contains("Proposal"));
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("artifact_summary"))
+    );
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("prompt=present template=supervisor_prompt.v1"))
+    );
+    assert!(
+        review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("response=present"))
+    );
+    assert!(
+        !review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("You are the Orcas supervisor reasoner."))
+    );
+    assert!(
+        !review
+            .detail_panel
+            .lines
+            .iter()
+            .any(|line| line.contains("raw_response_body"))
+    );
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactSummary { proposal_id }
+            if proposal_id == "proposal-1"
+    )));
+}
+
+#[tokio::test]
+async fn review_proposal_artifact_detail_opens_and_renders_full_evidence() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactDetail)
+        .await;
+
+    let review = harness.review_vm();
+    let overlay = review
+        .artifact_detail_overlay
+        .expect("artifact detail overlay should be visible");
+    assert!(overlay.title.contains("Proposal Artifact Detail"));
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("prompt_render"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("You are the Orcas supervisor reasoner."))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("response_artifact"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("raw_response_body"))
+    );
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactDetail { proposal_id }
+            if proposal_id == "proposal-1"
+    )));
+}
+
+#[tokio::test]
+async fn failure_artifact_detail_renders_prompt_response_and_failure_context() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactDetail)
+        .await;
+
+    let review = harness.review_vm();
+    let overlay = review
+        .artifact_detail_overlay
+        .expect("failure artifact detail overlay should be visible");
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("proposal_status: generation_failed"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("generation_failure"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("request timed out while supervisor proposal was generating"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("prompt_render"))
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line.contains("response_artifact"))
+    );
+}
+
+#[tokio::test]
+async fn review_artifact_flow_uses_explicit_summary_and_detail_commands_not_snapshot() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    let initial_snapshot_requests = harness.snapshot_requests().await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactDetail)
+        .await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::GetProposalArtifactSummary { .. }))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, BackendCommand::GetProposalArtifactDetail { .. }))
+    );
+    assert_eq!(
+        harness.snapshot_requests().await,
+        initial_snapshot_requests + 1
     );
 }
 

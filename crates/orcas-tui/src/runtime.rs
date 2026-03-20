@@ -895,6 +895,62 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 )
                 .await
             }
+            Effect::LoadProposalArtifactSummary { proposal_id } => {
+                let effect = Effect::LoadProposalArtifactSummary {
+                    proposal_id: proposal_id.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetProposalArtifactSummary {
+                        proposal_id: proposal_id.clone(),
+                    },
+                    |response| match response {
+                        BackendCommandResult::ProposalArtifactSummary(summary) => {
+                            vec![Action::Event(UiEvent::ProposalArtifactSummaryLoaded(
+                                summary,
+                            ))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected proposal artifact summary response: {other:?}"
+                        )))],
+                    },
+                    move |error| {
+                        Action::Event(UiEvent::ProposalArtifactSummaryLoadFailed {
+                            proposal_id: proposal_id.clone(),
+                            message: error.to_string(),
+                        })
+                    },
+                )
+                .await
+            }
+            Effect::LoadProposalArtifactDetail { proposal_id } => {
+                let effect = Effect::LoadProposalArtifactDetail {
+                    proposal_id: proposal_id.clone(),
+                };
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetProposalArtifactDetail {
+                        proposal_id: proposal_id.clone(),
+                    },
+                    |response| match response {
+                        BackendCommandResult::ProposalArtifactDetail(detail) => {
+                            vec![Action::Event(UiEvent::ProposalArtifactDetailLoaded(detail))]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected proposal artifact detail response: {other:?}"
+                        )))],
+                    },
+                    move |error| {
+                        Action::Event(UiEvent::ProposalArtifactDetailLoadFailed {
+                            proposal_id: proposal_id.clone(),
+                            message: error.to_string(),
+                        })
+                    },
+                )
+                .await
+            }
             effect @ Effect::LoadModels => {
                 Self::run_backend_effect(
                     backend,
@@ -1457,6 +1513,8 @@ fn effect_label(effect: &Effect) -> &'static str {
         Effect::AttachThread { .. } => "attach_thread",
         Effect::LoadTurnState { .. } => "load_turn_state",
         Effect::LoadWorkUnitDetail { .. } => "load_work_unit_detail",
+        Effect::LoadProposalArtifactSummary { .. } => "load_proposal_artifact_summary",
+        Effect::LoadProposalArtifactDetail { .. } => "load_proposal_artifact_detail",
         Effect::SubmitPrompt { .. } => "submit_prompt",
         Effect::ProposeSteerDecision { .. } => "propose_steer_decision",
         Effect::ReplacePendingSteerDecision { .. } => "replace_pending_steer_decision",
@@ -1492,6 +1550,8 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         BackendCommand::AttachThread { .. } => "attach_thread",
         BackendCommand::GetTurn { .. } => "get_turn",
         BackendCommand::GetWorkUnit { .. } => "get_work_unit",
+        BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
+        BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
         BackendCommand::GetActiveTurns => "get_active_turns",
         BackendCommand::LoadModels => "load_models",
         BackendCommand::StartDaemon => "start_daemon",
@@ -1582,6 +1642,9 @@ fn user_action_label(action: &UserAction) -> &'static str {
         UserAction::ManualRefreshForSelectedThread => "manual_refresh_for_selected_thread",
         UserAction::ApproveSelectedSupervisorDecision => "approve_selected_supervisor_decision",
         UserAction::RejectSelectedSupervisorDecision => "reject_selected_supervisor_decision",
+        UserAction::OpenSelectedProposalArtifactDetail => "open_selected_proposal_artifact_detail",
+        UserAction::CloseReviewArtifactDetail => "close_review_artifact_detail",
+        UserAction::ScrollReviewArtifactDetail(_) => "scroll_review_artifact_detail",
     }
 }
 

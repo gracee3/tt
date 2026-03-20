@@ -1,7 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::AppState;
 use crate::view_model;
@@ -28,6 +28,9 @@ pub(super) fn render_surface(frame: &mut Frame<'_>, state: &AppState) {
     render_header(frame, review.header.clone(), layout[0]);
     render_body(frame, review.queue, review.detail_panel, layout[1]);
     frame.render_widget(render_footer(review.footer), layout[2]);
+    if let Some(overlay) = review.artifact_detail_overlay {
+        render_artifact_overlay(frame, overlay);
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, header: view_model::ReviewHeaderViewModel, area: Rect) {
@@ -256,6 +259,62 @@ fn render_footer(footer: view_model::ReviewFooterViewModel) -> Paragraph<'static
                 .border_style(focus_block_style(true)),
         )
         .wrap(Wrap { trim: true })
+}
+
+fn render_artifact_overlay(
+    frame: &mut Frame<'_>,
+    overlay: view_model::ReviewArtifactDetailOverlayViewModel,
+) {
+    let area = centered_rect(88, 82, frame.area());
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = overlay.lines.len().saturating_sub(inner_height.max(1));
+    let scroll_offset = overlay.scroll_offset.min(max_scroll);
+    let title = format!(
+        "{} ({}/{})",
+        overlay.title,
+        scroll_offset
+            .saturating_add(1)
+            .min(overlay.lines.len().max(1)),
+        overlay.lines.len().max(1)
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(Text::from(
+            overlay
+                .lines
+                .into_iter()
+                .map(|line| Line::styled(line, value_style()))
+                .collect::<Vec<_>>(),
+        ))
+        .block(
+            Block::default()
+                .title(Line::styled(title, panel_title_style(true)))
+                .borders(Borders::ALL)
+                .border_style(focus_block_style(true)),
+        )
+        .scroll((scroll_offset as u16, 0))
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100u16.saturating_sub(percent_y)) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100u16.saturating_sub(percent_y)) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100u16.saturating_sub(percent_x)) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100u16.saturating_sub(percent_x)) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn review_kind_label(kind: view_model::ReviewRowKind) -> &'static str {

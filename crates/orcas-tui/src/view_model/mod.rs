@@ -20,9 +20,10 @@ pub use main::{
 };
 pub use overview::{OverviewViewModel, overview_view};
 pub use review::{
-    ReviewActionViewModel, ReviewFooterViewModel, ReviewHeaderViewModel,
-    ReviewQueueDisplayRowViewModel, ReviewQueueRowViewModel, ReviewQueueSectionViewModel,
-    ReviewQueueViewModel, ReviewRowKind, ReviewViewModel, review_queue, review_view,
+    ReviewActionViewModel, ReviewArtifactDetailOverlayViewModel, ReviewFooterViewModel,
+    ReviewHeaderViewModel, ReviewQueueDisplayRowViewModel, ReviewQueueRowViewModel,
+    ReviewQueueSectionViewModel, ReviewQueueViewModel, ReviewRowKind, ReviewViewModel,
+    review_queue, review_view,
 };
 pub use shared::{
     ConnectionStatusViewModel, EventLogViewModel, PanelViewModel, StatusBannerViewModel,

@@ -81,6 +81,20 @@ impl AppHarness {
         self.backend.set_workunit_detail(detail).await;
     }
 
+    pub async fn set_proposal_artifact_summary(
+        &self,
+        summary: ipc::SupervisorProposalArtifactSummary,
+    ) {
+        self.backend.set_proposal_artifact_summary(summary).await;
+    }
+
+    pub async fn set_proposal_artifact_detail(
+        &self,
+        detail: ipc::SupervisorProposalArtifactDetail,
+    ) {
+        self.backend.set_proposal_artifact_detail(detail).await;
+    }
+
     pub async fn replace_snapshot(&self, snapshot: ipc::StateSnapshot) {
         self.backend.replace_snapshot(snapshot).await;
     }

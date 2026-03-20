@@ -312,6 +312,9 @@ fn user_action_label(action: &UserAction) -> &'static str {
         UserAction::ManualRefreshForSelectedThread => "manual_refresh_for_selected_thread",
         UserAction::ApproveSelectedSupervisorDecision => "approve_selected_supervisor_decision",
         UserAction::RejectSelectedSupervisorDecision => "reject_selected_supervisor_decision",
+        UserAction::OpenSelectedProposalArtifactDetail => "open_selected_proposal_artifact_detail",
+        UserAction::CloseReviewArtifactDetail => "close_review_artifact_detail",
+        UserAction::ScrollReviewArtifactDetail(_) => "scroll_review_artifact_detail",
     }
 }
 
@@ -403,6 +406,17 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
     let in_supervisor_view = current_view == TopLevelView::Supervisor;
     let in_threads_view = current_view == TopLevelView::Threads;
     let in_overview_program = current_view == TopLevelView::Overview;
+    if in_review_view && state.review_view.artifact_detail.is_some() {
+        return match key.code {
+            KeyCode::Esc => Some(UserAction::CloseReviewArtifactDetail),
+            KeyCode::Char('v') | KeyCode::Enter => Some(UserAction::CloseReviewArtifactDetail),
+            KeyCode::Up => Some(UserAction::ScrollReviewArtifactDetail(-1)),
+            KeyCode::Down => Some(UserAction::ScrollReviewArtifactDetail(1)),
+            KeyCode::PageUp => Some(UserAction::ScrollReviewArtifactDetail(-8)),
+            KeyCode::PageDown => Some(UserAction::ScrollReviewArtifactDetail(8)),
+            _ => None,
+        };
+    }
     match key.code {
         KeyCode::Char('r') => Some(UserAction::Refresh),
         KeyCode::Char('?') => Some(UserAction::ToggleHelp),
@@ -420,6 +434,9 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         KeyCode::Char('c') if in_threads_view => Some(UserAction::ResumeSelectedThreadInCodex),
         KeyCode::Char('d') if in_threads_view || in_review_view => {
             Some(UserAction::RejectSelectedSupervisorDecision)
+        }
+        KeyCode::Char('v') if in_review_view => {
+            Some(UserAction::OpenSelectedProposalArtifactDetail)
         }
         KeyCode::Char('s') if in_threads_view => Some(UserAction::ProposeSteerForSelectedThread),
         KeyCode::Char('e') if in_threads_view => {
@@ -733,6 +750,36 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            action_for_key(
+                &state_for_overview_program(ProgramView::Review),
+                key(KeyCode::Char('v'))
+            ),
+            Some(UserAction::OpenSelectedProposalArtifactDetail)
+        );
+    }
+
+    #[test]
+    fn review_artifact_detail_overlay_captures_scroll_and_close_keys() {
+        let mut state = state_for_overview_program(ProgramView::Review);
+        state.review_view.artifact_detail = Some(orcas_tui::app::ReviewArtifactDetailState {
+            proposal_id: "proposal-1".to_string(),
+            scroll_offset: 0,
+        });
+
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Esc)),
+            Some(UserAction::CloseReviewArtifactDetail)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Down)),
+            Some(UserAction::ScrollReviewArtifactDetail(1))
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Up)),
+            Some(UserAction::ScrollReviewArtifactDetail(-1))
+        );
+        assert_eq!(action_for_key(&state, key(KeyCode::Char('a'))), None);
     }
 
     #[test]
