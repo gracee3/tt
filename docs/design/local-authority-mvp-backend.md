@@ -17,6 +17,8 @@ The recommended MVP keeps the architecture intentionally disciplined:
 
 The key semantic decision is that Orcas should persist an Orcas-owned `tracked_thread` object, not treat upstream Codex runtime thread rows as directly owned mutable state. A tracked thread is a durable local record under a work unit that may reference an upstream runtime thread, but deleting it only removes Orcas tracking locally. It does not promise hard deletion of the upstream runtime thread.
 
+This document is design rationale for the MVP rather than a current protocol reference. Later hardening phases retired most of the public legacy collaboration planning RPC family discussed below; for the current implemented contract, use [Collaboration](../collaboration.md) and [Architecture](../architecture.md).
+
 ## 2. Recommended Architecture For Local-Authority MVP
 
 ### Decision

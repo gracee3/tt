@@ -288,26 +288,22 @@ async fn spawn_codex_review_ready_daemon(
     )
     .await;
     let client = daemon.connect().await;
-
-    let workstream = client
-        .workstream_create(&ipc::WorkstreamCreateRequest {
-            title: format!("{test_name} root"),
-            objective: "Exercise bounded codex review discovery surfaces.".to_string(),
-            priority: Some("high".to_string()),
-        })
-        .await
-        .expect("create workstream")
-        .workstream;
-    let work_unit = client
-        .workunit_create(&ipc::WorkunitCreateRequest {
-            workstream_id: workstream.id.clone(),
-            title: format!("{test_name} unit"),
-            task_statement: "Create one reviewable codex assignment.".to_string(),
-            dependencies: Vec::new(),
-        })
-        .await
-        .expect("create workunit")
-        .work_unit;
+    let fixture = AuthorityFixture::new();
+    let workstream = create_authority_workstream(
+        &daemon,
+        &fixture,
+        &authority::WorkstreamId::new().to_string(),
+        &format!("{test_name} root"),
+    )
+    .await;
+    let work_unit = create_authority_workunit(
+        &daemon,
+        &fixture,
+        &authority::WorkUnitId::new().to_string(),
+        &workstream.id,
+        &format!("{test_name} unit"),
+    )
+    .await;
     let thread = client
         .thread_start(&ipc::ThreadStartRequest {
             cwd: None,
@@ -320,8 +316,8 @@ async fn spawn_codex_review_ready_daemon(
     let assignment = client
         .codex_assignment_create(&ipc::CodexAssignmentCreateRequest {
             codex_thread_id: thread.id,
-            workstream_id: workstream.id,
-            work_unit_id: work_unit.id,
+            workstream_id: workstream.id.to_string(),
+            work_unit_id: work_unit.id.to_string(),
             supervisor_id: "cli_operator".to_string(),
             assigned_by: "cli_operator".to_string(),
             send_policy: None,
@@ -926,119 +922,6 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
             .flat_map(|workstream| workstream.work_units.iter())
             .flat_map(|work_unit| work_unit.tracked_threads.iter())
             .all(|tracked_thread| tracked_thread.id.to_string() != tracked_thread_id)
-    );
-
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn real_cli_legacy_planning_commands_are_read_only_compatibility_paths() {
-    let mut daemon = TestDaemon::spawn("cli-legacy-workstream-compat").await;
-    let client = daemon.connect().await;
-
-    let workstream = client
-        .workstream_create(&ipc::WorkstreamCreateRequest {
-            title: "Legacy CLI Root".to_string(),
-            objective: "Seed a legacy collaboration workstream explicitly.".to_string(),
-            priority: Some("low".to_string()),
-        })
-        .await
-        .expect("seed legacy workstream")
-        .workstream;
-    let work_unit = client
-        .workunit_create(&ipc::WorkunitCreateRequest {
-            workstream_id: workstream.id.clone(),
-            title: "Legacy CLI Unit".to_string(),
-            task_statement: "Inspect a retained collaboration-native work unit.".to_string(),
-            dependencies: Vec::new(),
-        })
-        .await
-        .expect("seed legacy workunit")
-        .work_unit;
-
-    let list_output = run_orcas(&daemon, &["legacy-workstreams", "list"]);
-    assert!(
-        list_output.status.success(),
-        "stderr: {}",
-        stderr(&list_output)
-    );
-    let list_stdout = stdout(&list_output);
-    assert!(list_stdout.contains("surface: legacy_collaboration_compatibility"));
-    assert!(list_stdout.contains("read-only legacy collaboration compatibility path"));
-    assert!(list_stdout.contains(&workstream.id));
-
-    let get_output = run_orcas(
-        &daemon,
-        &["legacy-workstreams", "get", "--workstream", &workstream.id],
-    );
-    assert!(
-        get_output.status.success(),
-        "stderr: {}",
-        stderr(&get_output)
-    );
-    let get_stdout = stdout(&get_output);
-    assert!(get_stdout.contains("surface: legacy_collaboration_compatibility"));
-    assert!(get_stdout.contains(&format!("workstream_id: {}", workstream.id)));
-    assert!(get_stdout.contains("Legacy CLI Root"));
-
-    let unit_list_output = run_orcas(
-        &daemon,
-        &["legacy-workunits", "list", "--workstream", &workstream.id],
-    );
-    assert!(
-        unit_list_output.status.success(),
-        "stderr: {}",
-        stderr(&unit_list_output)
-    );
-    let unit_list_stdout = stdout(&unit_list_output);
-    assert!(unit_list_stdout.contains("surface: legacy_collaboration_compatibility"));
-    assert!(unit_list_stdout.contains(&work_unit.id));
-
-    let unit_get_output = run_orcas(
-        &daemon,
-        &["legacy-workunits", "get", "--workunit", &work_unit.id],
-    );
-    assert!(
-        unit_get_output.status.success(),
-        "stderr: {}",
-        stderr(&unit_get_output)
-    );
-    let unit_get_stdout = stdout(&unit_get_output);
-    assert!(unit_get_stdout.contains("surface: legacy_collaboration_compatibility"));
-    assert!(unit_get_stdout.contains(&format!("work_unit_id: {}", work_unit.id)));
-    assert!(unit_get_stdout.contains("Legacy CLI Unit"));
-
-    let snapshot = client
-        .state_get()
-        .await
-        .expect("state/get after seeded legacy planning records");
-    assert!(
-        snapshot
-            .snapshot
-            .collaboration
-            .workstreams
-            .iter()
-            .any(|entry| entry.id == workstream.id)
-    );
-    assert!(
-        snapshot
-            .snapshot
-            .collaboration
-            .work_units
-            .iter()
-            .any(|entry| entry.id == work_unit.id)
-    );
-
-    let hierarchy = client
-        .authority_hierarchy_get(&ipc::AuthorityHierarchyGetRequest::default())
-        .await
-        .expect("authority hierarchy after seeded legacy planning records");
-    assert!(
-        hierarchy
-            .hierarchy
-            .workstreams
-            .iter()
-            .all(|entry| entry.workstream.id.to_string() != workstream.id)
     );
 
     daemon.stop().await;
