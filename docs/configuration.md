@@ -10,7 +10,7 @@ The practical rule is:
 2. Use environment variables for per-process overrides.
 3. Use CLI flags for one-off operator sessions.
 
-For site-wide packaging, the conventional optional locations are `/etc/orcas/config.toml` and `/etc/orcas/`. Those paths are not required for a working local install, but they are the right place to add a system-level layer if packaging grows one later.
+The current packaged systemd unit is a user service. It inherits the same XDG config, data, log, and runtime directories as the CLI and TUI rather than introducing a separate root-owned config layer.
 
 ## Environment Variables
 
@@ -42,6 +42,8 @@ The daemon and supervisor process manager recognize these environment variables:
 6. `ORCAS_DAEMON_BINARY_PATH` is written by the launcher into daemon runtime metadata.
 7. `ORCAS_DAEMON_BUILD_FINGERPRINT` is written by the launcher into daemon runtime metadata.
 
+If `ORCAS_CONNECTION_MODE` is unset, Orcas keeps the configured or default `spawn_if_needed` behavior.
+
 The service unit in this repository sets `RUST_LOG=info` by default.
 
 ## Config File Shape
@@ -60,6 +62,8 @@ Important current fields are:
 8. `supervisor.model`, `supervisor.reasoning_effort`, and `supervisor.max_output_tokens` define the default reasoning profile.
 9. `supervisor.proposals.auto_create_on_report_recorded` is disabled by default.
 10. `defaults.cwd` and `defaults.model` define process defaults when no CLI override is supplied.
+
+`codex.connection_mode` currently defaults to `spawn_if_needed`. The one-shot CLI flags `--connect-only` and `--force-spawn` override that setting for a single process launch and are intentionally mutually exclusive.
 
 The current source tree ships a development-oriented default for `codex.binary_path`. For a real deployment, set that value to the path of the Codex binary you actually installed.
 
@@ -82,7 +86,7 @@ The current files are:
 
 The log, config, data, and runtime directories are created automatically on startup.
 
-When launched under systemd, the daemon still writes its application logs to those files. The system journal will mainly contain service lifecycle messages and any early startup failure that occurs before the file logger is initialized.
+When launched under the packaged systemd user service, the daemon still writes its application logs to those files. The user journal will mainly contain service lifecycle messages and any early startup failure that occurs before the file logger is initialized.
 
 To increase verbosity, set `RUST_LOG=debug` or use a component-specific filter such as `RUST_LOG=orcasd=debug,tokio=info`.
 

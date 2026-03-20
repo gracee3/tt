@@ -36,7 +36,7 @@ Reports and decisions close the loop. Worker reports and supervisor decisions ar
 
 The daemon owns the upstream Codex connection and the local supervision state. Supervisors do not own either one. They connect to `orcasd` on demand, ask for state, and issue commands through the daemon’s API surface.
 
-If the daemon is managed by systemd, the service is started and stopped there. If it is run manually, it behaves like a normal foreground process. In both cases the daemon is the long-lived process and the clients are transient.
+If the daemon is managed by systemd, the current packaged unit is intended to run under the user manager so it shares the same XDG paths as the CLI and TUI. If it is run manually, it behaves like a normal foreground process. In both cases the daemon is the long-lived process and the clients are transient.
 
 This separation matters operationally. Restarting the CLI does not affect the Codex connection. Restarting the daemon does, because it owns the live upstream session and the supervised state surfaces. Restarting the TUI does not affect daemon-owned state, but any TUI-local PTY-backed `codex resume` session belongs to that TUI process rather than the daemon. After a daemon restart, the TUI invalidates its authority-only hierarchy and detail caches, reloads `state/get`, reloads `authority/hierarchy/get`, and then refetches focused detail when the selected row still exists. If the TUI process itself remains alive, an already-running local PTY session can continue independently during daemon reconnect because it is not daemon-managed state.
 

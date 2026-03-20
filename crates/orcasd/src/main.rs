@@ -16,17 +16,30 @@ struct DaemonCli {
 
 #[derive(Debug, Clone, Args, Default)]
 struct DaemonRuntimeArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Override the local Codex binary path for this daemon process"
+    )]
     codex_bin: Option<std::path::PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Override the upstream Codex app-server WebSocket URL")]
     listen_url: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Override the default working directory for spawned work")]
     cwd: Option<std::path::PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Override the default model for spawned work")]
     model: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "force_spawn",
+        help = "Require connect-only mode instead of spawning a local Codex app-server"
+    )]
     connect_only: bool,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "connect_only",
+        help = "Force spawn mode instead of connect-only mode"
+    )]
     force_spawn: bool,
 }
 
@@ -107,8 +120,17 @@ mod tests {
         let help = DaemonCli::command().render_help().to_string();
 
         assert!(help.contains("Orcas daemon process"));
+        assert!(help.contains("--codex-bin"));
+        assert!(help.contains("--listen-url"));
         assert!(help.contains("--connect-only"));
         assert!(help.contains("--force-spawn"));
+    }
+
+    #[test]
+    fn daemon_runtime_mode_flags_conflict() {
+        let result = DaemonCli::try_parse_from(["orcasd", "--connect-only", "--force-spawn"]);
+
+        assert!(result.is_err());
     }
 
     #[test]

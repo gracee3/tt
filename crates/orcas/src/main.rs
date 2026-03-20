@@ -24,17 +24,45 @@ struct Cli {
 
 #[derive(Debug, Clone, Args, Default)]
 struct GlobalOptions {
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override the local Codex binary path for this command"
+    )]
     codex_bin: Option<PathBuf>,
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override the upstream Codex app-server WebSocket URL"
+    )]
     listen_url: Option<String>,
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override the default working directory for this command"
+    )]
     cwd: Option<PathBuf>,
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override the default model for this command"
+    )]
     model: Option<String>,
-    #[arg(long, global = true, default_value_t = false)]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        conflicts_with = "force_spawn",
+        help = "Require connect-only mode instead of spawning a local Codex app-server"
+    )]
     connect_only: bool,
-    #[arg(long, global = true, default_value_t = false)]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        conflicts_with = "connect_only",
+        help = "Force spawn mode instead of connect-only mode"
+    )]
     force_spawn: bool,
 }
 
@@ -1216,6 +1244,16 @@ mod tests {
     }
 
     #[test]
+    fn global_help_mentions_runtime_override_flags() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("--codex-bin"));
+        assert!(help.contains("--listen-url"));
+        assert!(help.contains("--connect-only"));
+        assert!(help.contains("--force-spawn"));
+    }
+
+    #[test]
     fn top_level_help_mentions_canonical_and_compatibility_planning_commands() {
         let help = Cli::command().render_help().to_string();
 
@@ -1282,6 +1320,13 @@ mod tests {
             TopCommand::Doctor => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
+    }
+
+    #[test]
+    fn global_runtime_mode_flags_conflict() {
+        let result = Cli::try_parse_from(["orcas", "--connect-only", "--force-spawn", "doctor"]);
+
+        assert!(result.is_err());
     }
 
     #[test]

@@ -17,6 +17,11 @@ IPC, snapshots, and event delivery, while
 .B orcas
 acts as a client of that daemon.
 
+The current packaged
+.I orcas-daemon.service
+unit is intended for the user service manager, so the CLI, TUI, and daemon all
+share the same XDG config, data, log, and socket paths.
+
 The current workflow boundary is mixed. Legacy collaboration state remains in
 \fIstate.json\fR, while authority workstreams, authority work units, and tracked
 threads live in \fIstate.db\fR. The
@@ -57,6 +62,31 @@ Set debug logging for a single session:
 
 .P
 .B RUST_LOG=debug orcas doctor
+.SH OPTIONS
+.TP
+.B --codex-bin \fIPATH\fR
+Override the local Codex binary path for this command.
+
+.TP
+.B --listen-url \fIURL\fR
+Override the upstream Codex app-server WebSocket URL.
+
+.TP
+.B --cwd \fIPATH\fR
+Override the default working directory for daemon-launched work during this command.
+
+.TP
+.B --model \fINAME\fR
+Override the default model for daemon-launched work during this command.
+
+.TP
+.B --connect-only
+Require connect-only mode instead of spawning a local Codex app-server for this command.
+
+.TP
+.B --force-spawn
+Require spawn mode instead of connect-only mode for this command. This option conflicts with
+.BR --connect-only .
 .SH FILES
 .TP
 .I ~/.config/orcas/config.toml
@@ -89,6 +119,24 @@ Overrides the path to the local Codex binary.
 .TP
 .B ORCAS_CODEX_LISTEN_URL
 Overrides the upstream Codex listen URL.
+
+.TP
+.B ORCAS_DEFAULT_CWD
+Overrides the default working directory used for daemon-launched work.
+
+.TP
+.B ORCAS_DEFAULT_MODEL
+Overrides the default model used for daemon-launched work.
+
+.TP
+.B ORCAS_CONNECTION_MODE
+Accepts
+.B connect_only
+or
+.B spawn_always .
+If unset, Orcas keeps the configured or default
+.B spawn_if_needed
+behavior.
 .SH SEE ALSO
 .BR orcasd (1),
 .BR orcas-tui (1)

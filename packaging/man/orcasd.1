@@ -3,6 +3,7 @@
 orcasd \- Orcas daemon for local Codex supervision
 .SH SYNOPSIS
 .B orcasd
+[\fIOPTIONS\fR]
 .SH DESCRIPTION
 The
 .B orcasd
@@ -14,7 +15,9 @@ The daemon is normally managed by
 .BR systemd (1)
 through
 .I orcas-daemon.service
-and is designed to run as a local service rather than a public network daemon.
+and is designed to run under the user service manager so it shares the same
+XDG paths and local socket contract as the CLI and TUI rather than acting as a
+public network daemon.
 
 Orcas records workstreams, work units, assignments, reports, decisions,
 proposals, thread state, and turn state in Orcas-native storage. The CLI and
@@ -24,6 +27,31 @@ The current daemon owns two live persistence systems: legacy collaboration and
 thread or turn mirror state in \fIstate.json\fR, and authority state in
 \fIstate.db\fR for authority workstreams, authority work units, and tracked
 threads.
+.SH OPTIONS
+.TP
+.B --codex-bin \fIPATH\fR
+Override the local Codex binary path for this daemon process.
+
+.TP
+.B --listen-url \fIURL\fR
+Override the upstream Codex app-server WebSocket URL.
+
+.TP
+.B --cwd \fIPATH\fR
+Override the default working directory for spawned work.
+
+.TP
+.B --model \fINAME\fR
+Override the default model for spawned work.
+
+.TP
+.B --connect-only
+Require connect-only mode instead of spawning a local Codex app-server.
+
+.TP
+.B --force-spawn
+Require spawn mode instead of connect-only mode. This option conflicts with
+.BR --connect-only .
 .SH FILES
 .TP
 .I ~/.config/orcas/config.toml
@@ -56,6 +84,24 @@ Overrides the path to the local Codex binary.
 .TP
 .B ORCAS_CODEX_LISTEN_URL
 Overrides the upstream Codex listen URL.
+
+.TP
+.B ORCAS_DEFAULT_CWD
+Overrides the default working directory used for spawned work.
+
+.TP
+.B ORCAS_DEFAULT_MODEL
+Overrides the default model used for spawned work.
+
+.TP
+.B ORCAS_CONNECTION_MODE
+Accepts
+.B connect_only
+or
+.B spawn_always .
+If unset, Orcas keeps the configured or default
+.B spawn_if_needed
+behavior.
 .SH SEE ALSO
 .BR orcas (1),
 .BR orcas-tui (1),

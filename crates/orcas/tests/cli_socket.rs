@@ -397,6 +397,37 @@ async fn real_cli_can_connect_to_daemon_and_read_basic_state() {
 }
 
 #[tokio::test]
+async fn real_cli_doctor_reports_current_runtime_and_persistence_paths() {
+    let mut daemon = TestDaemon::spawn("cli-doctor").await;
+
+    let output = run_orcas(&daemon, &["doctor"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let stdout = stdout(&output);
+    assert_eq!(
+        field_value(&stdout, "config"),
+        Some(daemon.paths.config_file.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        field_value(&stdout, "state"),
+        Some(daemon.paths.state_file.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        field_value(&stdout, "state_db"),
+        Some(daemon.paths.state_db_file.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        field_value(&stdout, "runtime_dir"),
+        Some(daemon.paths.runtime_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(field_value(&stdout, "daemon_running"), Some("true"));
+    assert!(field_value(&stdout, "codex_endpoint").is_some());
+    assert!(field_value(&stdout, "connection_mode").is_some());
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn real_cli_can_observe_hierarchy_via_workstream_get() {
     let mut daemon = TestDaemon::spawn("cli-workstream-get").await;
     let fixture = AuthorityFixture::new();

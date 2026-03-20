@@ -46,13 +46,13 @@ Install the package with `dpkg -i`.
 sudo dpkg -i ./orcas_0.1.0_amd64.deb
 ```
 
-The package installs the executables into `/usr/bin`, the daemon unit as `orcas-daemon.service`, and package documentation under `/usr/share/doc/orcas`.
+The package installs the executables into `/usr/bin`, the daemon user unit as `orcas-daemon.service`, and package documentation under `/usr/share/doc/orcas`.
 
-After installation, manage the daemon with systemd.
+After installation, manage the daemon with the user service manager so it shares the same XDG paths as the CLI and TUI.
 
 ```bash
-sudo systemctl enable --now orcas-daemon.service
-systemctl status orcas-daemon.service
+systemctl --user enable --now orcas-daemon.service
+systemctl --user status orcas-daemon.service
 ```
 
 ## Build From Source
@@ -76,25 +76,25 @@ The default source build target is `x86_64-unknown-linux-gnu`. Override `TARGET`
 
 ## Systemd Setup
 
-Install the unit file, reload systemd, and enable the daemon.
+Install the user unit file, reload the user manager, and enable the daemon.
 
 ```bash
-sudo make install-systemd
-sudo systemctl daemon-reload
-sudo systemctl enable --now orcas-daemon.service
-systemctl status orcas-daemon.service
+make install-systemd
+systemctl --user daemon-reload
+systemctl --user enable --now orcas-daemon.service
+systemctl --user status orcas-daemon.service
 ```
 
-If you install the binaries somewhere other than the default prefix, update the `ExecStart` path in the unit before enabling it.
+`make install-systemd` rewrites `ExecStart` to the current `PREFIX`/`BINDIR` choice. If you copy the checked-in unit manually instead of using the Makefile target, update the `ExecStart` path before enabling it.
 
 ## Uninstall
 
-Remove locally installed binaries and the unit file, then reload systemd.
+Remove locally installed binaries and the user unit file, then reload the user manager.
 
 ```bash
 sudo make uninstall
-sudo make uninstall-systemd
-sudo systemctl daemon-reload
+make uninstall-systemd
+systemctl --user daemon-reload
 ```
 
 If you installed to `~/.local/bin`, remove the files directly.
@@ -105,4 +105,4 @@ rm -f ~/.local/bin/orcasd
 rm -f ~/.local/bin/orcas-tui
 ```
 
-If you installed system-wide without the Makefile targets, remove the binaries from `/usr/local/bin` and delete `orcas-daemon.service` from the systemd unit directory in use on your host.
+If you installed system-wide without the Makefile targets, remove the binaries from `/usr/local/bin` and delete `orcas-daemon.service` from the user systemd unit directory in use on your host.

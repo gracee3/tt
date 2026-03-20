@@ -8,11 +8,11 @@ Start the daemon directly when you want to run it in the foreground.
 orcasd
 ```
 
-Use systemd when you want the daemon managed as a service.
+Use the systemd user manager when you want the daemon managed as a service that shares the same XDG paths as the CLI and TUI.
 
 ```bash
-sudo systemctl start orcas-daemon.service
-sudo systemctl enable orcas-daemon.service
+systemctl --user start orcas-daemon.service
+systemctl --user enable orcas-daemon.service
 ```
 
 The Orcas CLI can also request that the daemon be started on demand.
@@ -23,10 +23,10 @@ orcas daemon start
 
 ## Checking Status
 
-Check the unit state with systemd.
+Check the unit state with the user manager.
 
 ```bash
-systemctl status orcas-daemon.service
+systemctl --user status orcas-daemon.service
 ```
 
 Check Orcas-level daemon state through the CLI.
@@ -36,15 +36,15 @@ orcas daemon status
 orcas doctor
 ```
 
-The doctor command reports the config path, state path, socket path, daemon log path, and current Codex endpoint.
+The doctor command reports the config path, `state.json`, `state.db`, runtime directory, socket path, daemon log path, and current Codex endpoint.
 
 ## Logs
 
-Use `journalctl` for unit lifecycle events and startup failures.
+Use `journalctl --user` for unit lifecycle events and startup failures.
 
 ```bash
-journalctl -u orcas-daemon.service -e
-journalctl -u orcas-daemon.service -f
+journalctl --user -u orcas-daemon.service -e
+journalctl --user -u orcas-daemon.service -f
 ```
 
 Use the file logs for the application’s own tracing output.
@@ -60,8 +60,8 @@ Common log patterns include socket bind failures, stale runtime cleanup, upstrea
 ## Restarting And Stopping
 
 ```bash
-sudo systemctl restart orcas-daemon.service
-sudo systemctl stop orcas-daemon.service
+systemctl --user restart orcas-daemon.service
+systemctl --user stop orcas-daemon.service
 ```
 
 The CLI exposes the same operations through the daemon API.
@@ -78,7 +78,7 @@ orcas daemon stop
 Check the daemon log and the unit status. The usual causes are a bad Codex binary path, a missing runtime directory, or a failure to bind the local socket.
 
 ```bash
-systemctl status orcas-daemon.service
+systemctl --user status orcas-daemon.service
 tail -n 100 ~/.local/share/orcas/logs/orcasd.log
 ```
 
@@ -88,12 +88,12 @@ Orcas uses a Unix socket, not a TCP port. If another process already owns the so
 
 ```bash
 orcas daemon status
-sudo systemctl stop orcas-daemon.service
+systemctl --user stop orcas-daemon.service
 ```
 
 ### Permission Issues
 
-If the daemon cannot create its config, data, log, or runtime directories, check ownership and service user settings. The current unit runs as root, so permission issues usually show up when paths were pre-created with restrictive ownership or when you are running a non-root manual session with mismatched directories.
+If the daemon cannot create its config, data, log, or runtime directories, check the ownership of your user-scoped XDG paths and whether the user service inherited the expected environment.
 
 ### Binary Not Found In `PATH`
 
@@ -128,15 +128,15 @@ If the CLI can talk to the daemon but the daemon reports an upstream failure, th
 Replacing Orcas binaries is normally a file swap followed by a daemon restart. Keep the config and state directories in place so the daemon can reuse the existing workflow state.
 
 ```bash
-sudo systemctl stop orcas-daemon.service
+systemctl --user stop orcas-daemon.service
 sudo install -m 0755 ./orcasd /usr/local/bin/orcasd
 sudo install -m 0755 ./orcas /usr/local/bin/orcas
-sudo systemctl start orcas-daemon.service
+systemctl --user start orcas-daemon.service
 ```
 
 If the unit file changed, reload systemd before restarting.
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart orcas-daemon.service
+systemctl --user daemon-reload
+systemctl --user restart orcas-daemon.service
 ```

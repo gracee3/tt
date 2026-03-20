@@ -7,7 +7,7 @@ BINDIR := $(PREFIX)/bin
 LIBEXECDIR := $(PREFIX)/libexec/$(APP_NAME)
 SHAREDIR := $(PREFIX)/share/$(APP_NAME)
 
-SYSTEMD_DIR ?= /etc/systemd/system
+SYSTEMD_DIR ?= $(HOME)/.config/systemd/user
 
 DIST_NAME := $(APP_NAME)-v$(VERSION)-$(TARGET)
 DIST_DIR := dist/$(DIST_NAME)
@@ -15,7 +15,7 @@ DIST_DIR := dist/$(DIST_NAME)
 CARGO := cargo
 
 MAIN_BIN := orcas
-AUX_BINS := orcasd orcas
+AUX_BINS := orcasd orcas-tui
 ALL_BINS := $(MAIN_BIN) $(AUX_BINS)
 
 RELEASE_DIR := target/$(TARGET)/release
@@ -52,7 +52,7 @@ install: build
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 "$(RELEASE_DIR)/$(MAIN_BIN)" "$(DESTDIR)$(BINDIR)/$(MAIN_BIN)"
 	install -m 0755 "$(RELEASE_DIR)/orcasd" "$(DESTDIR)$(BINDIR)/orcasd"
-	install -m 0755 "$(RELEASE_DIR)/orcas" "$(DESTDIR)$(BINDIR)/orcas"
+	install -m 0755 "$(RELEASE_DIR)/orcas-tui" "$(DESTDIR)$(BINDIR)/orcas-tui"
 
 .PHONY: install-user
 install-user:
@@ -61,23 +61,25 @@ install-user:
 .PHONY: install-systemd
 install-systemd:
 	install -d "$(DESTDIR)$(SYSTEMD_DIR)"
-	install -m 0644 packaging/systemd/orcas-daemon.service \
-		"$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
+	sed 's|^ExecStart=.*|ExecStart=$(BINDIR)/orcasd|' \
+		packaging/systemd/orcas-daemon.service \
+		> "$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
+	chmod 0644 "$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
 
 .PHONY: enable-systemd
 enable-systemd:
-	systemctl daemon-reload
-	systemctl enable --now orcas-daemon.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now orcas-daemon.service
 
 .PHONY: disable-systemd
 disable-systemd:
-	systemctl disable --now orcas-daemon.service || true
+	systemctl --user disable --now orcas-daemon.service || true
 
 .PHONY: uninstall
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/orcas"
 	rm -f "$(DESTDIR)$(BINDIR)/orcasd"
-	rm -f "$(DESTDIR)$(BINDIR)/orcas"
+	rm -f "$(DESTDIR)$(BINDIR)/orcas-tui"
 
 .PHONY: uninstall-systemd
 uninstall-systemd:
@@ -90,7 +92,7 @@ dist: build
 	install -d "$(DIST_DIR)/packaging/systemd"
 	install -m 0755 "$(RELEASE_DIR)/orcas" "$(DIST_DIR)/bin/orcas"
 	install -m 0755 "$(RELEASE_DIR)/orcasd" "$(DIST_DIR)/bin/orcasd"
-	install -m 0755 "$(RELEASE_DIR)/orcas" "$(DIST_DIR)/bin/orcas"
+	install -m 0755 "$(RELEASE_DIR)/orcas-tui" "$(DIST_DIR)/bin/orcas-tui"
 	install -m 0644 packaging/systemd/orcas-daemon.service \
 		"$(DIST_DIR)/packaging/systemd/orcas-daemon.service"
 	test ! -f README.md || install -m 0644 README.md "$(DIST_DIR)/README.md"

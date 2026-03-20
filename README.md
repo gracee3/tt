@@ -30,7 +30,7 @@ On Linux, the easiest install path is a `.deb` package. If you are working from 
 
 ```bash
 sudo dpkg -i ./orcas_0.1.0_amd64.deb
-sudo systemctl enable --now orcas-daemon.service
+systemctl --user enable --now orcas-daemon.service
 orcas doctor
 ```
 
@@ -75,7 +75,7 @@ cargo build -p codex-cli --bin codex
 
 ## Paths and configuration
 
-Orcas follows the XDG layout on Linux. The user configuration file lives at `~/.config/orcas/config.toml`. State, logs, and related runtime files live under the user data and runtime directories unless you install and run the daemon as a system service.
+Orcas follows the XDG layout on Linux. The user configuration file lives at `~/.config/orcas/config.toml`. State, logs, and runtime files live under the same user-scoped XDG directories for the CLI, the TUI, and the packaged systemd user service.
 
 ```text
 config:  ~/.config/orcas/config.toml
@@ -87,6 +87,10 @@ meta:    ${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.json
 ```
 
 `state.json` remains the live collaboration and thread/turn mirror store. `state.db` is the live authority store for authority workstreams, authority work units, and tracked threads.
+
+The packaged `orcas-daemon.service` unit is a user service, not a root-owned global daemon. It is intended to run under `systemctl --user` so the daemon, CLI, and TUI all resolve the same XDG config, data, log, and socket paths.
+
+For source installs, `make install-systemd` writes that user unit into your user manager directory and rewrites `ExecStart` to the current install prefix so it follows the binary path you actually chose.
 
 The current read model is split:
 
@@ -107,6 +111,13 @@ The current operator mutation surface is also split, but no longer ambiguous:
 - assignment, report, decision, proposal, thread, and turn flows remain collaboration- or runtime-oriented daemon surfaces rather than authority planning CRUD
 
 `RUST_LOG` controls tracing verbosity. Orcas-specific overrides use `ORCAS_*` environment variables, including the Codex binary path and upstream listen URL.
+
+Two runtime-mode overrides are worth calling out explicitly:
+
+- `ORCAS_CONNECTION_MODE=connect_only` forces connect-only mode
+- `ORCAS_CONNECTION_MODE=spawn_always` forces spawn mode
+
+If `ORCAS_CONNECTION_MODE` is unset, Orcas keeps the configured or default `spawn_if_needed` behavior. The CLI and daemon flags `--connect-only` and `--force-spawn` are mutually exclusive one-shot overrides for the same setting.
 
 ## Read more
 
