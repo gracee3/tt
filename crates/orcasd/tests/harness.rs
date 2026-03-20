@@ -16,6 +16,7 @@ pub struct TestDaemon {
     pub paths: AppPaths,
     child: Option<Child>,
     extra_env: Vec<(String, String)>,
+    extra_args: Vec<String>,
 }
 
 impl TestDaemon {
@@ -24,6 +25,14 @@ impl TestDaemon {
     }
 
     pub async fn spawn_with_env(test_name: &str, extra_env: Vec<(String, String)>) -> Self {
+        Self::spawn_with_args(test_name, Vec::new(), extra_env).await
+    }
+
+    pub async fn spawn_with_args(
+        test_name: &str,
+        extra_args: Vec<String>,
+        extra_env: Vec<(String, String)>,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!("orcasd-it-{test_name}-{}", Uuid::new_v4()));
         let paths = AppPaths::from_roots(
             root.join("config/orcas"),
@@ -35,6 +44,7 @@ impl TestDaemon {
             paths,
             child: None,
             extra_env,
+            extra_args,
         };
         daemon.start().await;
         daemon
@@ -44,6 +54,7 @@ impl TestDaemon {
         self.paths.ensure().await.expect("create app paths");
         let mut command = Command::new(Self::orcasd_binary_path());
         command
+            .args(&self.extra_args)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
@@ -78,6 +89,20 @@ impl TestDaemon {
     pub async fn restart(&mut self) {
         self.stop().await;
         self.start().await;
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(Child::id)
+    }
+
+    pub async fn wait_for_exit(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        let _ = timeout(Duration::from_secs(10), child.wait())
+            .await
+            .expect("daemon did not exit in time");
+        self.child = None;
     }
 
     pub async fn connect(&self) -> std::sync::Arc<OrcasIpcClient> {

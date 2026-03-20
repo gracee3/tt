@@ -252,8 +252,13 @@ impl TuiBackend for OrcasDaemonBackend {
         let started_at = Instant::now();
         let review_meta = review_command_target(&command)
             .map(|(action, target_id, target_field)| (action, target_id.to_string(), target_field));
+        let authoring_meta = authoring_command_target(&command)
+            .map(|(action, target_id, target_field)| (action, target_id.to_string(), target_field));
         if let Some((action, target_id, target_field)) = review_meta.as_ref() {
             log_review_action_start(action, target_field, target_id);
+        }
+        if let Some((action, target_id, target_field)) = authoring_meta.as_ref() {
+            log_authoring_action_start(action, target_field, target_id);
         }
         let launch = match command {
             BackendCommand::StartDaemon => OrcasDaemonLaunch::IfNeeded,
@@ -264,6 +269,15 @@ impl TuiBackend for OrcasDaemonBackend {
             Err(error) => {
                 if let Some((action, target_id, target_field)) = review_meta.as_ref() {
                     log_review_action_failure(
+                        action,
+                        target_field,
+                        target_id,
+                        started_at.elapsed().as_millis() as u64,
+                        &error,
+                    );
+                }
+                if let Some((action, target_id, target_field)) = authoring_meta.as_ref() {
+                    log_authoring_action_failure(
                         action,
                         target_field,
                         target_id,
@@ -282,6 +296,19 @@ impl TuiBackend for OrcasDaemonBackend {
                 ) = (review_meta.as_ref(), &result)
                 {
                     log_review_action_success(
+                        action,
+                        target_field,
+                        target_id,
+                        decision,
+                        started_at.elapsed().as_millis() as u64,
+                    );
+                }
+                if let (
+                    Some((action, target_id, target_field)),
+                    BackendCommandResult::SupervisorDecision(decision),
+                ) = (authoring_meta.as_ref(), &result)
+                {
+                    log_authoring_action_success(
                         action,
                         target_field,
                         target_id,
@@ -325,6 +352,15 @@ impl TuiBackend for OrcasDaemonBackend {
                                 &error,
                             );
                         }
+                        if let Some((action, target_id, target_field)) = authoring_meta.as_ref() {
+                            log_authoring_action_failure(
+                                action,
+                                target_field,
+                                target_id,
+                                started_at.elapsed().as_millis() as u64,
+                                &error,
+                            );
+                        }
                         return Err(error);
                     }
                 };
@@ -343,11 +379,31 @@ impl TuiBackend for OrcasDaemonBackend {
                                 );
                             }
                         }
+                        if let Some((action, target_id, target_field)) = authoring_meta.as_ref() {
+                            if let BackendCommandResult::SupervisorDecision(decision) = result {
+                                log_authoring_action_success(
+                                    action,
+                                    target_field,
+                                    target_id,
+                                    decision,
+                                    started_at.elapsed().as_millis() as u64,
+                                );
+                            }
+                        }
                     }
                     Err(error) => {
                         warn!(error = %error, "TUI backend reconnect retry failed");
                         if let Some((action, target_id, target_field)) = review_meta.as_ref() {
                             log_review_action_failure(
+                                action,
+                                target_field,
+                                target_id,
+                                started_at.elapsed().as_millis() as u64,
+                                error,
+                            );
+                        }
+                        if let Some((action, target_id, target_field)) = authoring_meta.as_ref() {
+                            log_authoring_action_failure(
                                 action,
                                 target_field,
                                 target_id,
@@ -747,6 +803,23 @@ fn review_command_target(command: &BackendCommand) -> Option<(&'static str, &str
     }
 }
 
+fn authoring_command_target(
+    command: &BackendCommand,
+) -> Option<(&'static str, &str, &'static str)> {
+    match command {
+        BackendCommand::ProposeSteerSupervisorDecision { assignment_id, .. } => {
+            Some(("propose_steer", assignment_id.as_str(), "assignment_id"))
+        }
+        BackendCommand::ReplacePendingSteerSupervisorDecision { decision_id, .. } => {
+            Some(("replace_pending_steer", decision_id.as_str(), "decision_id"))
+        }
+        BackendCommand::ProposeInterruptSupervisorDecision { assignment_id } => {
+            Some(("propose_interrupt", assignment_id.as_str(), "assignment_id"))
+        }
+        _ => None,
+    }
+}
+
 fn log_review_action_start(action: &str, target_field: &str, target_id: &str) {
     match target_field {
         "decision_id" => info!(
@@ -820,6 +893,84 @@ fn log_review_action_success(
             result = "completed",
             duration_ms,
             "review action completed"
+        ),
+        _ => {}
+    }
+}
+
+fn log_authoring_action_start(action: &str, target_field: &str, target_id: &str) {
+    match target_field {
+        "decision_id" => info!(
+            surface = "tui",
+            action,
+            decision_id = target_id,
+            "starting proposal authoring action"
+        ),
+        "assignment_id" => info!(
+            surface = "tui",
+            action,
+            assignment_id = target_id,
+            "starting proposal authoring action"
+        ),
+        _ => {}
+    }
+}
+
+fn log_authoring_action_failure(
+    action: &str,
+    target_field: &str,
+    target_id: &str,
+    duration_ms: u64,
+    error: &anyhow::Error,
+) {
+    match target_field {
+        "decision_id" => warn!(
+            surface = "tui",
+            action,
+            decision_id = target_id,
+            result = "failed",
+            duration_ms,
+            error = %error,
+            "proposal authoring action failed"
+        ),
+        "assignment_id" => warn!(
+            surface = "tui",
+            action,
+            assignment_id = target_id,
+            result = "failed",
+            duration_ms,
+            error = %error,
+            "proposal authoring action failed"
+        ),
+        _ => {}
+    }
+}
+
+fn log_authoring_action_success(
+    action: &str,
+    target_field: &str,
+    target_id: &str,
+    decision: &SupervisorTurnDecision,
+    duration_ms: u64,
+) {
+    match target_field {
+        "decision_id" => info!(
+            surface = "tui",
+            action,
+            decision_id = target_id,
+            assignment_id = %decision.assignment_id,
+            result = "completed",
+            duration_ms,
+            "proposal authoring action completed"
+        ),
+        "assignment_id" => info!(
+            surface = "tui",
+            action,
+            assignment_id = target_id,
+            decision_id = %decision.decision_id,
+            result = "completed",
+            duration_ms,
+            "proposal authoring action completed"
         ),
         _ => {}
     }

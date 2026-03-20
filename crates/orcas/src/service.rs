@@ -713,8 +713,32 @@ impl SupervisorService {
         requested_by: Option<String>,
         supersede_open: bool,
     ) -> Result<()> {
-        let client = self.daemon_state_client().await?;
-        let response = client
+        let started_at = Instant::now();
+        info!(
+            surface = "cli",
+            action = "create_proposal",
+            work_unit_id,
+            source_report_id = source_report_id.as_deref().unwrap_or("latest"),
+            "starting proposal authoring action"
+        );
+        let client = match self.daemon_state_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "create_proposal",
+                    work_unit_id,
+                    source_report_id = source_report_id.as_deref().unwrap_or("latest"),
+                    result = "failed",
+                    reason = "backend_client_unavailable",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error);
+            }
+        };
+        let result = client
             .proposal_create(&ipc::ProposalCreateRequest {
                 work_unit_id: work_unit_id.to_string(),
                 source_report_id,
@@ -722,8 +746,32 @@ impl SupervisorService {
                 note,
                 supersede_open,
             })
-            .await?;
+            .await;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "create_proposal",
+                    work_unit_id,
+                    result = "failed",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error.into());
+            }
+        };
         Self::print_proposal_record(&response.proposal);
+        info!(
+            surface = "cli",
+            action = "create_proposal",
+            work_unit_id,
+            proposal_id = %response.proposal.id,
+            result = "created",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "proposal authoring action completed"
+        );
         Ok(())
     }
 
@@ -1072,16 +1120,63 @@ impl SupervisorService {
         requested_by: Option<String>,
         rationale_note: Option<String>,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
-        let decision = Self::codex_decision_propose_steer_with_backend(
+        let started_at = Instant::now();
+        info!(
+            surface = "cli",
+            action = "propose_steer",
+            thread_id,
+            "starting proposal authoring action"
+        );
+        let client = match self.ready_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "propose_steer",
+                    thread_id,
+                    result = "failed",
+                    reason = "backend_client_unavailable",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error);
+            }
+        };
+        let result = Self::codex_decision_propose_steer_with_backend(
             client.as_ref(),
             thread_id,
             proposed_text,
             requested_by,
             rationale_note,
         )
-        .await?;
+        .await;
+        let decision = match result {
+            Ok(decision) => decision,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "propose_steer",
+                    thread_id,
+                    result = "failed",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error);
+            }
+        };
         Self::print_supervisor_turn_decision(&decision, None, &[]);
+        info!(
+            surface = "cli",
+            action = "propose_steer",
+            thread_id,
+            decision_id = %decision.decision_id,
+            assignment_id = %decision.assignment_id,
+            result = "created",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "proposal authoring action completed"
+        );
         Ok(())
     }
 
@@ -1092,16 +1187,62 @@ impl SupervisorService {
         requested_by: Option<String>,
         rationale_note: Option<String>,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
-        let decision = Self::codex_decision_replace_pending_steer_with_backend(
+        let started_at = Instant::now();
+        info!(
+            surface = "cli",
+            action = "replace_pending_steer",
+            decision_id,
+            "starting proposal authoring action"
+        );
+        let client = match self.ready_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "replace_pending_steer",
+                    decision_id,
+                    result = "failed",
+                    reason = "backend_client_unavailable",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error);
+            }
+        };
+        let result = Self::codex_decision_replace_pending_steer_with_backend(
             client.as_ref(),
             decision_id,
             proposed_text,
             requested_by,
             rationale_note,
         )
-        .await?;
+        .await;
+        let decision = match result {
+            Ok(decision) => decision,
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "replace_pending_steer",
+                    decision_id,
+                    result = "failed",
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "proposal authoring action failed"
+                );
+                return Err(error);
+            }
+        };
         Self::print_supervisor_turn_decision(&decision, None, &[]);
+        info!(
+            surface = "cli",
+            action = "replace_pending_steer",
+            decision_id = %decision.decision_id,
+            assignment_id = %decision.assignment_id,
+            result = "created",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "proposal authoring action completed"
+        );
         Ok(())
     }
 
