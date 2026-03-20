@@ -1,3 +1,19 @@
+//! Shared JSON-RPC, snapshot, and event vocabulary for ORCAS.
+//!
+//! This module defines the public wire contract used by the daemon, CLI, and
+//! TUI. It intentionally separates three classes of surface:
+//! - snapshot and recovery reads such as `state/get` and `events/subscribe`
+//! - canonical authority planning reads and writes under `authority/*`
+//! - retained runtime-detail exceptions such as `workunit/get`
+//!
+//! `state/get` is collaboration-first and should not be read as the canonical
+//! planning hierarchy surface. `authority/hierarchy/get` and the related
+//! `authority/*` methods are the canonical planning reads and writes.
+//! `DaemonEvent` is a visibility stream, not replay/history truth.
+//!
+//! Read this alongside `authority.rs` for canonical planning records and
+//! `collaboration.rs` for the daemon-owned execution/runtime model.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +34,12 @@ use crate::supervisor::{
     SupervisorProposalStatus, SupervisorResponseArtifact,
 };
 
+/// JSON-RPC method names grouped by public surface family.
+///
+/// The family boundaries matter more than the individual names: `state/get`
+/// and `events/subscribe` are recovery-oriented collaboration surfaces,
+/// `authority/*` and `authority/hierarchy/get` are canonical planning surfaces,
+/// and `workunit/get` is a retained execution-detail exception.
 pub mod methods {
     pub const DAEMON_STATUS: &str = "daemon/status";
     pub const DAEMON_CONNECT: &str = "daemon/connect";
@@ -150,6 +172,10 @@ pub struct DaemonStopResponse {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StateGetRequest {}
 
+/// Returns a merged daemon snapshot with collaboration-first state.
+///
+/// This is useful for reconnect and operator inspection, but it is not the
+/// canonical authority planning hierarchy view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateGetResponse {
     pub snapshot: StateSnapshot,
@@ -168,6 +194,10 @@ pub struct EventsSubscribeRequest {
     pub include_snapshot: bool,
 }
 
+/// Subscribes to daemon visibility events, optionally with an initial snapshot.
+///
+/// The initial snapshot is a recovery aid only; future `DaemonEvent`s are
+/// visibility signals, not a replay log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventsSubscribeResponse {
     pub subscribed: bool,
@@ -179,6 +209,8 @@ pub struct EventsNotification {
     pub event: DaemonEventEnvelope,
 }
 
+/// A daemon snapshot combines runtime daemon/session/thread state with the
+/// collaboration snapshot used for recovery and operator inspection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub daemon: DaemonStatusResponse,
@@ -191,6 +223,10 @@ pub struct StateSnapshot {
     pub recent_events: Vec<EventSummary>,
 }
 
+/// The collaboration portion of a daemon snapshot.
+///
+/// These summaries are execution/runtime oriented and may include compatibility
+/// bridge rows, but they are not a canonical planning hierarchy projection.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CollaborationSnapshot {
     pub workstreams: Vec<WorkstreamSummary>,
@@ -218,6 +254,7 @@ pub struct ActiveTurn {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A time-stamped event summary retained in snapshots for operator context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSummary {
     pub timestamp: DateTime<Utc>,
@@ -227,6 +264,10 @@ pub struct EventSummary {
     pub turn_id: Option<String>,
 }
 
+/// A daemon event envelope adds the emission timestamp around a visibility
+/// event.
+///
+/// It does not provide replay guarantees.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonEventEnvelope {
     pub emitted_at: DateTime<Utc>,
@@ -242,6 +283,11 @@ impl DaemonEventEnvelope {
     }
 }
 
+/// Visibility events emitted after daemon-side state changes.
+///
+/// These events notify subscribers that something changed. They do not promise
+/// a complete history stream and they do not replace the canonical read
+/// surfaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonEvent {
@@ -309,6 +355,10 @@ pub enum DaemonEvent {
     },
 }
 
+/// Lifecycle verbs used by collaboration-surface event families.
+///
+/// `Deleted` is an explicit tombstone notification, not a cleanup guarantee for
+/// every read surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollaborationLifecycleAction {
@@ -319,6 +369,7 @@ pub enum CollaborationLifecycleAction {
     Escalated,
 }
 
+/// Lifecycle verbs for collaboration assignment visibility events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentLifecycleAction {
@@ -330,6 +381,7 @@ pub enum AssignmentLifecycleAction {
     Failed,
 }
 
+/// Lifecycle verbs for Codex assignment visibility events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexAssignmentLifecycleAction {
@@ -340,6 +392,7 @@ pub enum CodexAssignmentLifecycleAction {
     Updated,
 }
 
+/// Lifecycle verbs for supervisor decision visibility events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorDecisionLifecycleAction {
@@ -351,6 +404,7 @@ pub enum SupervisorDecisionLifecycleAction {
     Stale,
 }
 
+/// Lifecycle verbs for proposal visibility events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalLifecycleAction {
@@ -362,6 +416,28 @@ pub enum ProposalLifecycleAction {
     Stale,
 }
 
+/// Provenance marker for planning summaries.
+///
+/// `Collaboration` means the row came from daemon collaboration state.
+/// `AuthorityCompatibilityBridge` means the row is a collaboration-shaped
+/// mirror retained for execution/runtime compatibility.
+/// `AuthorityProjection` means the row came directly from the authority store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningSummarySourceKind {
+    /// Collaboration-native summary from daemon collaboration state.
+    #[default]
+    Collaboration,
+    /// Collaboration-shaped bridge row retained only for execution compatibility.
+    AuthorityCompatibilityBridge,
+    /// Authority-owned lifecycle or summary row emitted from the authority store.
+    AuthorityProjection,
+}
+
+/// Summary view of a workstream in daemon snapshots and events.
+///
+/// Inspect `source_kind` to distinguish collaboration-native rows from
+/// compatibility bridges and authority projections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamSummary {
     pub id: String,
@@ -375,6 +451,10 @@ pub struct WorkstreamSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Summary view of a work unit in daemon snapshots and events.
+///
+/// Inspect `source_kind` to distinguish collaboration-native rows from
+/// compatibility bridges and authority projections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkUnitSummary {
     pub id: String,
@@ -389,18 +469,6 @@ pub struct WorkUnitSummary {
     #[serde(default)]
     pub source_kind: PlanningSummarySourceKind,
     pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanningSummarySourceKind {
-    /// Collaboration-native summary from daemon collaboration state.
-    #[default]
-    Collaboration,
-    /// Collaboration-shaped bridge row retained only for execution compatibility.
-    AuthorityCompatibilityBridge,
-    /// Authority-owned lifecycle or summary row emitted from the authority store.
-    AuthorityProjection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,6 +487,7 @@ pub struct WorkUnitProposalSummary {
     pub has_stale_or_superseded: bool,
 }
 
+/// Summary view of a runtime assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignmentSummary {
     pub id: String,
@@ -430,6 +499,9 @@ pub struct AssignmentSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Summary view of a Codex thread assignment mirror.
+///
+/// This is execution/runtime state, not planning authority state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexThreadAssignmentSummary {
     pub assignment_id: String,
@@ -449,6 +521,10 @@ pub struct CodexThreadAssignmentSummary {
     pub active: bool,
 }
 
+/// Summary view of a supervisor decision.
+///
+/// Decisions are runtime review state and do not replace the canonical planning
+/// hierarchy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorTurnDecisionSummary {
     pub decision_id: String,
@@ -476,6 +552,7 @@ pub struct SupervisorTurnDecisionSummary {
     pub open: bool,
 }
 
+/// Summary view of a runtime report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub id: String,
@@ -490,6 +567,7 @@ pub struct ReportSummary {
     pub created_at: DateTime<Utc>,
 }
 
+/// Summary view of a runtime decision applied to a report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionSummary {
     pub id: String,
@@ -501,6 +579,7 @@ pub struct DecisionSummary {
     pub created_at: DateTime<Utc>,
 }
 
+/// Summary view of a supervisor proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalSummary {
     pub id: String,
@@ -1093,6 +1172,12 @@ pub struct WorkunitGetRequest {
     pub work_unit_id: String,
 }
 
+/// Snapshot read for `workunit/get`, the retained public runtime-detail
+/// exception.
+///
+/// This is not a canonical planning API. It carries execution detail that the
+/// TUI and operator tools still need even when planning authority lives under
+/// `authority/*`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkunitGetResponse {
     pub work_unit: WorkUnit,
@@ -1103,12 +1188,17 @@ pub struct WorkunitGetResponse {
     pub proposals: Vec<SupervisorProposalRecord>,
 }
 
+/// Canonical planning hierarchy snapshot read.
+///
+/// `include_deleted` controls whether tombstoned authority records are
+/// included.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthorityHierarchyGetRequest {
     #[serde(default)]
     pub include_deleted: bool,
 }
 
+/// Canonical authority hierarchy read response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorityHierarchyGetResponse {
     pub hierarchy: authority::HierarchySnapshot,

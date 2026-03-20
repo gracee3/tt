@@ -1,3 +1,16 @@
+//! Canonical authority planning domain, commands, events, and read/write
+//! vocabulary.
+//!
+//! This module defines the planning-side model that owns workstreams,
+//! work-units, and tracked-thread binding records. It is the canonical source
+//! of truth for planning hierarchy data; read `collaboration.rs` for the
+//! execution/runtime model and `ipc.rs` for the public RPC and event surfaces
+//! that expose the authority vocabulary to clients.
+//!
+//! Tracked threads are Orcas-owned local binding records. They may reference an
+//! upstream thread identifier, but that does not imply upstream ownership or
+//! daemon-owned PTY session ownership.
+
 use std::fmt::{Display, Formatter};
 
 use async_trait::async_trait;
@@ -107,6 +120,8 @@ uuid_backed_type!(CausationId);
 uuid_backed_type!(DeleteToken);
 non_empty_string_type!(CommandActor);
 
+/// Monotonic planning revision used for optimistic concurrency and tombstone
+/// ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Revision(u64);
@@ -139,6 +154,7 @@ impl Default for Revision {
     }
 }
 
+/// Planning aggregate kinds supported by the authority model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregateType {
@@ -147,6 +163,7 @@ pub enum AggregateType {
     TrackedThread,
 }
 
+/// Canonical command verbs for authority-owned planning aggregates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandKind {
@@ -161,6 +178,7 @@ pub enum CommandKind {
     DeleteTrackedThread,
 }
 
+/// Canonical event verbs emitted by the authority store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
@@ -207,6 +225,11 @@ impl AggregateKey {
     }
 }
 
+/// Metadata carried by every authority command.
+///
+/// This identifies the command, actor, origin, and correlation context used by
+/// the command store and event store. It is part of the canonical planning
+/// vocabulary, not the collaboration/runtime model.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommandMetadata {
     pub command_id: CommandId,
@@ -229,6 +252,10 @@ impl CommandMetadata {
     }
 }
 
+/// Metadata carried by every authority event.
+///
+/// The aggregate version and causation/correlation fields are what make the
+/// authority model suitable for optimistic concurrency and tombstone ordering.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EventMetadata {
     pub event_id: EventId,
@@ -264,6 +291,9 @@ impl EventMetadata {
     }
 }
 
+/// Patch for a canonical workstream record.
+///
+/// Empty patches are meaningful as validation inputs, but not as updates.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkstreamPatch {
     pub title: Option<String>,
@@ -282,6 +312,9 @@ impl WorkstreamPatch {
     }
 }
 
+/// Patch for a canonical work-unit record.
+///
+/// Empty patches are meaningful as validation inputs, but not as updates.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkUnitPatch {
     pub title: Option<String>,
@@ -296,6 +329,9 @@ impl WorkUnitPatch {
     }
 }
 
+/// Backend families supported by tracked-thread binding records.
+///
+/// The backend kind identifies the upstream integration, not PTY ownership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackedThreadBackendKind {
@@ -303,6 +339,11 @@ pub enum TrackedThreadBackendKind {
     Codex,
 }
 
+/// Binding state for a tracked thread record.
+///
+/// This captures how the Orcas-owned binding relates to an upstream thread
+/// identifier. It does not imply that Orcas owns the upstream thread or the
+/// PTY session used to attach to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackedThreadBindingState {
@@ -313,6 +354,10 @@ pub enum TrackedThreadBindingState {
     Missing,
 }
 
+/// Patch for a tracked-thread binding record.
+///
+/// `upstream_thread_id` and the other optional fields are optional updates, not
+/// claims of ownership over the upstream thread or PTY session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackedThreadPatch {
     pub title: Option<String>,
@@ -391,6 +436,10 @@ pub struct DeleteWorkUnit {
     pub delete_token: DeleteToken,
 }
 
+/// Command that creates a tracked-thread binding record.
+///
+/// `upstream_thread_id` is an optional reference to an upstream thread, not a
+/// claim that Orcas owns that thread or its PTY session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CreateTrackedThread {
     pub metadata: CommandMetadata,
@@ -420,6 +469,10 @@ pub struct DeleteTrackedThread {
     pub delete_token: DeleteToken,
 }
 
+/// Canonical command carrier for planning hierarchy mutations.
+///
+/// These commands own the authority-side write vocabulary and are the only
+/// supported path for planning hierarchy creation, edit, and delete behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthorityCommand {
@@ -502,6 +555,7 @@ impl AuthorityCommand {
     }
 }
 
+/// Canonical record for a workstream in the planning hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamRecord {
     pub id: WorkstreamId,
@@ -516,6 +570,7 @@ pub struct WorkstreamRecord {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+/// Canonical summary of a workstream record used in hierarchy snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamSummary {
     pub id: WorkstreamId,
@@ -543,6 +598,7 @@ impl From<&WorkstreamRecord> for WorkstreamSummary {
     }
 }
 
+/// Canonical record for a work unit in the planning hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitRecord {
     pub id: WorkUnitId,
@@ -557,6 +613,7 @@ pub struct WorkUnitRecord {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+/// Canonical summary of a work unit record used in hierarchy snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitSummary {
     pub id: WorkUnitId,
@@ -582,6 +639,11 @@ impl From<&WorkUnitRecord> for WorkUnitSummary {
     }
 }
 
+/// Canonical planning record for a tracked-thread binding.
+///
+/// This is an Orcas-owned local binding record that may reference an upstream
+/// thread identifier. It is part of planning authority, but it is distinct from
+/// TUI-local PTY resume state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadRecord {
     pub id: TrackedThreadId,
@@ -608,6 +670,10 @@ impl TrackedThreadRecord {
     }
 }
 
+/// Canonical summary view for a tracked-thread binding record.
+///
+/// Like the record, this is an Orcas-owned local binding summary rather than an
+/// upstream thread ownership claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadSummary {
     pub id: TrackedThreadId,
@@ -637,71 +703,88 @@ impl From<&TrackedThreadRecord> for TrackedThreadSummary {
     }
 }
 
+/// Node in the canonical authority hierarchy snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitNode {
     pub work_unit: WorkUnitSummary,
     pub tracked_threads: Vec<TrackedThreadSummary>,
 }
 
+/// Workstream node in the canonical authority hierarchy snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamNode {
     pub workstream: WorkstreamSummary,
     pub work_units: Vec<WorkUnitNode>,
 }
 
+/// Canonical hierarchy snapshot returned by authority reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HierarchySnapshot {
     pub workstreams: Vec<WorkstreamNode>,
 }
 
+/// Canonical event payload for a created workstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamCreated {
     pub workstream: WorkstreamRecord,
 }
 
+/// Canonical event payload for an edited workstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamEdited {
     pub workstream_id: WorkstreamId,
     pub changes: WorkstreamPatch,
 }
 
+/// Canonical event payload for a deleted workstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkstreamDeleted {
     pub workstream_id: WorkstreamId,
 }
 
+/// Canonical event payload for a created work unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitCreated {
     pub work_unit: WorkUnitRecord,
 }
 
+/// Canonical event payload for an edited work unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitEdited {
     pub work_unit_id: WorkUnitId,
     pub changes: WorkUnitPatch,
 }
 
+/// Canonical event payload for a deleted work unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkUnitDeleted {
     pub work_unit_id: WorkUnitId,
 }
 
+/// Canonical event payload for a created tracked-thread binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadCreated {
     pub tracked_thread: TrackedThreadRecord,
 }
 
+/// Canonical event payload for an edited tracked-thread binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadEdited {
     pub tracked_thread_id: TrackedThreadId,
     pub changes: TrackedThreadPatch,
 }
 
+/// Canonical event payload for a deleted tracked-thread binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadDeleted {
     pub tracked_thread_id: TrackedThreadId,
 }
 
+/// Canonical event carrier for planning hierarchy mutations.
+///
+/// These events are append-only history for the authority store. They are not
+/// collaboration/runtime events and they do not replace the public daemon
+/// visibility stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthorityEvent {
@@ -733,12 +816,17 @@ impl AuthorityEvent {
     }
 }
 
+/// Authority event envelope with canonical metadata and append-only payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorityEventEnvelope {
     pub metadata: EventMetadata,
     pub event: AuthorityEvent,
 }
 
+/// High-level target of an authority delete plan.
+///
+/// Delete plans are the explicit confirmation layer before tombstoning one of
+/// the canonical planning aggregates.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeleteTarget {
@@ -760,12 +848,18 @@ impl DeleteTarget {
     }
 }
 
+/// Human-readable description of a delete target used in delete plans.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletePlanTarget {
     pub aggregate_key: AggregateKey,
     pub label: String,
 }
 
+/// Authority delete plan returned before a destructive delete command is
+/// executed.
+///
+/// The plan explains the aggregate target, revision expectation, cascade size,
+/// and whether extra confirmation is required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletePlan {
     pub target: DeletePlanTarget,
@@ -778,6 +872,11 @@ pub struct DeletePlan {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Receipt returned by the authority command store when a command is accepted
+/// or rejected.
+///
+/// Receipts support idempotency and operator visibility; they are not the same
+/// as the append-only event history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandReceipt {
     pub command_id: CommandId,
@@ -788,24 +887,30 @@ pub struct CommandReceipt {
     pub recorded_at: DateTime<Utc>,
 }
 
+/// Stored authority event with a monotonically increasing sequence number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredAuthorityEvent {
     pub sequence: u64,
     pub envelope: AuthorityEventEnvelope,
 }
 
+/// Projection checkpoint for an authority-derived read model.
+///
+/// This is a projection maintenance detail, not a canonical planning record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectionCheckpoint {
     pub projection_name: String,
     pub last_applied_sequence: u64,
 }
 
+/// Command store boundary for authority writes and idempotency receipts.
 #[async_trait]
 pub trait AuthorityCommandStore: Send + Sync {
     async fn accept_command(&self, command: &AuthorityCommand) -> OrcasResult<CommandReceipt>;
     async fn get_command(&self, command_id: &CommandId) -> OrcasResult<Option<CommandReceipt>>;
 }
 
+/// Append-only event store boundary for canonical planning history.
 #[async_trait]
 pub trait AuthorityEventStore: Send + Sync {
     async fn append_events(
@@ -820,6 +925,7 @@ pub trait AuthorityEventStore: Send + Sync {
     ) -> OrcasResult<Vec<StoredAuthorityEvent>>;
 }
 
+/// Checkpoint store boundary for authority-derived projections.
 #[async_trait]
 pub trait AuthorityProjectionStore: Send + Sync {
     async fn load_projection_checkpoint(
@@ -833,11 +939,16 @@ pub trait AuthorityProjectionStore: Send + Sync {
     ) -> OrcasResult<()>;
 }
 
+/// Projector boundary that applies stored authority events to read models.
 #[async_trait]
 pub trait AuthorityProjector: Send + Sync {
     async fn apply(&self, event: &StoredAuthorityEvent) -> OrcasResult<()>;
 }
 
+/// Read-only authority hierarchy and detail surface.
+///
+/// Implementations should return canonical planning records and summaries, not
+/// collaboration/runtime mirrors.
 #[async_trait]
 pub trait AuthorityQueryStore: Send + Sync {
     async fn hierarchy_snapshot(&self, include_deleted: bool) -> OrcasResult<HierarchySnapshot>;
