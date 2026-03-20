@@ -359,6 +359,13 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                         "branch: {}  base: {}  landing: {}",
                         workspace.branch_name, workspace.base_ref, workspace.landing_target
                     ));
+                    lines.push(format!(
+                        "last reported head: {}",
+                        workspace
+                            .last_reported_head_commit
+                            .as_deref()
+                            .unwrap_or("unset")
+                    ));
                 } else {
                     lines.push("workspace: none".to_string());
                 }

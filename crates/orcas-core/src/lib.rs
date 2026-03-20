@@ -27,7 +27,7 @@ pub use communication::{
     AssignmentModeSpec, AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract,
     FileChangeKind, ImplementModePayload, ImplementModeSpec, PromptRenderArtifact,
     PromptRenderSpec, ReviewSignal, ReviewSignalLevel, TouchedFile, WorkerReportContract,
-    WorkerReportEnvelope, WorkerReportModePayload, WorkerReportValidation,
+    WorkerReportEnvelope, WorkerReportModePayload, WorkerReportValidation, WorkerWorkspaceReport,
 };
 pub use config::{
     AppConfig, CodexConnectionMode, CodexDaemonConfig, ReconnectPolicy, SupervisorConfig,

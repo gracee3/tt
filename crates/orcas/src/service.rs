@@ -887,6 +887,13 @@ impl SupervisorService {
             println!("workspace_base_ref: {}", workspace.base_ref);
             println!("workspace_landing_target: {}", workspace.landing_target);
             println!("workspace_status: {:?}", workspace.status);
+            println!(
+                "workspace_last_reported_head_commit: {}",
+                workspace
+                    .last_reported_head_commit
+                    .as_deref()
+                    .unwrap_or("unset")
+            );
         }
         Ok(())
     }

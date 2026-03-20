@@ -11,7 +11,8 @@ use orcas_core::{
     AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract, CollaborationState,
     ImplementModePayload, ImplementModeSpec, OrcasError, OrcasResult, PromptRenderArtifact,
     PromptRenderSpec, ReportConfidence, ReportDisposition, ReviewSignal, ReviewSignalLevel,
-    WorkUnit, WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload, Workstream,
+    WorkUnit, WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload,
+    WorkerWorkspaceReport, Workstream,
 };
 
 use crate::assignment_comm::{
@@ -409,6 +410,10 @@ pub fn render_prompt(
         prompt.push_str(
             "- Report the current workspace status and HEAD commit in your final worker report.\n",
         );
+        prompt.push_str(
+            "- Include a machine-readable workspace_report object in your final worker report for this lane.\n",
+        );
+        prompt.push_str("- workspace_report is observed state, not supervisor intent.\n");
         prompt.push_str(&format!(
             "- Do not merge into `{}` without explicit supervisor approval.\n\n",
             workspace_contract.workspace.landing_target
@@ -469,6 +474,11 @@ pub fn render_prompt(
     prompt.push_str("- Array fields may be empty when there is nothing honest to report.\n");
     prompt.push_str("- Do not wrap the envelope in markdown fences.\n");
     prompt.push_str("- Worker recommendations are non-authoritative.\n");
+    if packet.workspace_contract.is_some() {
+        prompt.push_str(
+            "- When a workspace contract is present, include workspace_report with the observed lane state for the bound tracked thread.\n",
+        );
+    }
     prompt.push_str(&format!("- Packet fingerprint: {packet_hash}\n"));
     prompt.push('\n');
 
@@ -904,12 +914,34 @@ fn example_report_envelope(packet: &AssignmentCommunicationPacket) -> WorkerRepo
             reasons: Vec::new(),
             focus: Vec::new(),
         },
+        workspace_report: example_workspace_report(packet),
         mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
             semantic_changes: Vec::new(),
             tests_run: Vec::new(),
             rough_edges: Vec::new(),
         }),
     }
+}
+
+fn example_workspace_report(
+    packet: &AssignmentCommunicationPacket,
+) -> Option<WorkerWorkspaceReport> {
+    let workspace_contract = packet.workspace_contract.as_ref()?;
+    Some(WorkerWorkspaceReport {
+        tracked_thread_id: workspace_contract.tracked_thread_id.clone(),
+        repository_root: workspace_contract.workspace.repository_root.clone(),
+        worktree_path: workspace_contract.workspace.worktree_path.clone(),
+        branch_name: workspace_contract.workspace.branch_name.clone(),
+        base_ref: workspace_contract.workspace.base_ref.clone(),
+        base_commit: workspace_contract.workspace.base_commit.clone(),
+        head_commit: Some("HEAD_COMMIT_SHA".to_string()),
+        workspace_status: workspace_contract.workspace.status,
+        worktree_created: Some(false),
+        worktree_reused: Some(true),
+        workspace_dirty: Some(false),
+        rebase_attempted: Some(false),
+        rebase_succeeded: Some(false),
+    })
 }
 
 fn render_string_list(prompt: &mut String, items: &[String], empty_label: &str) {

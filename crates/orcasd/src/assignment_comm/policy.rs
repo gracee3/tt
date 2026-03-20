@@ -201,6 +201,71 @@ pub fn validate_worker_report_envelope(
         }
     }
 
+    if let Some(workspace_report) = envelope.workspace_report.as_ref() {
+        if let Some(workspace_contract) = record.packet.workspace_contract.as_ref() {
+            if workspace_report.tracked_thread_id != workspace_contract.tracked_thread_id {
+                structural_issues.push(format!(
+                    "workspace_report tracked_thread_id `{}` does not match workspace contract `{}`",
+                    workspace_report.tracked_thread_id, workspace_contract.tracked_thread_id
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+            if workspace_report.repository_root != workspace_contract.workspace.repository_root {
+                semantic_issues.push(format!(
+                    "workspace_report repository_root `{}` does not match workspace contract `{}`",
+                    workspace_report.repository_root, workspace_contract.workspace.repository_root
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            if workspace_report.worktree_path != workspace_contract.workspace.worktree_path {
+                semantic_issues.push(format!(
+                    "workspace_report worktree_path `{}` does not match workspace contract `{}`",
+                    workspace_report.worktree_path, workspace_contract.workspace.worktree_path
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            if workspace_report.branch_name != workspace_contract.workspace.branch_name {
+                semantic_issues.push(format!(
+                    "workspace_report branch_name `{}` does not match workspace contract `{}`",
+                    workspace_report.branch_name, workspace_contract.workspace.branch_name
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            if workspace_report.base_ref != workspace_contract.workspace.base_ref {
+                semantic_issues.push(format!(
+                    "workspace_report base_ref `{}` does not match workspace contract `{}`",
+                    workspace_report.base_ref, workspace_contract.workspace.base_ref
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            if workspace_report.base_commit.is_some()
+                && workspace_report.base_commit != workspace_contract.workspace.base_commit
+            {
+                semantic_issues.push(
+                    "workspace_report base_commit did not match the declared workspace base_commit"
+                        .to_string(),
+                );
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+        } else {
+            semantic_issues
+                .push("workspace_report was present without a workspace contract".to_string());
+            if parse_result == ReportParseResult::Parsed {
+                parse_result = ReportParseResult::Ambiguous;
+            }
+        }
+    }
+
     for result in &envelope.acceptance_results {
         if !record
             .packet
@@ -414,6 +479,7 @@ mod tests {
                 reasons: Vec::new(),
                 focus: Vec::new(),
             },
+            workspace_report: None,
             mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
                 semantic_changes: vec!["Adjusted validation semantics.".to_string()],
                 tests_run: vec!["cargo test -p orcasd assignment_comm".to_string()],
@@ -472,6 +538,61 @@ mod tests {
         assert!(validation.structural_issues.is_empty());
         assert!(validation.semantic_issues.is_empty());
         assert!(validation.policy_violations.is_empty());
+    }
+
+    #[test]
+    fn validate_worker_report_envelope_accepts_matching_workspace_report() {
+        let assignment = sample_assignment();
+        let mut record = sample_record(&assignment);
+        record.packet.workspace_contract = Some(orcas_core::AssignmentWorkspaceContract {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            tracked_thread_title: "Workspace thread".to_string(),
+            workspace: orcas_core::authority::TrackedThreadWorkspace {
+                repository_root: "/repo".to_string(),
+                owner_tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                    .expect("tracked thread id"),
+                strategy:
+                    orcas_core::authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                worktree_path: "/repo/.worktrees/tt-1".to_string(),
+                branch_name: "orcas/tt-1".to_string(),
+                base_ref: "origin/main".to_string(),
+                base_commit: Some("base-123".to_string()),
+                landing_target: "main".to_string(),
+                landing_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                sync_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceSyncPolicy::RebaseBeforeCompletion,
+                cleanup_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceCleanupPolicy::PruneAfterMerge,
+                last_reported_head_commit: None,
+                status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ready,
+            },
+        });
+        let mut envelope = sample_envelope(&assignment, &record.packet.packet_id);
+        envelope.workspace_report = Some(orcas_core::WorkerWorkspaceReport {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/.worktrees/tt-1".to_string(),
+            branch_name: "orcas/tt-1".to_string(),
+            base_ref: "origin/main".to_string(),
+            base_commit: Some("base-123".to_string()),
+            head_commit: Some("head-456".to_string()),
+            workspace_status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ahead,
+            worktree_created: Some(false),
+            worktree_reused: Some(true),
+            workspace_dirty: Some(false),
+            rebase_attempted: Some(true),
+            rebase_succeeded: Some(true),
+        });
+
+        let validation = validate_worker_report_envelope(&envelope, &assignment, &record, false);
+
+        assert_eq!(validation.parse_result, ReportParseResult::Parsed);
+        assert!(!validation.needs_supervisor_review);
+        assert!(validation.structural_issues.is_empty());
+        assert!(validation.semantic_issues.is_empty());
     }
 
     #[test]

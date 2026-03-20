@@ -176,6 +176,30 @@ pub struct AssignmentWorkspaceContract {
     pub workspace: authority::TrackedThreadWorkspace,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerWorkspaceReport {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub repository_root: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub base_ref: String,
+    #[serde(default)]
+    pub base_commit: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
+    pub workspace_status: authority::TrackedThreadWorkspaceStatus,
+    #[serde(default)]
+    pub worktree_created: Option<bool>,
+    #[serde(default)]
+    pub worktree_reused: Option<bool>,
+    #[serde(default)]
+    pub workspace_dirty: Option<bool>,
+    #[serde(default)]
+    pub rebase_attempted: Option<bool>,
+    #[serde(default)]
+    pub rebase_succeeded: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignmentCommunicationPacket {
     pub schema_version: String,
@@ -304,6 +328,8 @@ pub struct WorkerReportEnvelope {
     pub recommended_next_actions: Vec<String>,
     pub uncertainties: Vec<String>,
     pub review_signal: ReviewSignal,
+    #[serde(default)]
+    pub workspace_report: Option<WorkerWorkspaceReport>,
     pub mode_payload: WorkerReportModePayload,
 }
 
@@ -350,9 +376,12 @@ mod tests {
         AssignmentExecutionContext, AssignmentModeSpec, AssignmentScopeBoundary,
         AssignmentTaskMode, ImplementModePayload, ImplementModeSpec, ReviewSignal,
         ReviewSignalLevel, TouchedFile, WorkerReportContract, WorkerReportEnvelope,
-        WorkerReportModePayload,
+        WorkerReportModePayload, WorkerWorkspaceReport,
     };
-    use crate::{FileChangeKind, ReportConfidence, ReportDisposition};
+    use crate::{
+        FileChangeKind, ReportConfidence, ReportDisposition,
+        authority::{TrackedThreadId, TrackedThreadWorkspaceStatus},
+    };
 
     fn fixed_now() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2025, 7, 8, 9, 10, 11)
@@ -521,6 +550,7 @@ mod tests {
                 reasons: vec!["partial result".to_string()],
                 focus: vec!["review the remaining edge".to_string()],
             },
+            workspace_report: None,
             mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
                 semantic_changes: vec!["Updated parser logic.".to_string()],
                 tests_run: vec!["cargo test -p orcas-core".to_string()],
@@ -543,6 +573,37 @@ mod tests {
         assert_eq!(
             round_trip.acceptance_results[0].status,
             AcceptanceCriterionStatus::PartiallyMet
+        );
+    }
+
+    #[test]
+    fn worker_workspace_report_round_trips_optional_observations() {
+        let report = WorkerWorkspaceReport {
+            tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/.worktrees/tt-1".to_string(),
+            branch_name: "orcas/tt-1".to_string(),
+            base_ref: "origin/main".to_string(),
+            base_commit: Some("base-123".to_string()),
+            head_commit: Some("head-456".to_string()),
+            workspace_status: TrackedThreadWorkspaceStatus::Ahead,
+            worktree_created: Some(false),
+            worktree_reused: Some(true),
+            workspace_dirty: Some(false),
+            rebase_attempted: Some(true),
+            rebase_succeeded: Some(true),
+        };
+
+        let value = serde_json::to_value(&report).expect("serialize workspace report");
+        assert_eq!(value["workspace_status"], "ahead");
+        assert_eq!(value["tracked_thread_id"], "tt-1");
+
+        let round_trip = serde_json::from_value::<WorkerWorkspaceReport>(value)
+            .expect("deserialize workspace report");
+        assert_eq!(round_trip.head_commit.as_deref(), Some("head-456"));
+        assert_eq!(
+            round_trip.workspace_status,
+            TrackedThreadWorkspaceStatus::Ahead
         );
     }
 

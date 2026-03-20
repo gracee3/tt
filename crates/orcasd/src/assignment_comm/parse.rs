@@ -437,12 +437,69 @@ mod tests {
                 reasons: Vec::new(),
                 focus: Vec::new(),
             },
+            workspace_report: None,
             mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
                 semantic_changes: vec!["Updated the parser boundary.".to_string()],
                 tests_run: vec!["cargo test -p orcasd assignment_comm".to_string()],
                 rough_edges: vec!["No additional rough edges.".to_string()],
             }),
         }
+    }
+
+    #[test]
+    fn parse_worker_report_accepts_workspace_report_when_contract_matches() {
+        let assignment = sample_assignment();
+        let mut record = sample_record(&assignment);
+        record.packet.workspace_contract = Some(orcas_core::AssignmentWorkspaceContract {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            tracked_thread_title: "Workspace thread".to_string(),
+            workspace: orcas_core::authority::TrackedThreadWorkspace {
+                repository_root: "/repo".to_string(),
+                owner_tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                    .expect("tracked thread id"),
+                strategy:
+                    orcas_core::authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                worktree_path: "/repo/.worktrees/tt-1".to_string(),
+                branch_name: "orcas/tt-1".to_string(),
+                base_ref: "origin/main".to_string(),
+                base_commit: Some("base-123".to_string()),
+                landing_target: "main".to_string(),
+                landing_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                sync_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceSyncPolicy::RebaseBeforeCompletion,
+                cleanup_policy:
+                    orcas_core::authority::TrackedThreadWorkspaceCleanupPolicy::PruneAfterMerge,
+                last_reported_head_commit: None,
+                status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ready,
+            },
+        });
+        let mut envelope = sample_envelope(&assignment, &record.packet.packet_id);
+        envelope.workspace_report = Some(orcas_core::WorkerWorkspaceReport {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/.worktrees/tt-1".to_string(),
+            branch_name: "orcas/tt-1".to_string(),
+            base_ref: "origin/main".to_string(),
+            base_commit: Some("base-123".to_string()),
+            head_commit: Some("head-456".to_string()),
+            workspace_status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ahead,
+            worktree_created: Some(false),
+            worktree_reused: Some(true),
+            workspace_dirty: Some(false),
+            rebase_attempted: Some(true),
+            rebase_succeeded: Some(true),
+        });
+        let raw = wrap_report(&serde_json::to_string(&envelope).expect("serialize envelope"));
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Parsed);
+        let parsed_envelope = parsed.envelope.expect("parsed envelope");
+        let workspace_report = parsed_envelope.workspace_report.expect("workspace report");
+        assert_eq!(workspace_report.tracked_thread_id.as_str(), "tt-1");
+        assert_eq!(workspace_report.head_commit.as_deref(), Some("head-456"));
     }
 
     fn wrap_report(json_payload: &str) -> String {

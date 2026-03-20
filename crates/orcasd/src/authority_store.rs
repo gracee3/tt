@@ -191,7 +191,6 @@ impl AuthoritySqliteStore {
         &self.paths.state_db_file
     }
 
-    #[cfg(test)]
     pub fn origin_node_id(&self) -> OrcasResult<OriginNodeId> {
         self.with_connection(|connection| Self::ensure_origin_node_id(connection))
     }
