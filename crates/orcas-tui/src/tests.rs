@@ -948,7 +948,7 @@ fn sample_snapshot_with_plan() -> ipc::StateSnapshot {
             apply_started_at: None,
             apply_finished_at: None,
             apply_error: None,
-            recovery: Default::default(),
+            recovery: orcas_core::planning::PlanRevisionRecoveryState::default(),
             applied_plan_id: None,
             applied_plan_version: None,
             source_supervisor_proposal_id: Some("proposal-1".to_string()),

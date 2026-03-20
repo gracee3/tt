@@ -184,6 +184,11 @@ async fn spawn_assignment_ready_daemon(
             instructions: Some("Run the bounded report path.".to_string()),
             model: None,
             cwd: None,
+            plan_id: None,
+            plan_version: None,
+            plan_item_id: None,
+            execution_kind: Default::default(),
+            alignment_rationale: None,
         })
         .await
         .expect("start bounded assignment");
@@ -265,6 +270,11 @@ async fn spawn_proposal_ready_daemon(
             instructions: Some("Run the bounded proposal path.".to_string()),
             model: None,
             cwd: None,
+            plan_id: None,
+            plan_version: None,
+            plan_item_id: None,
+            execution_kind: Default::default(),
+            alignment_rationale: None,
         })
         .await
         .expect("start bounded proposal assignment");

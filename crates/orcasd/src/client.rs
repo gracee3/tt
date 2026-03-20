@@ -509,6 +509,28 @@ impl OrcasIpcClient {
         .await
     }
 
+    pub async fn authority_tracked_thread_execute_landing(
+        &self,
+        params: &ipc::AuthorityTrackedThreadExecuteLandingRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadExecuteLandingResponse> {
+        self.request(
+            ipc::methods::AUTHORITY_TRACKED_THREAD_EXECUTE_LANDING,
+            params,
+        )
+        .await
+    }
+
+    pub async fn authority_tracked_thread_prune_workspace(
+        &self,
+        params: &ipc::AuthorityTrackedThreadPruneWorkspaceRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadPruneWorkspaceResponse> {
+        self.request(
+            ipc::methods::AUTHORITY_TRACKED_THREAD_PRUNE_WORKSPACE,
+            params,
+        )
+        .await
+    }
+
     pub async fn assignment_start(
         &self,
         params: &ipc::AssignmentStartRequest,

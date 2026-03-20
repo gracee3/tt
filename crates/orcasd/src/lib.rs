@@ -4,6 +4,7 @@ pub mod assignment_comm;
 mod authority_store;
 pub mod client;
 pub(crate) mod landing_authorization;
+pub(crate) mod landing_execution;
 pub(crate) mod merge_prep;
 pub mod process;
 pub mod service;

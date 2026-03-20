@@ -11,6 +11,9 @@ use orcas_core::{
     AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract, CollaborationState,
     ImplementModePayload, ImplementModeSpec, OrcasError, OrcasResult, PromptRenderArtifact,
     PromptRenderSpec, ReportConfidence, ReportDisposition, ReviewSignal, ReviewSignalLevel,
+    TrackedThreadLandingExecutionContract, TrackedThreadLandingExecutionResult,
+    TrackedThreadLandingExecutionResultStatus, TrackedThreadPruneWorkspaceContract,
+    TrackedThreadPruneWorkspaceResult, TrackedThreadPruneWorkspaceResultStatus,
     TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind, WorkUnit,
     WorkerReportContract, WorkerReportEnvelope, WorkerReportModePayload, WorkerWorkspaceReport,
     Workstream,
@@ -29,6 +32,8 @@ const SECTION_ORDER: &[&str] = &[
     "objective",
     "instructions",
     "workspace_operation",
+    "prune_workspace",
+    "landing_execution",
     "workspace_contract",
     "scope_and_non_goals",
     "acceptance_criteria",
@@ -126,6 +131,8 @@ pub fn build_assignment_communication_record(
             response_contract,
             workspace_contract.clone(),
             seed.workspace_operation.clone(),
+            seed.prune_workspace.clone(),
+            seed.landing_execution.clone(),
             seed,
             now,
         )
@@ -140,6 +147,8 @@ pub fn build_assignment_communication_record(
             execution_context,
             response_contract,
             workspace_contract,
+            None,
+            None,
             None,
             now,
         )
@@ -251,6 +260,8 @@ fn build_packet_from_seed(
     response_contract: WorkerReportContract,
     workspace_contract: Option<AssignmentWorkspaceContract>,
     workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
+    prune_workspace: Option<TrackedThreadPruneWorkspaceContract>,
+    landing_execution: Option<TrackedThreadLandingExecutionContract>,
     seed: &AssignmentCommunicationSeed,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
@@ -305,6 +316,8 @@ fn build_packet_from_seed(
         ),
         workspace_contract,
         workspace_operation,
+        prune_workspace,
+        landing_execution,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -319,6 +332,8 @@ fn build_packet_from_legacy_assignment_instructions(
     response_contract: WorkerReportContract,
     workspace_contract: Option<AssignmentWorkspaceContract>,
     workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
+    prune_workspace: Option<TrackedThreadPruneWorkspaceContract>,
+    landing_execution: Option<TrackedThreadLandingExecutionContract>,
     now: DateTime<Utc>,
 ) -> AssignmentCommunicationPacket {
     let legacy = parse_legacy_instruction_seed(&assignment.instructions);
@@ -368,6 +383,8 @@ fn build_packet_from_legacy_assignment_instructions(
         ),
         workspace_contract,
         workspace_operation,
+        prune_workspace,
+        landing_execution,
         response_contract,
         policy: default_assignment_policy(),
     }
@@ -475,6 +492,12 @@ pub fn render_prompt(
                     "- Do not merge into the landing target, finalize landing, reset, or prune from this workflow.\n",
                 );
             }
+            TrackedThreadWorkspaceOperationKind::PruneWorkspace => {
+                prompt.push_str("- prune_workspace means perform bounded workspace cleanup and retire the tracked-thread lane only when it is explicitly safe to do so.\n");
+                prompt.push_str(
+                    "- Do not land, merge, rebase, repair, or clean up unrelated work from this workflow.\n",
+                );
+            }
         }
         prompt.push_str(
             "- The worker performs any required git mutations inside the declared workspace.\n",
@@ -483,6 +506,50 @@ pub fn render_prompt(
             "- Include a machine-readable workspace_report object in your final worker report for this lane.\n",
         );
         prompt.push_str("- workspace_report is observed state, not supervisor intent.\n\n");
+    }
+
+    if let Some(prune_workspace) = packet.prune_workspace.as_ref() {
+        let prune_workspace_json = serde_json::to_string_pretty(prune_workspace)?;
+        prompt.push_str("Prune Workspace:\n");
+        prompt.push_str("```json\n");
+        prompt.push_str(&prune_workspace_json);
+        prompt.push_str("\n```\n");
+        prompt.push_str(
+            "- This is a standardized Orcas workspace cleanup flow, not freeform prompt wording.\n",
+        );
+        prompt.push_str("- Orcas itself remains read-only for git inspection and orchestration.\n");
+        prompt.push_str("- Prune only the explicitly targeted tracked-thread lane and only within the cleanup scope described by the contract.\n");
+        prompt.push_str(
+            "- Do not land, merge, rebase, or repair unrelated work as part of prune_workspace.\n",
+        );
+        prompt.push_str(
+            "- Refuse and report clearly if the lane still appears active or unsafe to prune.\n",
+        );
+        prompt.push_str("- When cleanup completes, report the workspace status as pruned or abandoned so the operator can distinguish an intentional retirement from an accidental missing worktree.\n");
+        prompt.push_str("- Include a machine-readable prune_workspace_result object and the observed workspace_report in your final worker report for this lane.\n\n");
+    }
+
+    if let Some(landing_execution) = packet.landing_execution.as_ref() {
+        let landing_execution_json = serde_json::to_string_pretty(landing_execution)?;
+        prompt.push_str("Landing Execution:\n");
+        prompt.push_str("```json\n");
+        prompt.push_str(&landing_execution_json);
+        prompt.push_str("\n```\n");
+        prompt.push_str(
+            "- This is a standardized Orcas landing execution, authorized by a landing authorization record.\n",
+        );
+        prompt.push_str(
+            "- Execute only the authorized head commit onto the authorized landing target.\n",
+        );
+        prompt.push_str(
+            "- If the lane no longer matches the authorized basis, stop and report refusal instead of forcing a landing.\n",
+        );
+        prompt.push_str(
+            "- Do not prune, reset, or clean up unrelated work outside the authorized landing scope.\n",
+        );
+        prompt.push_str(
+            "- Include a machine-readable landing_execution_result object and the observed workspace_report in your final worker report.\n\n",
+        );
     }
 
     prompt.push_str("Scope And Non-Goals:\n");
@@ -539,9 +606,13 @@ pub fn render_prompt(
     prompt.push_str("- Array fields may be empty when there is nothing honest to report.\n");
     prompt.push_str("- Do not wrap the envelope in markdown fences.\n");
     prompt.push_str("- Worker recommendations are non-authoritative.\n");
-    if packet.workspace_contract.is_some() || packet.workspace_operation.is_some() {
+    if packet.workspace_contract.is_some()
+        || packet.workspace_operation.is_some()
+        || packet.prune_workspace.is_some()
+        || packet.landing_execution.is_some()
+    {
         prompt.push_str(
-            "- When a workspace contract or workspace operation is present, include workspace_report with the observed lane state for the bound tracked thread.\n",
+            "- When a workspace contract, workspace operation, prune workspace, or landing execution is present, include workspace_report with the observed lane state for the bound tracked thread.\n",
         );
     }
     prompt.push_str(&format!("- Packet fingerprint: {packet_hash}\n"));
@@ -980,6 +1051,8 @@ fn example_report_envelope(packet: &AssignmentCommunicationPacket) -> WorkerRepo
             focus: Vec::new(),
         },
         workspace_report: example_workspace_report(packet),
+        prune_workspace_result: example_prune_workspace_result(packet),
+        landing_execution_result: example_landing_execution_result(packet),
         mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
             semantic_changes: Vec::new(),
             tests_run: Vec::new(),
@@ -992,6 +1065,11 @@ fn example_workspace_report(
     packet: &AssignmentCommunicationPacket,
 ) -> Option<WorkerWorkspaceReport> {
     let workspace_contract = packet.workspace_contract.as_ref()?;
+    let workspace_status = if packet.prune_workspace.is_some() {
+        orcas_core::authority::TrackedThreadWorkspaceStatus::Pruned
+    } else {
+        workspace_contract.workspace.status
+    };
     Some(WorkerWorkspaceReport {
         tracked_thread_id: workspace_contract.tracked_thread_id.clone(),
         repository_root: workspace_contract.workspace.repository_root.clone(),
@@ -1000,12 +1078,46 @@ fn example_workspace_report(
         base_ref: workspace_contract.workspace.base_ref.clone(),
         base_commit: workspace_contract.workspace.base_commit.clone(),
         head_commit: Some("HEAD_COMMIT_SHA".to_string()),
-        workspace_status: workspace_contract.workspace.status,
+        workspace_status,
         worktree_created: Some(false),
         worktree_reused: Some(true),
         workspace_dirty: Some(false),
         rebase_attempted: Some(false),
         rebase_succeeded: Some(false),
+    })
+}
+
+fn example_landing_execution_result(
+    packet: &AssignmentCommunicationPacket,
+) -> Option<TrackedThreadLandingExecutionResult> {
+    let landing_execution = packet.landing_execution.as_ref()?;
+    Some(TrackedThreadLandingExecutionResult {
+        tracked_thread_id: landing_execution.tracked_thread_id.clone(),
+        landing_authorization_id: landing_execution.landing_authorization_id.clone(),
+        attempted_head_commit: landing_execution.authorized_head_commit.clone(),
+        landing_target: landing_execution.landing_target.clone(),
+        status: TrackedThreadLandingExecutionResultStatus::Succeeded,
+        landed_commit: Some("LANDING_COMMIT_SHA".to_string()),
+        landing_ref_updated: Some(true),
+        failure_reason: None,
+        notes: Some("Landing completed in the example envelope.".to_string()),
+    })
+}
+
+fn example_prune_workspace_result(
+    packet: &AssignmentCommunicationPacket,
+) -> Option<TrackedThreadPruneWorkspaceResult> {
+    let prune_workspace = packet.prune_workspace.as_ref()?;
+    Some(TrackedThreadPruneWorkspaceResult {
+        tracked_thread_id: prune_workspace.tracked_thread_id.clone(),
+        worktree_path: prune_workspace.worktree_path.clone(),
+        branch_name: Some(prune_workspace.branch_name.clone()),
+        status: TrackedThreadPruneWorkspaceResultStatus::Succeeded,
+        worktree_removed: Some(true),
+        branch_removed: Some(false),
+        refusal_reason: None,
+        failure_reason: None,
+        notes: Some("Workspace cleanup completed in the example envelope.".to_string()),
     })
 }
 
@@ -1069,9 +1181,9 @@ mod tests {
     use orcas_core::{
         Assignment, AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentTaskMode,
         CollaborationState, ImplementModeSpec, Report, ReportConfidence, ReportDisposition,
-        ReportParseResult, TrackedThreadWorkspaceOperationContract,
-        TrackedThreadWorkspaceOperationKind, WorkUnit, WorkUnitStatus, Workstream,
-        WorkstreamStatus,
+        ReportParseResult, TrackedThreadPruneWorkspaceContract,
+        TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind, WorkUnit,
+        WorkUnitStatus, Workstream, WorkstreamStatus,
     };
 
     use super::{
@@ -1203,6 +1315,8 @@ mod tests {
             expected_report_fields: vec!["summary".to_string()],
             boundedness_note: Some("Do not change runtime orchestration.".to_string()),
             workspace_operation: None,
+            prune_workspace: None,
+            landing_execution: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: vec![
                     "cargo test -p orcasd assignment_comm".to_string(),
@@ -1362,6 +1476,90 @@ mod tests {
     }
 
     #[test]
+    fn render_prompt_includes_prune_workspace_contract_guidance() {
+        let collaboration = sample_collaboration();
+        let mut seed = sample_seed();
+        seed.prune_workspace = Some(TrackedThreadPruneWorkspaceContract {
+            tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+            tracked_thread_title: "Tracked thread".to_string(),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/worktree".to_string(),
+            branch_name: "orcas/tt-1".to_string(),
+            landing_target: "origin/main".to_string(),
+            workspace: TrackedThreadWorkspace {
+                repository_root: "/repo".to_string(),
+                owner_tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+                strategy: TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                worktree_path: "/repo/worktree".to_string(),
+                branch_name: "orcas/tt-1".to_string(),
+                base_ref: "origin/main".to_string(),
+                base_commit: Some("base-123".to_string()),
+                landing_target: "origin/main".to_string(),
+                landing_policy: TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                sync_policy: TrackedThreadWorkspaceSyncPolicy::Manual,
+                cleanup_policy: TrackedThreadWorkspaceCleanupPolicy::KeepUntilCampaignClosed,
+                last_reported_head_commit: Some("head-123".to_string()),
+                status: TrackedThreadWorkspaceStatus::Ahead,
+            },
+            linked_landing_execution_id: Some("landing-exec-1".to_string()),
+            requested_by: Some("supervisor_cli".to_string()),
+            request_note: Some("Retire the lane after landing.".to_string()),
+        });
+        let assignment = sample_assignment(Some(seed), "unused legacy text");
+        let record = build_assignment_communication_record(
+            &collaboration,
+            &assignment,
+            Some("gpt-5".to_string()),
+            Some("/repo".to_string()),
+            None,
+            None,
+            fixed_now(),
+        )
+        .expect("build communication record");
+
+        let prompt = &record.prompt_render.prompt_text;
+        assert!(prompt.contains("Prune Workspace:"));
+        assert!(prompt.contains(
+            "Prune only the explicitly targeted tracked-thread lane and only within the cleanup scope described by the contract."
+        ));
+        assert!(prompt.contains(
+            "When cleanup completes, report the workspace status as pruned or abandoned"
+        ));
+    }
+
+    #[test]
+    fn render_prompt_includes_landing_execution_contract_guidance() {
+        let collaboration = sample_collaboration();
+        let mut seed = sample_seed();
+        seed.landing_execution = Some(orcas_core::TrackedThreadLandingExecutionContract {
+            tracked_thread_id: TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+            tracked_thread_title: "Tracked thread".to_string(),
+            landing_authorization_id: "landing-auth-1".to_string(),
+            authorized_head_commit: "head-123".to_string(),
+            landing_target: "origin/main".to_string(),
+            requested_by: Some("supervisor_cli".to_string()),
+            request_note: Some("Execute the authorized landing.".to_string()),
+        });
+        let assignment = sample_assignment(Some(seed), "unused legacy text");
+        let record = build_assignment_communication_record(
+            &collaboration,
+            &assignment,
+            Some("gpt-5".to_string()),
+            Some("/repo".to_string()),
+            None,
+            None,
+            fixed_now(),
+        )
+        .expect("build communication record");
+
+        let prompt = &record.prompt_render.prompt_text;
+        assert!(prompt.contains("\"landing_authorization_id\": \"landing-auth-1\""));
+        assert!(prompt.contains("Landing Execution:"));
+        assert!(prompt.contains("Execute only the authorized head commit"));
+        assert!(prompt.contains("landing_execution_result object"));
+    }
+
+    #[test]
     fn render_prompt_uses_stable_fallbacks_for_empty_optional_sections() {
         let packet = orcas_core::AssignmentCommunicationPacket {
             schema_version: "assignment_communication_packet.v1".to_string(),
@@ -1408,6 +1606,8 @@ mod tests {
             included_context: Vec::new(),
             workspace_contract: None,
             workspace_operation: None,
+            prune_workspace: None,
+            landing_execution: None,
             response_contract: worker_report_contract(),
             policy: orcas_core::AssignmentCommunicationPolicy {
                 stop_at_boundary: true,

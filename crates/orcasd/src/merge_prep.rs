@@ -185,6 +185,15 @@ mod tests {
             report_id: Some("report-1".to_string()),
             report_disposition: Some(ReportDisposition::Completed),
             outcome_summary: Some("merge prep complete".to_string()),
+            linked_landing_execution_id: None,
+            target_worktree_path: Some("/repo-threads/T1".to_string()),
+            target_branch_name: Some("orcas/T1".to_string()),
+            prune_result_status: None,
+            worktree_removed: None,
+            branch_removed: None,
+            refusal_reason: None,
+            failure_reason: None,
+            prune_notes: None,
         }
     }
 

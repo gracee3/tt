@@ -16,11 +16,12 @@ pub mod supervisor;
 pub use collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, CollaborationState, Decision, DecisionType,
-    LandingAuthorizationRecord, LandingAuthorizationStatus, Report, ReportConfidence,
-    ReportDisposition, ReportParseResult, SupervisorTurnDecision, SupervisorTurnDecisionKind,
-    SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker,
-    WorkerSession, WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus,
-    WorkspaceOperationRecord, Workstream, WorkstreamStatus,
+    LandingAuthorizationRecord, LandingAuthorizationStatus, LandingExecutionRecord,
+    LandingExecutionStatus, Report, ReportConfidence, ReportDisposition, ReportParseResult,
+    SupervisorTurnDecision, SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus,
+    SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
+    WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus, WorkspaceOperationRecord,
+    Workstream, WorkstreamStatus,
 };
 pub use communication::{
     AcceptanceCriterionStatus, AcceptanceResult, AssignmentChangePolicy, AssignmentChecklistItem,
@@ -29,6 +30,9 @@ pub use communication::{
     AssignmentModeSpec, AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract,
     FileChangeKind, ImplementModePayload, ImplementModeSpec, PromptRenderArtifact,
     PromptRenderSpec, ReviewSignal, ReviewSignalLevel, TouchedFile,
+    TrackedThreadLandingExecutionContract, TrackedThreadLandingExecutionResult,
+    TrackedThreadLandingExecutionResultStatus, TrackedThreadPruneWorkspaceContract,
+    TrackedThreadPruneWorkspaceResult, TrackedThreadPruneWorkspaceResultStatus,
     TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind,
     TrackedThreadWorkspaceOperationStatus, WorkerReportContract, WorkerReportEnvelope,
     WorkerReportModePayload, WorkerReportValidation, WorkerWorkspaceReport,

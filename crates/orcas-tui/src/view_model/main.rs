@@ -258,6 +258,11 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                 {
                     badges.push(tracked_thread_workspace_operation_label(operation));
                 }
+                if let Some(operation) =
+                    detail.and_then(|detail| detail.prune_workspace_operation.as_ref())
+                {
+                    badges.push(tracked_thread_prune_workspace_operation_label(operation));
+                }
                 if let Some(assessment) =
                     detail.and_then(|detail| detail.merge_prep_assessment.as_ref())
                 {
@@ -267,6 +272,10 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                     detail.and_then(|detail| detail.landing_authorization.as_ref())
                 {
                     badges.push(tracked_thread_landing_authorization_label(authorization));
+                }
+                if let Some(execution) = detail.and_then(|detail| detail.landing_execution.as_ref())
+                {
+                    badges.push(tracked_thread_landing_execution_label(execution));
                 }
                 rows.push(MainHierarchyRowViewModel {
                     kind: HierarchyRowKind::Thread,
@@ -495,6 +504,51 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                 } else {
                     lines.push("workspace operation: none".to_string());
                 }
+                if let Some(operation) = detail.prune_workspace_operation.as_ref() {
+                    lines.push("prune workspace operation:".to_string());
+                    lines.push(format!(
+                        "  status: {}",
+                        tracked_thread_workspace_operation_status_label(operation.status)
+                    ));
+                    lines.push(format!("  id: {}", operation.id));
+                    lines.push(format!("  assignment: {}", operation.assignment_id));
+                    lines.push(format!("  work unit: {}", operation.work_unit_id));
+                    lines.push(format!(
+                        "  linked landing execution: {}",
+                        operation
+                            .linked_landing_execution_id
+                            .as_deref()
+                            .unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  target worktree path: {}",
+                        operation.target_worktree_path.as_deref().unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  target branch: {}",
+                        operation.target_branch_name.as_deref().unwrap_or("unset")
+                    ));
+                    if let Some(result_status) = operation.prune_result_status.as_ref() {
+                        lines.push(format!("  result status: {:?}", result_status));
+                    }
+                    if let Some(value) = operation.worktree_removed {
+                        lines.push(format!("  worktree removed: {value}"));
+                    }
+                    if let Some(value) = operation.branch_removed {
+                        lines.push(format!("  branch removed: {value}"));
+                    }
+                    if let Some(reason) = operation.refusal_reason.as_ref() {
+                        lines.push(format!("  refusal reason: {reason}"));
+                    }
+                    if let Some(reason) = operation.failure_reason.as_ref() {
+                        lines.push(format!("  failure reason: {reason}"));
+                    }
+                    if let Some(notes) = operation.prune_notes.as_ref() {
+                        lines.push(format!("  notes: {notes}"));
+                    }
+                } else {
+                    lines.push("prune workspace operation: none".to_string());
+                }
                 if let Some(assessment) = detail.merge_prep_assessment.as_ref() {
                     lines.push("merge prep assessment:".to_string());
                     lines.push(format!(
@@ -533,6 +587,69 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                     }
                 } else {
                     lines.push("merge prep assessment: none".to_string());
+                }
+                if let Some(execution) = detail.landing_execution.as_ref() {
+                    lines.push("landing execution:".to_string());
+                    lines.push(format!(
+                        "  status: {}  matches basis: {}",
+                        tracked_thread_landing_execution_status_label(execution.status),
+                        detail
+                            .landing_execution_matches_authorization_basis
+                            .map(|value| if value {
+                                "yes".to_string()
+                            } else {
+                                "no".to_string()
+                            })
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ));
+                    lines.push(format!("  id: {}", execution.id));
+                    lines.push(format!(
+                        "  authorization id: {}",
+                        execution.authorization_id
+                    ));
+                    lines.push(format!(
+                        "  authorized head: {}",
+                        execution.authorized_head_commit
+                    ));
+                    lines.push(format!("  landing target: {}", execution.landing_target));
+                    lines.push(format!("  requested by: {}", execution.requested_by));
+                    lines.push(format!(
+                        "  requested at: {}",
+                        execution.requested_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  updated at: {}",
+                        execution.updated_at.to_rfc3339()
+                    ));
+                    if let Some(note) = execution.request_note.as_ref() {
+                        lines.push(format!("  request note: {note}"));
+                    }
+                    if let Some(report_id) = execution.report_id.as_ref() {
+                        lines.push(format!("  report id: {report_id}"));
+                    }
+                    if let Some(disposition) = execution.report_disposition.as_ref() {
+                        lines.push(format!("  report disposition: {:?}", disposition));
+                    }
+                    if let Some(result_status) = execution.result_status.as_ref() {
+                        lines.push(format!("  result status: {:?}", result_status));
+                    }
+                    if let Some(head_commit) = execution.attempted_head_commit.as_ref() {
+                        lines.push(format!("  attempted head: {head_commit}"));
+                    }
+                    if let Some(landed_commit) = execution.landed_commit.as_ref() {
+                        lines.push(format!("  landed commit: {landed_commit}"));
+                    }
+                    if let Some(updated) = execution.landing_ref_updated {
+                        lines.push(format!("  landing ref updated: {updated}"));
+                    }
+                    if let Some(reason) = execution.failure_reason.as_ref() {
+                        lines.push(format!("  failure reason: {reason}"));
+                    }
+                    if let Some(summary) = execution.outcome_summary.as_ref() {
+                        lines.push(format!("  outcome summary: {summary}"));
+                    }
+                } else {
+                    lines.push("landing execution: none".to_string());
                 }
                 if let Some(authorization) = detail.landing_authorization.as_ref() {
                     lines.push("landing authorization:".to_string());
@@ -963,6 +1080,7 @@ fn tracked_thread_workspace_operation_kind_label(
         orcas_core::TrackedThreadWorkspaceOperationKind::PrepareWorkspace => "prepare",
         orcas_core::TrackedThreadWorkspaceOperationKind::RefreshWorkspace => "refresh",
         orcas_core::TrackedThreadWorkspaceOperationKind::MergePrep => "merge_prep",
+        orcas_core::TrackedThreadWorkspaceOperationKind::PruneWorkspace => "prune_workspace",
     }
 }
 
@@ -983,6 +1101,15 @@ fn tracked_thread_workspace_operation_label(
 ) -> String {
     format!(
         "op={}",
+        tracked_thread_workspace_operation_label_parts(operation.kind, operation.status)
+    )
+}
+
+fn tracked_thread_prune_workspace_operation_label(
+    operation: &orcas_core::WorkspaceOperationRecord,
+) -> String {
+    format!(
+        "prune={}",
         tracked_thread_workspace_operation_label_parts(operation.kind, operation.status)
     )
 }
@@ -1059,6 +1186,27 @@ fn tracked_thread_landing_authorization_label(
     format!(
         "auth={}",
         tracked_thread_landing_authorization_status_label(authorization.status)
+    )
+}
+
+fn tracked_thread_landing_execution_status_label(
+    status: orcas_core::LandingExecutionStatus,
+) -> &'static str {
+    match status {
+        orcas_core::LandingExecutionStatus::Requested => "requested",
+        orcas_core::LandingExecutionStatus::Dispatched => "dispatched",
+        orcas_core::LandingExecutionStatus::Completed => "completed",
+        orcas_core::LandingExecutionStatus::Failed => "failed",
+        orcas_core::LandingExecutionStatus::Canceled => "canceled",
+    }
+}
+
+fn tracked_thread_landing_execution_label(
+    execution: &orcas_core::LandingExecutionRecord,
+) -> String {
+    format!(
+        "exec={}",
+        tracked_thread_landing_execution_status_label(execution.status)
     )
 }
 

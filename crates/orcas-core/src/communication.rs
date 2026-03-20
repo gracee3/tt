@@ -31,6 +31,7 @@ pub enum TrackedThreadWorkspaceOperationKind {
     PrepareWorkspace,
     RefreshWorkspace,
     MergePrep,
+    PruneWorkspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -42,6 +43,24 @@ pub enum TrackedThreadWorkspaceOperationStatus {
     Completed,
     Failed,
     Canceled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadLandingExecutionResultStatus {
+    #[default]
+    Succeeded,
+    Failed,
+    Refused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedThreadPruneWorkspaceResultStatus {
+    #[default]
+    Succeeded,
+    Failed,
+    Refused,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +196,10 @@ pub struct AssignmentCommunicationSeed {
     pub boundedness_note: Option<String>,
     #[serde(default)]
     pub workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
+    #[serde(default)]
+    pub prune_workspace: Option<TrackedThreadPruneWorkspaceContract>,
+    #[serde(default)]
+    pub landing_execution: Option<TrackedThreadLandingExecutionContract>,
     pub mode_spec: AssignmentModeSpec,
 }
 
@@ -215,6 +238,36 @@ pub struct TrackedThreadWorkspaceOperationContract {
     pub tracked_thread_id: authority::TrackedThreadId,
     pub tracked_thread_title: String,
     pub workspace: authority::TrackedThreadWorkspace,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedThreadPruneWorkspaceContract {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub tracked_thread_title: String,
+    pub repository_root: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub landing_target: String,
+    pub workspace: authority::TrackedThreadWorkspace,
+    #[serde(default)]
+    pub linked_landing_execution_id: Option<String>,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedThreadLandingExecutionContract {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub tracked_thread_title: String,
+    pub landing_authorization_id: String,
+    pub authorized_head_commit: String,
+    pub landing_target: String,
     #[serde(default)]
     pub requested_by: Option<String>,
     #[serde(default)]
@@ -294,6 +347,10 @@ pub struct AssignmentCommunicationPacket {
     pub workspace_contract: Option<AssignmentWorkspaceContract>,
     #[serde(default)]
     pub workspace_operation: Option<TrackedThreadWorkspaceOperationContract>,
+    #[serde(default)]
+    pub prune_workspace: Option<TrackedThreadPruneWorkspaceContract>,
+    #[serde(default)]
+    pub landing_execution: Option<TrackedThreadLandingExecutionContract>,
     pub response_contract: WorkerReportContract,
     pub policy: AssignmentCommunicationPolicy,
 }
@@ -387,7 +444,47 @@ pub struct WorkerReportEnvelope {
     pub review_signal: ReviewSignal,
     #[serde(default)]
     pub workspace_report: Option<WorkerWorkspaceReport>,
+    #[serde(default)]
+    pub prune_workspace_result: Option<TrackedThreadPruneWorkspaceResult>,
+    #[serde(default)]
+    pub landing_execution_result: Option<TrackedThreadLandingExecutionResult>,
     pub mode_payload: WorkerReportModePayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedThreadLandingExecutionResult {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub landing_authorization_id: String,
+    pub attempted_head_commit: String,
+    pub landing_target: String,
+    pub status: TrackedThreadLandingExecutionResultStatus,
+    #[serde(default)]
+    pub landed_commit: Option<String>,
+    #[serde(default)]
+    pub landing_ref_updated: Option<bool>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedThreadPruneWorkspaceResult {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub worktree_path: String,
+    #[serde(default)]
+    pub branch_name: Option<String>,
+    pub status: TrackedThreadPruneWorkspaceResultStatus,
+    #[serde(default)]
+    pub worktree_removed: Option<bool>,
+    #[serde(default)]
+    pub branch_removed: Option<bool>,
+    #[serde(default)]
+    pub refusal_reason: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,6 +613,8 @@ mod tests {
             }],
             workspace_contract: None,
             workspace_operation: None,
+            prune_workspace: None,
+            landing_execution: None,
             response_contract: WorkerReportContract {
                 schema_version: "worker_report_contract.v1".to_string(),
                 task_mode: AssignmentTaskMode::Implement,
@@ -555,6 +654,7 @@ mod tests {
             expected_report_fields: vec!["summary".to_string()],
             boundedness_note: Some("Stay within the boundary.".to_string()),
             workspace_operation: None,
+            landing_execution: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: vec!["cargo test -p orcas-core".to_string()],
             }),
@@ -630,6 +730,8 @@ mod tests {
                 focus: vec!["review the remaining edge".to_string()],
             },
             workspace_report: None,
+            prune_workspace_result: None,
+            landing_execution_result: None,
             mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
                 semantic_changes: vec!["Updated parser logic.".to_string()],
                 tests_run: vec!["cargo test -p orcas-core".to_string()],

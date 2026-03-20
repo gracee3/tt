@@ -1498,9 +1498,12 @@ impl TuiBackend for FakeBackend {
                             })?,
                         workspace_inspection: None,
                         workspace_operation: None,
+                        prune_workspace_operation: None,
                         merge_prep_assessment: None,
                         landing_authorization: None,
                         landing_authorization_is_current: None,
+                        landing_execution: None,
+                        landing_execution_matches_authorization_basis: None,
                     },
                 ))
             }

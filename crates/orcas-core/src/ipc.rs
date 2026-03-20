@@ -22,12 +22,12 @@ use crate::authority;
 use crate::collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, Decision, DecisionType,
-    LandingAuthorizationRecord, Report, ReportConfidence, ReportDisposition, ReportParseResult,
-    SupervisorTurnDecision, SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus,
-    SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker, WorkerSession,
-    WorkspaceOperationRecord, Workstream, WorkstreamStatus,
+    LandingAuthorizationRecord, LandingExecutionRecord, Report, ReportConfidence,
+    ReportDisposition, ReportParseResult, SupervisorTurnDecision, SupervisorTurnDecisionKind,
+    SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker,
+    WorkerSession, WorkspaceOperationRecord, Workstream, WorkstreamStatus,
 };
-use crate::communication::AssignmentCommunicationRecord;
+use crate::communication::{AssignmentCommunicationRecord, TrackedThreadPruneWorkspaceResult};
 use crate::events::ConnectionState;
 use crate::planning::{PlanAssessment, PlanRevisionProposal, PlanningState, WorkstreamPlan};
 use crate::supervisor::{
@@ -96,6 +96,10 @@ pub mod methods {
     pub const AUTHORITY_TRACKED_THREAD_MERGE_PREP: &str = "authority/tracked_thread/merge_prep";
     pub const AUTHORITY_TRACKED_THREAD_AUTHORIZE_MERGE: &str =
         "authority/tracked_thread/authorize_merge";
+    pub const AUTHORITY_TRACKED_THREAD_EXECUTE_LANDING: &str =
+        "authority/tracked_thread/execute_landing";
+    pub const AUTHORITY_TRACKED_THREAD_PRUNE_WORKSPACE: &str =
+        "authority/tracked_thread/prune_workspace";
     pub const ASSIGNMENT_START: &str = "assignment/start";
     pub const ASSIGNMENT_GET: &str = "assignment/get";
     pub const ASSIGNMENT_COMMUNICATION_GET: &str = "assignment_communication/get";
@@ -1403,11 +1407,17 @@ pub struct AuthorityTrackedThreadGetResponse {
     #[serde(default)]
     pub workspace_operation: Option<WorkspaceOperationRecord>,
     #[serde(default)]
+    pub prune_workspace_operation: Option<WorkspaceOperationRecord>,
+    #[serde(default)]
     pub merge_prep_assessment: Option<TrackedThreadMergePrepAssessment>,
     #[serde(default)]
     pub landing_authorization: Option<LandingAuthorizationRecord>,
     #[serde(default)]
     pub landing_authorization_is_current: Option<bool>,
+    #[serde(default)]
+    pub landing_execution: Option<LandingExecutionRecord>,
+    #[serde(default)]
+    pub landing_execution_matches_authorization_basis: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1497,6 +1507,63 @@ pub struct AuthorityTrackedThreadAuthorizeMergeResponse {
     #[serde(default)]
     pub workspace_inspection: Option<TrackedThreadWorkspaceInspection>,
     pub tracked_thread: authority::TrackedThreadRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadExecuteLandingRequest {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub authorized_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadExecuteLandingResponse {
+    pub landing_execution: LandingExecutionRecord,
+    #[serde(default)]
+    pub landing_execution_matches_authorization_basis: Option<bool>,
+    #[serde(default)]
+    pub landing_authorization: Option<LandingAuthorizationRecord>,
+    #[serde(default)]
+    pub landing_authorization_is_current: Option<bool>,
+    #[serde(default)]
+    pub merge_prep_assessment: Option<TrackedThreadMergePrepAssessment>,
+    #[serde(default)]
+    pub workspace_inspection: Option<TrackedThreadWorkspaceInspection>,
+    pub tracked_thread: authority::TrackedThreadRecord,
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadPruneWorkspaceRequest {
+    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityTrackedThreadPruneWorkspaceResponse {
+    pub workspace_operation: WorkspaceOperationRecord,
+    #[serde(default)]
+    pub prune_workspace_result: Option<TrackedThreadPruneWorkspaceResult>,
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
 }
 
 /// Read-only daemon-side inspection of a tracked-thread workspace.

@@ -3,7 +3,7 @@ use std::time::Instant;
 use orcas_core::{
     Assignment, AssignmentCommunicationPacket, AssignmentCommunicationRecord, AssignmentTaskMode,
     OrcasError, OrcasResult, ReportConfidence, ReportDisposition, ReportParseResult,
-    WorkerReportEnvelope,
+    TrackedThreadPruneWorkspaceResultStatus, WorkerReportEnvelope,
 };
 use tracing::{debug, warn};
 
@@ -266,6 +266,146 @@ pub fn validate_worker_report_envelope(
         }
     }
 
+    if let Some(landing_execution) = envelope.landing_execution_result.as_ref() {
+        if let Some(landing_execution_contract) = record.packet.landing_execution.as_ref() {
+            if landing_execution.tracked_thread_id != landing_execution_contract.tracked_thread_id {
+                structural_issues.push(format!(
+                    "landing_execution_result tracked_thread_id `{}` does not match landing contract `{}`",
+                    landing_execution.tracked_thread_id, landing_execution_contract.tracked_thread_id
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+            if landing_execution.landing_authorization_id
+                != landing_execution_contract.landing_authorization_id
+            {
+                structural_issues.push(format!(
+                    "landing_execution_result authorization_id `{}` does not match landing contract `{}`",
+                    landing_execution.landing_authorization_id,
+                    landing_execution_contract.landing_authorization_id
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+            if landing_execution.attempted_head_commit
+                != landing_execution_contract.authorized_head_commit
+            {
+                semantic_issues.push(format!(
+                    "landing_execution_result attempted_head_commit `{}` does not match authorized head `{}`",
+                    landing_execution.attempted_head_commit,
+                    landing_execution_contract.authorized_head_commit
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            if landing_execution.landing_target != landing_execution_contract.landing_target {
+                structural_issues.push(format!(
+                    "landing_execution_result landing_target `{}` does not match landing contract `{}`",
+                    landing_execution.landing_target,
+                    landing_execution_contract.landing_target
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+        } else {
+            semantic_issues.push(
+                "landing_execution_result was present without a landing execution contract"
+                    .to_string(),
+            );
+            if parse_result == ReportParseResult::Parsed {
+                parse_result = ReportParseResult::Ambiguous;
+            }
+        }
+    } else if record.packet.landing_execution.is_some() {
+        structural_issues.push(
+            "landing execution contract was present but landing_execution_result was missing"
+                .to_string(),
+        );
+        parse_result = ReportParseResult::Invalid;
+    }
+
+    if let Some(prune_workspace_result) = envelope.prune_workspace_result.as_ref() {
+        if let Some(prune_workspace_contract) = record.packet.prune_workspace.as_ref() {
+            if prune_workspace_result.tracked_thread_id
+                != prune_workspace_contract.tracked_thread_id
+            {
+                structural_issues.push(format!(
+                    "prune_workspace_result tracked_thread_id `{}` does not match prune contract `{}`",
+                    prune_workspace_result.tracked_thread_id, prune_workspace_contract.tracked_thread_id
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+            if prune_workspace_result.worktree_path != prune_workspace_contract.worktree_path {
+                structural_issues.push(format!(
+                    "prune_workspace_result worktree_path `{}` does not match prune contract `{}`",
+                    prune_workspace_result.worktree_path, prune_workspace_contract.worktree_path
+                ));
+                parse_result = ReportParseResult::Invalid;
+            }
+            if prune_workspace_result.branch_name.as_deref()
+                != Some(prune_workspace_contract.branch_name.as_str())
+            {
+                semantic_issues.push(format!(
+                    "prune_workspace_result branch_name `{}` does not match prune contract `{}`",
+                    prune_workspace_result
+                        .branch_name
+                        .as_deref()
+                        .unwrap_or("unset"),
+                    prune_workspace_contract.branch_name
+                ));
+                if parse_result == ReportParseResult::Parsed {
+                    parse_result = ReportParseResult::Ambiguous;
+                }
+            }
+            match prune_workspace_result.status {
+                TrackedThreadPruneWorkspaceResultStatus::Succeeded => {
+                    if prune_workspace_result.worktree_removed != Some(true) {
+                        semantic_issues.push(
+                            "successful prune_workspace_result should report worktree_removed=true"
+                                .to_string(),
+                        );
+                        if parse_result == ReportParseResult::Parsed {
+                            parse_result = ReportParseResult::Ambiguous;
+                        }
+                    }
+                }
+                TrackedThreadPruneWorkspaceResultStatus::Failed => {
+                    if prune_workspace_result.failure_reason.is_none() {
+                        semantic_issues.push(
+                            "failed prune_workspace_result should include failure_reason"
+                                .to_string(),
+                        );
+                        if parse_result == ReportParseResult::Parsed {
+                            parse_result = ReportParseResult::Ambiguous;
+                        }
+                    }
+                }
+                TrackedThreadPruneWorkspaceResultStatus::Refused => {
+                    if prune_workspace_result.refusal_reason.is_none() {
+                        semantic_issues.push(
+                            "refused prune_workspace_result should include refusal_reason"
+                                .to_string(),
+                        );
+                        if parse_result == ReportParseResult::Parsed {
+                            parse_result = ReportParseResult::Ambiguous;
+                        }
+                    }
+                }
+            }
+        } else {
+            semantic_issues.push(
+                "prune_workspace_result was present without a prune workspace contract".to_string(),
+            );
+            if parse_result == ReportParseResult::Parsed {
+                parse_result = ReportParseResult::Ambiguous;
+            }
+        }
+    } else if record.packet.prune_workspace.is_some() {
+        structural_issues.push(
+            "prune workspace contract was present but prune_workspace_result was missing"
+                .to_string(),
+        );
+        parse_result = ReportParseResult::Invalid;
+    }
+
     for result in &envelope.acceptance_results {
         if !record
             .packet
@@ -396,6 +536,8 @@ mod tests {
                 expected_report_fields: Vec::new(),
                 boundedness_note: Some("Do not broaden scope.".to_string()),
                 workspace_operation: None,
+                prune_workspace: None,
+                landing_execution: None,
                 mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                     expected_verification_commands: vec![
                         "cargo test -p orcasd assignment_comm".to_string(),
@@ -491,6 +633,8 @@ mod tests {
                 focus: Vec::new(),
             },
             workspace_report: None,
+            prune_workspace_result: None,
+            landing_execution_result: None,
             mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
                 semantic_changes: vec!["Adjusted validation semantics.".to_string()],
                 tests_run: vec!["cargo test -p orcasd assignment_comm".to_string()],
@@ -602,6 +746,41 @@ mod tests {
 
         assert_eq!(validation.parse_result, ReportParseResult::Parsed);
         assert!(!validation.needs_supervisor_review);
+        assert!(validation.structural_issues.is_empty());
+        assert!(validation.semantic_issues.is_empty());
+    }
+
+    #[test]
+    fn validate_worker_report_envelope_accepts_matching_landing_execution_result() {
+        let assignment = sample_assignment();
+        let mut record = sample_record(&assignment);
+        record.packet.landing_execution = Some(orcas_core::TrackedThreadLandingExecutionContract {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            tracked_thread_title: "Landing thread".to_string(),
+            landing_authorization_id: "landing-auth-1".to_string(),
+            authorized_head_commit: "head-123".to_string(),
+            landing_target: "origin/main".to_string(),
+            requested_by: Some("supervisor_cli_operator".to_string()),
+            request_note: None,
+        });
+        let mut envelope = sample_envelope(&assignment, &record.packet.packet_id);
+        envelope.landing_execution_result = Some(orcas_core::TrackedThreadLandingExecutionResult {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            landing_authorization_id: "landing-auth-1".to_string(),
+            attempted_head_commit: "head-123".to_string(),
+            landing_target: "origin/main".to_string(),
+            status: orcas_core::TrackedThreadLandingExecutionResultStatus::Succeeded,
+            landed_commit: Some("head-456".to_string()),
+            landing_ref_updated: Some(true),
+            failure_reason: None,
+            notes: None,
+        });
+
+        let validation = validate_worker_report_envelope(&envelope, &assignment, &record, false);
+
+        assert_eq!(validation.parse_result, ReportParseResult::Parsed);
         assert!(validation.structural_issues.is_empty());
         assert!(validation.semantic_issues.is_empty());
     }

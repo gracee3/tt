@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::authority;
 use crate::communication::{
     AssignmentCommunicationRecord, AssignmentCommunicationSeed,
+    TrackedThreadLandingExecutionResultStatus, TrackedThreadPruneWorkspaceResultStatus,
     TrackedThreadWorkspaceOperationKind, TrackedThreadWorkspaceOperationStatus,
 };
 use crate::ipc::{TrackedThreadMergePrepReadiness, TrackedThreadMergePrepReason};
@@ -60,6 +61,8 @@ pub struct CollaborationState {
     pub workspace_operations: BTreeMap<String, WorkspaceOperationRecord>,
     #[serde(default)]
     pub landing_authorizations: BTreeMap<String, LandingAuthorizationRecord>,
+    #[serde(default)]
+    pub landing_executions: BTreeMap<String, LandingExecutionRecord>,
     #[serde(default)]
     pub supervisor_proposals: BTreeMap<String, SupervisorProposalRecord>,
     #[serde(default)]
@@ -249,6 +252,24 @@ pub struct WorkspaceOperationRecord {
     pub report_disposition: Option<ReportDisposition>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
+    #[serde(default)]
+    pub linked_landing_execution_id: Option<String>,
+    #[serde(default)]
+    pub target_worktree_path: Option<String>,
+    #[serde(default)]
+    pub target_branch_name: Option<String>,
+    #[serde(default)]
+    pub prune_result_status: Option<TrackedThreadPruneWorkspaceResultStatus>,
+    #[serde(default)]
+    pub worktree_removed: Option<bool>,
+    #[serde(default)]
+    pub branch_removed: Option<bool>,
+    #[serde(default)]
+    pub refusal_reason: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub prune_notes: Option<String>,
 }
 
 /// Persisted runtime record for a tracked-thread landing authorization.
@@ -284,6 +305,55 @@ pub struct LandingAuthorizationRecord {
     pub outcome_summary: Option<String>,
 }
 
+/// Persisted runtime record for a tracked-thread landing execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingExecutionRecord {
+    pub id: String,
+    pub assignment_id: String,
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub work_unit_id: authority::WorkUnitId,
+    pub authorization_id: String,
+    pub authorized_head_commit: String,
+    pub landing_target: String,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub worker_session_id: Option<String>,
+    pub requested_by: String,
+    pub requested_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub dispatched_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub failed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub canceled_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub report_disposition: Option<ReportDisposition>,
+    #[serde(default)]
+    pub status: LandingExecutionStatus,
+    #[serde(default)]
+    pub result_status: Option<TrackedThreadLandingExecutionResultStatus>,
+    #[serde(default)]
+    pub attempted_head_commit: Option<String>,
+    #[serde(default)]
+    pub landed_commit: Option<String>,
+    #[serde(default)]
+    pub landing_ref_updated: Option<bool>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 /// Lifecycle for a landing authorization record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -295,6 +365,18 @@ pub enum LandingAuthorizationStatus {
     Revoked,
     Completed,
     Failed,
+}
+
+/// Lifecycle for a landing execution record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingExecutionStatus {
+    #[default]
+    Requested,
+    Dispatched,
+    Completed,
+    Failed,
+    Canceled,
 }
 
 /// Collaboration/runtime status for a workstream.
