@@ -12,7 +12,7 @@ use tracing::info;
 use service::{RuntimeOverrides, SupervisorService};
 
 #[derive(Debug, Parser)]
-#[command(name = "orcas")]
+#[command(name = "orcas", version, about = "Orcas operator CLI")]
 struct Cli {
     #[command(flatten)]
     global: GlobalOptions,
@@ -89,6 +89,7 @@ enum TopCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[command(about = "Launch and manage the Orcas daemon")]
 enum DaemonCommand {
     Start,
     Status,
@@ -901,7 +902,34 @@ fn tui_binary_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn top_level_help_mentions_operator_cli() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("Orcas operator CLI"));
+        assert!(help.contains("--version"));
+    }
+
+    #[test]
+    fn top_level_version_matches_crate_version() {
+        let version = Cli::command().render_version().to_string();
+
+        assert!(version.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn daemon_help_mentions_lifecycle_wrapper() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("daemon")
+            .expect("daemon subcommand")
+            .render_help()
+            .to_string();
+
+        assert!(help.contains("Launch and manage the Orcas daemon"));
+    }
 
     #[test]
     fn parses_top_level_daemon_status_command() {
