@@ -441,7 +441,7 @@ impl SupervisorService {
     }
 
     pub async fn workstream_list(&self) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client.workstream_list().await?;
         for workstream in response.workstreams {
             println!(
@@ -453,7 +453,7 @@ impl SupervisorService {
     }
 
     pub async fn workstream_get(&self, workstream_id: &str) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .workstream_get(&ipc::WorkstreamGetRequest {
                 workstream_id: workstream_id.to_string(),
@@ -499,7 +499,7 @@ impl SupervisorService {
     }
 
     pub async fn workunit_list(&self, workstream_id: Option<&str>) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .workunit_list(&ipc::WorkunitListRequest {
                 workstream_id: workstream_id.map(ToOwned::to_owned),
@@ -519,7 +519,7 @@ impl SupervisorService {
     }
 
     pub async fn workunit_get(&self, work_unit_id: &str) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .workunit_get(&ipc::WorkunitGetRequest {
                 work_unit_id: work_unit_id.to_string(),
@@ -681,7 +681,7 @@ impl SupervisorService {
         worker_id: Option<String>,
         worker_kind: Option<String>,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .decision_apply(&ipc::DecisionApplyRequest {
                 work_unit_id: work_unit_id.to_string(),
@@ -711,7 +711,7 @@ impl SupervisorService {
         requested_by: Option<String>,
         supersede_open: bool,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .proposal_create(&ipc::ProposalCreateRequest {
                 work_unit_id: work_unit_id.to_string(),
@@ -726,7 +726,7 @@ impl SupervisorService {
     }
 
     pub async fn proposal_get(&self, proposal_id: &str) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .proposal_get(&ipc::ProposalGetRequest {
                 proposal_id: proposal_id.to_string(),
@@ -737,7 +737,7 @@ impl SupervisorService {
     }
 
     pub async fn proposal_list_for_workunit(&self, work_unit_id: &str) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .proposal_list_for_workunit(&ipc::ProposalListForWorkunitRequest {
                 work_unit_id: work_unit_id.to_string(),
@@ -781,7 +781,7 @@ impl SupervisorService {
         stop_conditions: Vec<String>,
         expected_report_fields: Vec<String>,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .proposal_approve(&ipc::ProposalApproveRequest {
                 proposal_id: proposal_id.to_string(),
@@ -821,7 +821,7 @@ impl SupervisorService {
         reviewed_by: Option<String>,
         review_note: Option<String>,
     ) -> Result<()> {
-        let client = self.ready_client().await?;
+        let client = self.daemon_state_client().await?;
         let response = client
             .proposal_reject(&ipc::ProposalRejectRequest {
                 proposal_id: proposal_id.to_string(),

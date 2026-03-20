@@ -370,6 +370,73 @@ async fn real_cli_can_list_reports_for_workunit_after_real_assignment_setup() {
 }
 
 #[tokio::test]
+async fn real_cli_can_apply_decision_after_real_assignment_setup() {
+    let (_fake_codex, mut daemon, started) =
+        spawn_assignment_ready_daemon("cli-decision-apply").await;
+
+    let apply_output = run_orcas(
+        &daemon,
+        &[
+            "decisions",
+            "apply",
+            "--workunit",
+            &started.report.work_unit_id,
+            "--report",
+            &started.report.id,
+            "--type",
+            "accept",
+            "--rationale",
+            "Operator accepted the bounded report via CLI integration test",
+        ],
+    );
+    assert!(
+        apply_output.status.success(),
+        "stderr: {}",
+        stderr(&apply_output)
+    );
+    let apply_stdout = stdout(&apply_output);
+    let decision_id = field_value(&apply_stdout, "decision_id")
+        .expect("decision apply should print decision_id")
+        .to_string();
+    assert!(apply_stdout.contains("decision_type: Accept"));
+    assert!(apply_stdout.contains("work_unit_status: Accepted"));
+
+    let workunit_output = run_orcas(
+        &daemon,
+        &[
+            "workunits",
+            "get",
+            "--workunit",
+            &started.report.work_unit_id,
+        ],
+    );
+    assert!(
+        workunit_output.status.success(),
+        "stderr: {}",
+        stderr(&workunit_output)
+    );
+    let workunit_stdout = stdout(&workunit_output);
+    assert!(workunit_stdout.contains(&format!("work_unit_id: {}", started.report.work_unit_id)));
+    assert!(workunit_stdout.contains("status: Accepted"));
+    assert!(workunit_stdout.contains("reports: 1"));
+    assert!(workunit_stdout.contains("decisions: 1"));
+    assert!(!workunit_stdout.contains("current_assignment_id:"));
+
+    let report_output = run_orcas(&daemon, &["reports", "get", "--report", &started.report.id]);
+    assert!(
+        report_output.status.success(),
+        "stderr: {}",
+        stderr(&report_output)
+    );
+    let report_stdout = stdout(&report_output);
+    assert!(report_stdout.contains(&format!("report_id: {}", started.report.id)));
+    assert!(report_stdout.contains(&format!("assignment_id: {}", started.assignment.id)));
+    assert!(!decision_id.is_empty());
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn real_cli_reports_missing_report_with_nonzero_exit() {
     let mut daemon = TestDaemon::spawn("cli-missing-report").await;
 
