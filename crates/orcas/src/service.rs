@@ -31,6 +31,120 @@ pub use orcasd::OrcasRuntimeOverrides as RuntimeOverrides;
 const SUPERVISOR_CLI_OPERATOR: &str = "supervisor_cli_operator";
 const ORCAS_CLI_NODE_ID: &str = "orcas-cli";
 
+fn print_merge_prep_assessment(assessment: &ipc::TrackedThreadMergePrepAssessment) {
+    println!("workspace_scope: merge_prep_assessment");
+    println!(
+        "merge_prep_assessed_at: {}",
+        assessment.assessed_at.to_rfc3339()
+    );
+    println!("merge_prep_readiness: {:?}", assessment.readiness);
+    println!(
+        "merge_prep_local_head_commit: {}",
+        assessment.local_head_commit.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "merge_prep_worker_reported_head_commit: {}",
+        assessment
+            .worker_reported_head_commit
+            .as_deref()
+            .unwrap_or("unset")
+    );
+    println!(
+        "merge_prep_report_id: {}",
+        assessment.report_id.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "merge_prep_report_disposition: {}",
+        assessment
+            .report_disposition
+            .map(|value| format!("{value:?}"))
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    if assessment.reasons.is_empty() {
+        println!("merge_prep_reasons: none");
+    } else {
+        for reason in &assessment.reasons {
+            println!("merge_prep_reason: {:?}", reason);
+        }
+    }
+}
+
+fn print_landing_authorization(authorization: &orcas_core::LandingAuthorizationRecord) {
+    println!("workspace_scope: landing_authorization");
+    println!("landing_authorization_id: {}", authorization.id);
+    println!("landing_authorization_status: {:?}", authorization.status);
+    println!(
+        "landing_authorization_tracked_thread_id: {}",
+        authorization.tracked_thread_id
+    );
+    println!(
+        "landing_authorization_work_unit_id: {}",
+        authorization.work_unit_id
+    );
+    println!(
+        "landing_authorization_worker_id: {}",
+        authorization.worker_id.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "landing_authorization_worker_session_id: {}",
+        authorization
+            .worker_session_id
+            .as_deref()
+            .unwrap_or("unset")
+    );
+    println!(
+        "landing_authorization_authorized_head_commit: {}",
+        authorization.authorized_head_commit
+    );
+    println!(
+        "landing_authorization_landing_target: {}",
+        authorization.landing_target
+    );
+    println!(
+        "landing_authorization_linked_merge_prep_operation_id: {}",
+        authorization.linked_merge_prep_operation_id
+    );
+    println!(
+        "landing_authorization_merge_prep_assessed_at: {}",
+        authorization.merge_prep_assessed_at.to_rfc3339()
+    );
+    println!(
+        "landing_authorization_merge_prep_readiness: {:?}",
+        authorization.merge_prep_readiness
+    );
+    if authorization.merge_prep_reasons.is_empty() {
+        println!("landing_authorization_merge_prep_reasons: none");
+    } else {
+        for reason in &authorization.merge_prep_reasons {
+            println!("landing_authorization_merge_prep_reason: {:?}", reason);
+        }
+    }
+    println!(
+        "landing_authorization_authorized_by: {}",
+        authorization.authorized_by
+    );
+    println!(
+        "landing_authorization_authorized_at: {}",
+        authorization.authorized_at.to_rfc3339()
+    );
+    println!(
+        "landing_authorization_updated_at: {}",
+        authorization.updated_at.to_rfc3339()
+    );
+    if let Some(note) = authorization.request_note.as_ref() {
+        println!("landing_authorization_request_note: {note}");
+    }
+    if let Some(report_id) = authorization.merge_prep_report_id.as_ref() {
+        println!("landing_authorization_merge_prep_report_id: {report_id}");
+    }
+    if let Some(disposition) = authorization.merge_prep_report_disposition.as_ref() {
+        println!(
+            "landing_authorization_merge_prep_report_disposition: {:?}",
+            disposition
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProposalArtifactExportFormat {
     Json,
@@ -889,10 +1003,15 @@ impl SupervisorService {
             println!("preferred_model: {preferred_model}");
         }
         if let Some(workspace) = response.tracked_thread.workspace.as_ref() {
+            println!("workspace_scope: supervisor_intent");
             println!("workspace_repository_root: {}", workspace.repository_root);
             println!("workspace_worktree_path: {}", workspace.worktree_path);
             println!("workspace_branch_name: {}", workspace.branch_name);
             println!("workspace_base_ref: {}", workspace.base_ref);
+            println!(
+                "workspace_base_commit: {}",
+                workspace.base_commit.as_deref().unwrap_or("unset")
+            );
             println!("workspace_landing_target: {}", workspace.landing_target);
             println!("workspace_status: {:?}", workspace.status);
             println!(
@@ -903,6 +1022,355 @@ impl SupervisorService {
                     .unwrap_or("unset")
             );
         }
+        if let Some(inspection) = response.workspace_inspection.as_ref() {
+            println!("workspace_scope: daemon_inspection");
+            println!(
+                "workspace_inspected_at: {}",
+                inspection.inspected_at.to_rfc3339()
+            );
+            println!(
+                "workspace_local_repository_root: {}",
+                inspection.repository_root
+            );
+            println!(
+                "workspace_local_worktree_path: {}",
+                inspection.worktree_path
+            );
+            println!("workspace_local_exists: {}", inspection.exists);
+            println!(
+                "workspace_local_is_git_worktree: {}",
+                inspection.is_git_worktree
+            );
+            println!(
+                "workspace_local_branch_name: {}",
+                inspection.current_branch.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_local_head_commit: {}",
+                inspection.current_head_commit.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_local_dirty: {}",
+                inspection
+                    .dirty
+                    .map(|dirty| dirty.to_string())
+                    .unwrap_or_else(|| "unset".to_string())
+            );
+            println!(
+                "workspace_local_base_ref: {}",
+                inspection.base_ref.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_local_base_commit: {}",
+                inspection.base_commit.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_local_landing_target: {}",
+                inspection.landing_target.as_deref().unwrap_or("unset")
+            );
+            if let Some(comparison) = inspection.base_commit_comparison.as_ref() {
+                println!(
+                    "workspace_local_base_commit_comparison: reference={} ahead={} behind={}",
+                    comparison.reference, comparison.ahead_by, comparison.behind_by
+                );
+            }
+            if let Some(comparison) = inspection.landing_target_comparison.as_ref() {
+                println!(
+                    "workspace_local_landing_target_comparison: reference={} ahead={} behind={}",
+                    comparison.reference, comparison.ahead_by, comparison.behind_by
+                );
+            }
+            if inspection.warnings.is_empty() {
+                println!("workspace_local_warnings: none");
+            } else {
+                for warning in &inspection.warnings {
+                    println!("workspace_local_warning: {:?}", warning);
+                }
+            }
+        }
+        if let Some(operation) = response.workspace_operation.as_ref() {
+            println!("workspace_scope: daemon_operation");
+            println!("workspace_operation_id: {}", operation.id);
+            println!("workspace_operation_kind: {:?}", operation.kind);
+            println!("workspace_operation_status: {:?}", operation.status);
+            println!(
+                "workspace_operation_assignment_id: {}",
+                operation.assignment_id
+            );
+            println!(
+                "workspace_operation_work_unit_id: {}",
+                operation.work_unit_id
+            );
+            println!(
+                "workspace_operation_worker_id: {}",
+                operation.worker_id.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_operation_worker_session_id: {}",
+                operation.worker_session_id.as_deref().unwrap_or("unset")
+            );
+            println!(
+                "workspace_operation_requested_by: {}",
+                operation.requested_by.as_str()
+            );
+            println!(
+                "workspace_operation_requested_at: {}",
+                operation.requested_at.to_rfc3339()
+            );
+            println!(
+                "workspace_operation_updated_at: {}",
+                operation.updated_at.to_rfc3339()
+            );
+            if let Some(note) = operation.request_note.as_ref() {
+                println!("workspace_operation_request_note: {note}");
+            }
+            if let Some(report_id) = operation.report_id.as_ref() {
+                println!("workspace_operation_report_id: {report_id}");
+            }
+            if let Some(disposition) = operation.report_disposition.as_ref() {
+                println!("workspace_operation_report_disposition: {:?}", disposition);
+            }
+            if let Some(summary) = operation.outcome_summary.as_ref() {
+                println!("workspace_operation_outcome_summary: {summary}");
+            }
+        }
+        if let Some(assessment) = response.merge_prep_assessment.as_ref() {
+            print_merge_prep_assessment(assessment);
+        }
+        if let Some(authorization) = response.landing_authorization.as_ref() {
+            println!(
+                "landing_authorization_is_current: {}",
+                response
+                    .landing_authorization_is_current
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unset".to_string())
+            );
+            print_landing_authorization(authorization);
+        }
+        Ok(())
+    }
+
+    pub async fn tracked_thread_prepare_workspace(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
+        let response = client
+            .authority_tracked_thread_prepare_workspace(
+                &ipc::AuthorityTrackedThreadPrepareWorkspaceRequest {
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    requested_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                    request_note: None,
+                    model: tracked_thread.preferred_model.clone(),
+                    cwd: Some(workspace.repository_root.clone()),
+                },
+            )
+            .await?;
+        println!("surface: workspace_operation");
+        println!(
+            "workspace_operation_kind: {:?}",
+            response.workspace_operation.kind
+        );
+        println!(
+            "workspace_operation_status: {:?}",
+            response.workspace_operation.status
+        );
+        println!(
+            "workspace_operation_tracked_thread_id: {}",
+            response.workspace_operation.tracked_thread_id
+        );
+        println!(
+            "workspace_operation_assignment_id: {}",
+            response.assignment.id
+        );
+        println!("workspace_operation_worker_id: {}", response.worker.id);
+        println!(
+            "workspace_operation_worker_session_id: {}",
+            response.worker_session.id
+        );
+        println!("workspace_operation_report_id: {}", response.report.id);
+        println!(
+            "workspace_operation_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!(
+            "workspace_operation_report_summary: {}",
+            response.report.summary
+        );
+        Ok(())
+    }
+
+    pub async fn tracked_thread_refresh_workspace(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
+        let response = client
+            .authority_tracked_thread_refresh_workspace(
+                &ipc::AuthorityTrackedThreadRefreshWorkspaceRequest {
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    requested_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                    request_note: None,
+                    model: tracked_thread.preferred_model.clone(),
+                    cwd: Some(workspace.repository_root.clone()),
+                },
+            )
+            .await?;
+        println!("surface: workspace_operation");
+        println!(
+            "workspace_operation_kind: {:?}",
+            response.workspace_operation.kind
+        );
+        println!(
+            "workspace_operation_status: {:?}",
+            response.workspace_operation.status
+        );
+        println!(
+            "workspace_operation_tracked_thread_id: {}",
+            response.workspace_operation.tracked_thread_id
+        );
+        println!(
+            "workspace_operation_assignment_id: {}",
+            response.assignment.id
+        );
+        println!("workspace_operation_worker_id: {}", response.worker.id);
+        println!(
+            "workspace_operation_worker_session_id: {}",
+            response.worker_session.id
+        );
+        println!("workspace_operation_report_id: {}", response.report.id);
+        println!(
+            "workspace_operation_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!(
+            "workspace_operation_report_summary: {}",
+            response.report.summary
+        );
+        Ok(())
+    }
+
+    pub async fn tracked_thread_merge_prep(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
+        let response = client
+            .authority_tracked_thread_merge_prep(&ipc::AuthorityTrackedThreadMergePrepRequest {
+                tracked_thread_id: tracked_thread.id.clone(),
+                requested_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                request_note: None,
+                model: tracked_thread.preferred_model.clone(),
+                cwd: Some(workspace.repository_root.clone()),
+            })
+            .await?;
+        println!("surface: workspace_operation");
+        println!(
+            "workspace_operation_kind: {:?}",
+            response.workspace_operation.kind
+        );
+        println!(
+            "workspace_operation_status: {:?}",
+            response.workspace_operation.status
+        );
+        println!(
+            "workspace_operation_tracked_thread_id: {}",
+            response.workspace_operation.tracked_thread_id
+        );
+        println!(
+            "workspace_operation_assignment_id: {}",
+            response.assignment.id
+        );
+        println!("workspace_operation_worker_id: {}", response.worker.id);
+        println!(
+            "workspace_operation_worker_session_id: {}",
+            response.worker_session.id
+        );
+        println!("workspace_operation_report_id: {}", response.report.id);
+        println!(
+            "workspace_operation_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!(
+            "workspace_operation_report_summary: {}",
+            response.report.summary
+        );
+        if let Some(assessment) = response.merge_prep_assessment.as_ref() {
+            print_merge_prep_assessment(assessment);
+        }
+        Ok(())
+    }
+
+    pub async fn tracked_thread_authorize_merge(&self, tracked_thread_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: authority::TrackedThreadId::parse(
+                    tracked_thread_id.to_string(),
+                )?,
+            })
+            .await?
+            .tracked_thread;
+        let response = client
+            .authority_tracked_thread_authorize_merge(
+                &ipc::AuthorityTrackedThreadAuthorizeMergeRequest {
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    authorized_by: Some(SUPERVISOR_CLI_OPERATOR.to_string()),
+                    request_note: None,
+                },
+            )
+            .await?;
+        println!("surface: landing_authorization");
+        println!(
+            "landing_authorization_is_current: {}",
+            response
+                .landing_authorization_is_current
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unset".to_string())
+        );
+        print_landing_authorization(&response.landing_authorization);
+        if let Some(assessment) = response.merge_prep_assessment.as_ref() {
+            print_merge_prep_assessment(assessment);
+        }
+        if let Some(inspection) = response.workspace_inspection.as_ref() {
+            println!("workspace_scope: daemon_inspection");
+            println!(
+                "workspace_inspected_at: {}",
+                inspection.inspected_at.to_rfc3339()
+            );
+            println!(
+                "workspace_local_head_commit: {}",
+                inspection.current_head_commit.as_deref().unwrap_or("unset")
+            );
+        }
+        println!("tracked_thread_id: {}", response.tracked_thread.id);
         Ok(())
     }
 

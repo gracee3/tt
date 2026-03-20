@@ -3,7 +3,10 @@ use crate::app::{
     ProgramView, TrackedThreadFooterForm, WorkUnitFooterForm, WorkstreamFooterForm,
 };
 use crate::view_model::{PanelViewModel, connection_status, event_log, status_banner};
-use orcas_core::{ReportParseResult, WorkUnitStatus, WorkstreamStatus, authority};
+use orcas_core::{
+    ReportParseResult, TrackedThreadWorkspaceOperationStatus, WorkUnitStatus, WorkstreamStatus,
+    authority, ipc,
+};
 
 use super::shared::{abbreviate, compact_line};
 
@@ -234,6 +237,37 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                     .and_then(|thread_id| {
                         state.threads.iter().find(|thread| thread.id == thread_id)
                     });
+                let detail = state
+                    .authority_main
+                    .tracked_thread_details
+                    .get(tracked_thread.id.as_str());
+                let inspection = detail.and_then(|detail| detail.workspace_inspection.as_ref());
+                let mut badges = vec![
+                    tracked_thread_binding_label(tracked_thread.binding_state),
+                    tracked_thread_backend_label(tracked_thread.backend_kind),
+                    tracked_thread
+                        .workspace_status
+                        .map(tracked_thread_workspace_status_label)
+                        .unwrap_or_else(|| "workspace=none".to_string()),
+                ];
+                if let Some(inspection) = inspection {
+                    badges.push(tracked_thread_workspace_inspection_label(inspection));
+                }
+                if let Some(operation) =
+                    detail.and_then(|detail| detail.workspace_operation.as_ref())
+                {
+                    badges.push(tracked_thread_workspace_operation_label(operation));
+                }
+                if let Some(assessment) =
+                    detail.and_then(|detail| detail.merge_prep_assessment.as_ref())
+                {
+                    badges.push(tracked_thread_merge_prep_assessment_label(assessment));
+                }
+                if let Some(authorization) =
+                    detail.and_then(|detail| detail.landing_authorization.as_ref())
+                {
+                    badges.push(tracked_thread_landing_authorization_label(authorization));
+                }
                 rows.push(MainHierarchyRowViewModel {
                     kind: HierarchyRowKind::Thread,
                     selection: MainHierarchySelection::Thread {
@@ -243,14 +277,7 @@ fn hierarchy_rows(state: &AppState) -> Vec<MainHierarchyRowViewModel> {
                     },
                     depth: 2,
                     label: tracked_thread.title.clone(),
-                    badges: vec![
-                        tracked_thread_binding_label(tracked_thread.binding_state),
-                        tracked_thread_backend_label(tracked_thread.backend_kind),
-                        tracked_thread
-                            .workspace_status
-                            .map(tracked_thread_workspace_status_label)
-                            .unwrap_or_else(|| "workspace=none".to_string()),
-                    ],
+                    badges,
                     secondary: Some(
                         upstream
                             .map(|thread| abbreviate(&compact_line(&thread.preview), 48))
@@ -349,25 +376,228 @@ fn main_detail_panel(state: &AppState) -> PanelViewModel {
                     lines.push("upstream thread: none".to_string());
                 }
                 if let Some(workspace) = tracked_thread.workspace.as_ref() {
+                    lines.push("workspace intent:".to_string());
+                    lines.push(format!("  repository root: {}", workspace.repository_root));
+                    lines.push(format!("  worktree path: {}", workspace.worktree_path));
                     lines.push(format!(
-                        "workspace: {}  strategy: {}  status: {}",
-                        workspace.worktree_path,
+                        "  strategy: {}  supervisor status: {}",
                         tracked_thread_workspace_strategy_label(workspace.strategy),
                         tracked_thread_workspace_status_label(workspace.status)
                     ));
                     lines.push(format!(
-                        "branch: {}  base: {}  landing: {}",
+                        "  branch: {}  base ref: {}  landing target: {}",
                         workspace.branch_name, workspace.base_ref, workspace.landing_target
                     ));
                     lines.push(format!(
-                        "last reported head: {}",
+                        "  base commit: {}",
+                        workspace.base_commit.as_deref().unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  worker last reported head: {}",
                         workspace
                             .last_reported_head_commit
                             .as_deref()
                             .unwrap_or("unset")
                     ));
                 } else {
-                    lines.push("workspace: none".to_string());
+                    lines.push("workspace intent: none".to_string());
+                }
+                if let Some(inspection) = detail.workspace_inspection.as_ref() {
+                    lines.push("daemon inspection:".to_string());
+                    lines.push(format!(
+                        "  inspected at: {}",
+                        inspection.inspected_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  exists: {}  git worktree: {}",
+                        inspection.exists, inspection.is_git_worktree
+                    ));
+                    lines.push(format!(
+                        "  branch: {}  head: {}  dirty: {}",
+                        inspection.current_branch.as_deref().unwrap_or("unset"),
+                        inspection.current_head_commit.as_deref().unwrap_or("unset"),
+                        inspection
+                            .dirty
+                            .map(|dirty| if dirty { "dirty" } else { "clean" })
+                            .unwrap_or("unknown")
+                    ));
+                    lines.push(format!(
+                        "  base ref: {}  base commit: {}",
+                        inspection.base_ref.as_deref().unwrap_or("unset"),
+                        inspection.base_commit.as_deref().unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  landing target: {}",
+                        inspection.landing_target.as_deref().unwrap_or("unset")
+                    ));
+                    if let Some(comparison) = inspection.base_commit_comparison.as_ref() {
+                        lines.push(format!(
+                            "  base comparison: {} ahead={} behind={}",
+                            comparison.reference, comparison.ahead_by, comparison.behind_by
+                        ));
+                    }
+                    if let Some(comparison) = inspection.landing_target_comparison.as_ref() {
+                        lines.push(format!(
+                            "  landing comparison: {} ahead={} behind={}",
+                            comparison.reference, comparison.ahead_by, comparison.behind_by
+                        ));
+                    }
+                    if inspection.warnings.is_empty() {
+                        lines.push("  warnings: none".to_string());
+                    } else {
+                        for warning in &inspection.warnings {
+                            lines.push(format!(
+                                "  warning: {}",
+                                tracked_thread_workspace_inspection_warning_label(*warning)
+                            ));
+                        }
+                    }
+                } else {
+                    lines.push("daemon inspection: unavailable".to_string());
+                }
+                if let Some(operation) = detail.workspace_operation.as_ref() {
+                    lines.push("workspace operation:".to_string());
+                    lines.push(format!(
+                        "  kind: {}  status: {}",
+                        tracked_thread_workspace_operation_kind_label(operation.kind),
+                        tracked_thread_workspace_operation_status_label(operation.status)
+                    ));
+                    lines.push(format!("  assignment: {}", operation.assignment_id));
+                    lines.push(format!("  work unit: {}", operation.work_unit_id));
+                    lines.push(format!(
+                        "  worker session: {}",
+                        operation.worker_session_id.as_deref().unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  requested by: {}",
+                        operation.requested_by.as_str()
+                    ));
+                    lines.push(format!(
+                        "  requested at: {}",
+                        operation.requested_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  updated at: {}",
+                        operation.updated_at.to_rfc3339()
+                    ));
+                    if let Some(note) = operation.request_note.as_ref() {
+                        lines.push(format!("  request note: {note}"));
+                    }
+                    if let Some(report_id) = operation.report_id.as_ref() {
+                        lines.push(format!("  report id: {report_id}"));
+                    }
+                    if let Some(disposition) = operation.report_disposition.as_ref() {
+                        lines.push(format!("  report disposition: {:?}", disposition));
+                    }
+                    if let Some(summary) = operation.outcome_summary.as_ref() {
+                        lines.push(format!("  outcome summary: {summary}"));
+                    }
+                } else {
+                    lines.push("workspace operation: none".to_string());
+                }
+                if let Some(assessment) = detail.merge_prep_assessment.as_ref() {
+                    lines.push("merge prep assessment:".to_string());
+                    lines.push(format!(
+                        "  readiness: {}",
+                        tracked_thread_merge_prep_readiness_label(assessment.readiness)
+                    ));
+                    lines.push(format!(
+                        "  assessed at: {}",
+                        assessment.assessed_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  local head: {}  worker head: {}",
+                        assessment.local_head_commit.as_deref().unwrap_or("unset"),
+                        assessment
+                            .worker_reported_head_commit
+                            .as_deref()
+                            .unwrap_or("unset")
+                    ));
+                    lines.push(format!(
+                        "  report id: {}  disposition: {}",
+                        assessment.report_id.as_deref().unwrap_or("unset"),
+                        assessment
+                            .report_disposition
+                            .map(|value| format!("{value:?}"))
+                            .unwrap_or_else(|| "unset".to_string())
+                    ));
+                    if assessment.reasons.is_empty() {
+                        lines.push("  reasons: none".to_string());
+                    } else {
+                        for reason in &assessment.reasons {
+                            lines.push(format!(
+                                "  reason: {}",
+                                tracked_thread_merge_prep_reason_label(*reason)
+                            ));
+                        }
+                    }
+                } else {
+                    lines.push("merge prep assessment: none".to_string());
+                }
+                if let Some(authorization) = detail.landing_authorization.as_ref() {
+                    lines.push("landing authorization:".to_string());
+                    lines.push(format!(
+                        "  status: {}  current: {}",
+                        tracked_thread_landing_authorization_status_label(authorization.status),
+                        detail
+                            .landing_authorization_is_current
+                            .map(|value| if value {
+                                "yes".to_string()
+                            } else {
+                                "no".to_string()
+                            })
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ));
+                    lines.push(format!("  id: {}", authorization.id));
+                    lines.push(format!(
+                        "  authorized head: {}",
+                        authorization.authorized_head_commit
+                    ));
+                    lines.push(format!(
+                        "  landing target: {}",
+                        authorization.landing_target
+                    ));
+                    lines.push(format!("  authorized by: {}", authorization.authorized_by));
+                    lines.push(format!(
+                        "  authorized at: {}",
+                        authorization.authorized_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  merge prep op: {}",
+                        authorization.linked_merge_prep_operation_id
+                    ));
+                    lines.push(format!(
+                        "  merge prep assessed at: {}",
+                        authorization.merge_prep_assessed_at.to_rfc3339()
+                    ));
+                    lines.push(format!(
+                        "  merge prep readiness: {}",
+                        tracked_thread_merge_prep_readiness_label(
+                            authorization.merge_prep_readiness
+                        )
+                    ));
+                    if authorization.merge_prep_reasons.is_empty() {
+                        lines.push("  merge prep reasons: none".to_string());
+                    } else {
+                        for reason in &authorization.merge_prep_reasons {
+                            lines.push(format!(
+                                "  merge prep reason: {}",
+                                tracked_thread_merge_prep_reason_label(*reason)
+                            ));
+                        }
+                    }
+                    if let Some(report_id) = authorization.merge_prep_report_id.as_ref() {
+                        lines.push(format!("  merge prep report id: {report_id}"));
+                    }
+                    if let Some(disposition) = authorization.merge_prep_report_disposition.as_ref()
+                    {
+                        lines.push(format!(
+                            "  merge prep report disposition: {:?}",
+                            disposition
+                        ));
+                    }
+                } else {
+                    lines.push("landing authorization: none".to_string());
                 }
                 lines.push("delete semantics: local only".to_string());
                 PanelViewModel {
@@ -680,6 +910,156 @@ fn tracked_thread_workspace_status_label(
         authority::TrackedThreadWorkspaceStatus::Abandoned => "workspace=abandoned".to_string(),
         authority::TrackedThreadWorkspaceStatus::Pruned => "workspace=pruned".to_string(),
     }
+}
+
+fn tracked_thread_workspace_inspection_label(
+    inspection: &ipc::TrackedThreadWorkspaceInspection,
+) -> String {
+    let mut parts = Vec::new();
+    for warning in &inspection.warnings {
+        let label = match warning {
+            ipc::TrackedThreadWorkspaceInspectionWarning::MissingWorktree => "missing",
+            ipc::TrackedThreadWorkspaceInspectionWarning::InvalidWorktree => "invalid",
+            ipc::TrackedThreadWorkspaceInspectionWarning::DetachedHead => "detached",
+            ipc::TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace => "dirty",
+            ipc::TrackedThreadWorkspaceInspectionWarning::BaseCommitMismatch => "base_mismatch",
+            ipc::TrackedThreadWorkspaceInspectionWarning::BehindLandingTarget => "behind",
+            ipc::TrackedThreadWorkspaceInspectionWarning::DivergedFromLandingTarget => "diverged",
+            ipc::TrackedThreadWorkspaceInspectionWarning::Unknown => "unknown",
+        };
+        parts.push(label);
+    }
+
+    if parts.is_empty() {
+        "daemon=healthy".to_string()
+    } else {
+        format!("daemon={}", parts.join("+"))
+    }
+}
+
+fn tracked_thread_workspace_inspection_warning_label(
+    warning: ipc::TrackedThreadWorkspaceInspectionWarning,
+) -> &'static str {
+    match warning {
+        ipc::TrackedThreadWorkspaceInspectionWarning::MissingWorktree => "missing worktree",
+        ipc::TrackedThreadWorkspaceInspectionWarning::InvalidWorktree => "invalid worktree",
+        ipc::TrackedThreadWorkspaceInspectionWarning::DetachedHead => "detached head",
+        ipc::TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace => "dirty workspace",
+        ipc::TrackedThreadWorkspaceInspectionWarning::BaseCommitMismatch => "base commit mismatch",
+        ipc::TrackedThreadWorkspaceInspectionWarning::BehindLandingTarget => {
+            "behind landing target"
+        }
+        ipc::TrackedThreadWorkspaceInspectionWarning::DivergedFromLandingTarget => {
+            "diverged from landing target"
+        }
+        ipc::TrackedThreadWorkspaceInspectionWarning::Unknown => "unknown",
+    }
+}
+
+fn tracked_thread_workspace_operation_kind_label(
+    kind: orcas_core::TrackedThreadWorkspaceOperationKind,
+) -> &'static str {
+    match kind {
+        orcas_core::TrackedThreadWorkspaceOperationKind::PrepareWorkspace => "prepare",
+        orcas_core::TrackedThreadWorkspaceOperationKind::RefreshWorkspace => "refresh",
+        orcas_core::TrackedThreadWorkspaceOperationKind::MergePrep => "merge_prep",
+    }
+}
+
+fn tracked_thread_workspace_operation_status_label(
+    status: TrackedThreadWorkspaceOperationStatus,
+) -> &'static str {
+    match status {
+        TrackedThreadWorkspaceOperationStatus::Requested => "requested",
+        TrackedThreadWorkspaceOperationStatus::Dispatched => "dispatched",
+        TrackedThreadWorkspaceOperationStatus::Completed => "completed",
+        TrackedThreadWorkspaceOperationStatus::Failed => "failed",
+        TrackedThreadWorkspaceOperationStatus::Canceled => "canceled",
+    }
+}
+
+fn tracked_thread_workspace_operation_label(
+    operation: &orcas_core::WorkspaceOperationRecord,
+) -> String {
+    format!(
+        "op={}",
+        tracked_thread_workspace_operation_label_parts(operation.kind, operation.status)
+    )
+}
+
+fn tracked_thread_workspace_operation_label_parts(
+    kind: orcas_core::TrackedThreadWorkspaceOperationKind,
+    status: TrackedThreadWorkspaceOperationStatus,
+) -> String {
+    format!(
+        "{}:{}",
+        tracked_thread_workspace_operation_kind_label(kind),
+        tracked_thread_workspace_operation_status_label(status)
+    )
+}
+
+fn tracked_thread_merge_prep_readiness_label(
+    readiness: ipc::TrackedThreadMergePrepReadiness,
+) -> &'static str {
+    match readiness {
+        ipc::TrackedThreadMergePrepReadiness::Ready => "ready",
+        ipc::TrackedThreadMergePrepReadiness::NotReady => "not_ready",
+        ipc::TrackedThreadMergePrepReadiness::Blocked => "blocked",
+        ipc::TrackedThreadMergePrepReadiness::Unknown => "unknown",
+    }
+}
+
+fn tracked_thread_merge_prep_reason_label(
+    reason: ipc::TrackedThreadMergePrepReason,
+) -> &'static str {
+    match reason {
+        ipc::TrackedThreadMergePrepReason::MissingSuccessfulReport => "missing_successful_report",
+        ipc::TrackedThreadMergePrepReason::MissingWorkerReportedHead => {
+            "missing_worker_reported_head"
+        }
+        ipc::TrackedThreadMergePrepReason::MissingWorktree => "missing_worktree",
+        ipc::TrackedThreadMergePrepReason::InvalidWorktree => "invalid_worktree",
+        ipc::TrackedThreadMergePrepReason::DirtyWorkspace => "dirty_workspace",
+        ipc::TrackedThreadMergePrepReason::DetachedHead => "detached_head",
+        ipc::TrackedThreadMergePrepReason::BaseCommitMismatch => "base_commit_mismatch",
+        ipc::TrackedThreadMergePrepReason::BehindLandingTarget => "behind_landing_target",
+        ipc::TrackedThreadMergePrepReason::DivergedFromLandingTarget => {
+            "diverged_from_landing_target"
+        }
+        ipc::TrackedThreadMergePrepReason::HeadMismatch => "head_mismatch",
+        ipc::TrackedThreadMergePrepReason::UnknownInspectionState => "unknown_inspection_state",
+    }
+}
+
+fn tracked_thread_merge_prep_assessment_label(
+    assessment: &ipc::TrackedThreadMergePrepAssessment,
+) -> String {
+    format!(
+        "merge={}",
+        tracked_thread_merge_prep_readiness_label(assessment.readiness)
+    )
+}
+
+fn tracked_thread_landing_authorization_status_label(
+    status: orcas_core::LandingAuthorizationStatus,
+) -> &'static str {
+    match status {
+        orcas_core::LandingAuthorizationStatus::Requested => "requested",
+        orcas_core::LandingAuthorizationStatus::Authorized => "authorized",
+        orcas_core::LandingAuthorizationStatus::Superseded => "superseded",
+        orcas_core::LandingAuthorizationStatus::Revoked => "revoked",
+        orcas_core::LandingAuthorizationStatus::Completed => "completed",
+        orcas_core::LandingAuthorizationStatus::Failed => "failed",
+    }
+}
+
+fn tracked_thread_landing_authorization_label(
+    authorization: &orcas_core::LandingAuthorizationRecord,
+) -> String {
+    format!(
+        "auth={}",
+        tracked_thread_landing_authorization_status_label(authorization.status)
+    )
 }
 
 #[allow(dead_code)]

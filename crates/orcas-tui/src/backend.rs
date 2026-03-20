@@ -1496,6 +1496,11 @@ impl TuiBackend for FakeBackend {
                             .ok_or_else(|| {
                                 anyhow!("unknown authority tracked thread `{tracked_thread_id}`")
                             })?,
+                        workspace_inspection: None,
+                        workspace_operation: None,
+                        merge_prep_assessment: None,
+                        landing_authorization: None,
+                        landing_authorization_is_current: None,
                     },
                 ))
             }

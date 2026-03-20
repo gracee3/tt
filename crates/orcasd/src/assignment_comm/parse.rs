@@ -363,6 +363,7 @@ mod tests {
                 required_context_refs: Vec::new(),
                 expected_report_fields: Vec::new(),
                 boundedness_note: Some("Do not broaden scope.".to_string()),
+                workspace_operation: None,
                 mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                     expected_verification_commands: Vec::new(),
                 }),

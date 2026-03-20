@@ -468,6 +468,47 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn authority_tracked_thread_prepare_workspace(
+        &self,
+        params: &ipc::AuthorityTrackedThreadPrepareWorkspaceRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadPrepareWorkspaceResponse> {
+        self.request(
+            ipc::methods::AUTHORITY_TRACKED_THREAD_PREPARE_WORKSPACE,
+            params,
+        )
+        .await
+    }
+
+    pub async fn authority_tracked_thread_refresh_workspace(
+        &self,
+        params: &ipc::AuthorityTrackedThreadRefreshWorkspaceRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadRefreshWorkspaceResponse> {
+        self.request(
+            ipc::methods::AUTHORITY_TRACKED_THREAD_REFRESH_WORKSPACE,
+            params,
+        )
+        .await
+    }
+
+    pub async fn authority_tracked_thread_merge_prep(
+        &self,
+        params: &ipc::AuthorityTrackedThreadMergePrepRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadMergePrepResponse> {
+        self.request(ipc::methods::AUTHORITY_TRACKED_THREAD_MERGE_PREP, params)
+            .await
+    }
+
+    pub async fn authority_tracked_thread_authorize_merge(
+        &self,
+        params: &ipc::AuthorityTrackedThreadAuthorizeMergeRequest,
+    ) -> OrcasResult<ipc::AuthorityTrackedThreadAuthorizeMergeResponse> {
+        self.request(
+            ipc::methods::AUTHORITY_TRACKED_THREAD_AUTHORIZE_MERGE,
+            params,
+        )
+        .await
+    }
+
     pub async fn assignment_start(
         &self,
         params: &ipc::AssignmentStartRequest,

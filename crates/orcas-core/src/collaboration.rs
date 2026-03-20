@@ -16,7 +16,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::authority;
-use crate::communication::{AssignmentCommunicationRecord, AssignmentCommunicationSeed};
+use crate::communication::{
+    AssignmentCommunicationRecord, AssignmentCommunicationSeed,
+    TrackedThreadWorkspaceOperationKind, TrackedThreadWorkspaceOperationStatus,
+};
+use crate::ipc::{TrackedThreadMergePrepReadiness, TrackedThreadMergePrepReason};
 use crate::planning::{PlanExecutionKind, PlanId, PlanItemId, PlanningState};
 use crate::supervisor::SupervisorProposalRecord;
 
@@ -52,6 +56,10 @@ pub struct CollaborationState {
     pub decisions: BTreeMap<String, Decision>,
     #[serde(default)]
     pub assignment_communications: BTreeMap<String, AssignmentCommunicationRecord>,
+    #[serde(default)]
+    pub workspace_operations: BTreeMap<String, WorkspaceOperationRecord>,
+    #[serde(default)]
+    pub landing_authorizations: BTreeMap<String, LandingAuthorizationRecord>,
     #[serde(default)]
     pub supervisor_proposals: BTreeMap<String, SupervisorProposalRecord>,
     #[serde(default)]
@@ -206,6 +214,87 @@ pub struct SupervisorTurnDecision {
     pub sent_turn_id: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+/// Persisted runtime record for a tracked-thread workspace operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceOperationRecord {
+    pub id: String,
+    pub assignment_id: String,
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub work_unit_id: authority::WorkUnitId,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub worker_session_id: Option<String>,
+    pub kind: TrackedThreadWorkspaceOperationKind,
+    #[serde(default)]
+    pub status: TrackedThreadWorkspaceOperationStatus,
+    pub requested_by: String,
+    pub requested_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub dispatched_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub failed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub canceled_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub report_disposition: Option<ReportDisposition>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+}
+
+/// Persisted runtime record for a tracked-thread landing authorization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingAuthorizationRecord {
+    pub id: String,
+    pub tracked_thread_id: authority::TrackedThreadId,
+    pub work_unit_id: authority::WorkUnitId,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub worker_session_id: Option<String>,
+    pub authorized_head_commit: String,
+    pub landing_target: String,
+    pub linked_merge_prep_operation_id: String,
+    pub merge_prep_assessed_at: DateTime<Utc>,
+    #[serde(default)]
+    pub merge_prep_readiness: TrackedThreadMergePrepReadiness,
+    #[serde(default)]
+    pub merge_prep_reasons: Vec<TrackedThreadMergePrepReason>,
+    #[serde(default)]
+    pub merge_prep_report_id: Option<String>,
+    #[serde(default)]
+    pub merge_prep_report_disposition: Option<ReportDisposition>,
+    pub authorized_by: String,
+    pub authorized_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub status: LandingAuthorizationStatus,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub outcome_summary: Option<String>,
+}
+
+/// Lifecycle for a landing authorization record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingAuthorizationStatus {
+    Requested,
+    #[default]
+    Authorized,
+    Superseded,
+    Revoked,
+    Completed,
+    Failed,
 }
 
 /// Collaboration/runtime status for a workstream.

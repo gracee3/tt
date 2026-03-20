@@ -16,10 +16,11 @@ pub mod supervisor;
 pub use collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, CollaborationState, Decision, DecisionType,
-    Report, ReportConfidence, ReportDisposition, ReportParseResult, SupervisorTurnDecision,
-    SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit,
-    WorkUnitStatus, Worker, WorkerSession, WorkerSessionAttachability, WorkerSessionRuntimeStatus,
-    WorkerStatus, Workstream, WorkstreamStatus,
+    LandingAuthorizationRecord, LandingAuthorizationStatus, Report, ReportConfidence,
+    ReportDisposition, ReportParseResult, SupervisorTurnDecision, SupervisorTurnDecisionKind,
+    SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker,
+    WorkerSession, WorkerSessionAttachability, WorkerSessionRuntimeStatus, WorkerStatus,
+    WorkspaceOperationRecord, Workstream, WorkstreamStatus,
 };
 pub use communication::{
     AcceptanceCriterionStatus, AcceptanceResult, AssignmentChangePolicy, AssignmentChecklistItem,
@@ -27,8 +28,10 @@ pub use communication::{
     AssignmentCommunicationSeed, AssignmentContextBlock, AssignmentExecutionContext,
     AssignmentModeSpec, AssignmentScopeBoundary, AssignmentTaskMode, AssignmentWorkspaceContract,
     FileChangeKind, ImplementModePayload, ImplementModeSpec, PromptRenderArtifact,
-    PromptRenderSpec, ReviewSignal, ReviewSignalLevel, TouchedFile, WorkerReportContract,
-    WorkerReportEnvelope, WorkerReportModePayload, WorkerReportValidation, WorkerWorkspaceReport,
+    PromptRenderSpec, ReviewSignal, ReviewSignalLevel, TouchedFile,
+    TrackedThreadWorkspaceOperationContract, TrackedThreadWorkspaceOperationKind,
+    TrackedThreadWorkspaceOperationStatus, WorkerReportContract, WorkerReportEnvelope,
+    WorkerReportModePayload, WorkerReportValidation, WorkerWorkspaceReport,
 };
 pub use config::{
     AppConfig, CodexConnectionMode, CodexDaemonConfig, ReconnectPolicy, SupervisorConfig,
