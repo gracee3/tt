@@ -5304,6 +5304,8 @@ impl OrcasDaemonService {
             .clone()
             .or_else(|| self.config.defaults.model.clone());
         let requested_cwd = params.cwd.clone();
+        self.ensure_projected_authority_work_unit_available(&params.work_unit_id)
+            .await?;
         let outcome = {
             let now = Utc::now();
             let mut state = self.state.write().await;
@@ -5434,6 +5436,56 @@ impl OrcasDaemonService {
             .await?;
         self.persist_collaboration_state().await?;
         Ok(outcome)
+    }
+
+    async fn ensure_projected_authority_work_unit_available(
+        &self,
+        work_unit_id: &str,
+    ) -> OrcasResult<()> {
+        if self
+            .state
+            .read()
+            .await
+            .collaboration
+            .work_units
+            .contains_key(work_unit_id)
+        {
+            return Ok(());
+        }
+
+        let authority_work_unit_id = orcas_core::authority::WorkUnitId::parse(work_unit_id)?;
+        let authority_work_unit = self
+            .authority_store
+            .get_work_unit(&authority_work_unit_id)
+            .await?
+            .ok_or_else(|| OrcasError::Protocol(format!("unknown work unit `{work_unit_id}`")))?;
+        let authority_workstream = self
+            .authority_store
+            .get_workstream(&authority_work_unit.workstream_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown workstream `{}`",
+                    authority_work_unit.workstream_id
+                ))
+            })?;
+
+        let mut state = self.state.write().await;
+        state
+            .collaboration
+            .workstreams
+            .entry(authority_workstream.id.to_string())
+            .or_insert_with(|| {
+                Self::authority_workstream_record_to_collaboration(&authority_workstream)
+            });
+        state
+            .collaboration
+            .work_units
+            .entry(authority_work_unit.id.to_string())
+            .or_insert_with(|| {
+                Self::authority_work_unit_record_to_collaboration(&authority_work_unit)
+            });
+        Ok(())
     }
 
     async fn ensure_assignment_communication_record(
@@ -5921,6 +5973,20 @@ impl OrcasDaemonService {
         }
     }
 
+    fn authority_workstream_record_to_collaboration(
+        workstream: &orcas_core::authority::WorkstreamRecord,
+    ) -> Workstream {
+        Workstream {
+            id: workstream.id.to_string(),
+            title: workstream.title.clone(),
+            objective: workstream.objective.clone(),
+            status: workstream.status,
+            priority: workstream.priority.clone(),
+            created_at: workstream.created_at,
+            updated_at: workstream.updated_at,
+        }
+    }
+
     fn authority_work_unit_summary(
         work_unit: &orcas_core::authority::WorkUnitSummary,
     ) -> ipc::WorkUnitSummary {
@@ -5933,6 +5999,23 @@ impl OrcasDaemonService {
             current_assignment_id: None,
             latest_report_id: None,
             proposal: None,
+            updated_at: work_unit.updated_at,
+        }
+    }
+
+    fn authority_work_unit_record_to_collaboration(
+        work_unit: &orcas_core::authority::WorkUnitRecord,
+    ) -> WorkUnit {
+        WorkUnit {
+            id: work_unit.id.to_string(),
+            workstream_id: work_unit.workstream_id.to_string(),
+            title: work_unit.title.clone(),
+            task_statement: work_unit.task_statement.clone(),
+            status: work_unit.status,
+            dependencies: Vec::new(),
+            latest_report_id: None,
+            current_assignment_id: None,
+            created_at: work_unit.created_at,
             updated_at: work_unit.updated_at,
         }
     }

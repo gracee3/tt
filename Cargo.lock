@@ -1189,6 +1189,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "orcas-codex",
  "orcas-core",
  "reqwest",
@@ -1196,6 +1197,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "uuid",
 ]

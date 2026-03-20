@@ -15,10 +15,15 @@ pub struct TestDaemon {
     root: PathBuf,
     pub paths: AppPaths,
     child: Option<Child>,
+    extra_env: Vec<(String, String)>,
 }
 
 impl TestDaemon {
     pub async fn spawn(test_name: &str) -> Self {
+        Self::spawn_with_env(test_name, Vec::new()).await
+    }
+
+    pub async fn spawn_with_env(test_name: &str, extra_env: Vec<(String, String)>) -> Self {
         let root = std::env::temp_dir().join(format!("orcasd-it-{test_name}-{}", Uuid::new_v4()));
         let paths = AppPaths::from_roots(
             root.join("config/orcas"),
@@ -29,6 +34,7 @@ impl TestDaemon {
             root,
             paths,
             child: None,
+            extra_env,
         };
         daemon.start().await;
         daemon
@@ -36,16 +42,19 @@ impl TestDaemon {
 
     pub async fn start(&mut self) {
         self.paths.ensure().await.expect("create app paths");
-        let child = Command::new(env!("CARGO_BIN_EXE_orcasd"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_orcasd"));
+        command
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
             .env("ORCAS_CONNECTION_MODE", "connect_only")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn orcasd");
+            .stderr(Stdio::null());
+        for (key, value) in &self.extra_env {
+            command.env(key, value);
+        }
+        let child = command.spawn().expect("spawn orcasd");
         self.child = Some(child);
         self.wait_until_ready().await;
     }
