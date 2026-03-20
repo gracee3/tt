@@ -33,7 +33,6 @@ impl FakeCodexAppServer {
                 match accept_async(stream).await {
                     Ok(socket) => {
                         Self::serve(socket).await;
-                        break;
                     }
                     Err(_) => continue,
                 }
