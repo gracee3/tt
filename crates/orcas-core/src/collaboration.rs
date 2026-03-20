@@ -1,3 +1,15 @@
+//! Daemon-owned collaboration and execution/runtime state.
+//!
+//! This module models the mutable state ORCAS persists for assignments, reports,
+//! decisions, worker sessions, and supervisor workflows. It is not the canonical
+//! planning hierarchy model; read `authority.rs` for that vocabulary and
+//! `ipc.rs` for the public snapshot/event surfaces that expose collaboration
+//! state to clients.
+//!
+//! The bridge sets on [`CollaborationState`] intentionally keep authority-owned
+//! planning rows visible where execution/runtime compatibility still needs
+//! them. They are not a second planning source of truth.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
@@ -7,14 +19,24 @@ use crate::authority;
 use crate::communication::{AssignmentCommunicationRecord, AssignmentCommunicationSeed};
 use crate::supervisor::SupervisorProposalRecord;
 
+/// Daemon-owned collaboration and execution/runtime state.
+///
+/// This is the persistence model for runtime state, assignments, reports,
+/// decisions, worker sessions, and compatibility bridge markers. It should not
+/// be read as the old planning model; canonical planning hierarchy data lives
+/// in `authority.rs` and is exposed through authority RPCs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CollaborationState {
+    /// Collaboration-native workstream rows plus authority compatibility bridge markers.
     #[serde(default)]
     pub workstreams: BTreeMap<String, Workstream>,
+    /// Authority workstream IDs that are mirrored here for execution/runtime compatibility.
     #[serde(default)]
     pub authority_workstream_bridges: BTreeSet<String>,
+    /// Collaboration-native work-unit rows plus authority compatibility bridge markers.
     #[serde(default)]
     pub work_units: BTreeMap<String, WorkUnit>,
+    /// Authority work-unit IDs that are mirrored here for execution/runtime compatibility.
     #[serde(default)]
     pub authority_work_unit_bridges: BTreeSet<String>,
     #[serde(default)]
@@ -37,6 +59,10 @@ pub struct CollaborationState {
     pub supervisor_turn_decisions: BTreeMap<String, SupervisorTurnDecision>,
 }
 
+/// Lifecycle of a Codex thread assignment mirror in collaboration state.
+///
+/// This is runtime state, not planning hierarchy state. The values are persisted
+/// because they drive daemon and TUI execution flows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexThreadAssignmentStatus {
@@ -48,6 +74,9 @@ pub enum CodexThreadAssignmentStatus {
     Released,
 }
 
+/// Policy that controls who may emit Codex prompts for an assignment mirror.
+///
+/// This is an execution/runtime policy, not a planning authority concept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexThreadSendPolicy {
@@ -56,6 +85,10 @@ pub enum CodexThreadSendPolicy {
     SupervisorMaySend,
 }
 
+/// Bootstrap state for a Codex thread assignment mirror.
+///
+/// This tracks the local/runtime bootstrap path only; it does not describe
+/// authority planning lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexThreadBootstrapState {
@@ -66,6 +99,11 @@ pub enum CodexThreadBootstrapState {
     Sent,
 }
 
+/// A daemon-side Codex assignment mirror tying planning work to a live thread.
+///
+/// The record is persisted in collaboration state so execution/runtime flows can
+/// resume and reconcile without treating it as a canonical planning hierarchy
+/// row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexThreadAssignment {
     pub assignment_id: String,
@@ -90,6 +128,9 @@ pub struct CodexThreadAssignment {
     pub notes: Option<String>,
 }
 
+/// Lifecycle kind for a supervisor decision.
+///
+/// These kinds describe what the decision is about, not the full state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorTurnDecisionKind {
@@ -100,6 +141,9 @@ pub enum SupervisorTurnDecisionKind {
     NoAction,
 }
 
+/// Origin of a supervisor proposal attached to a decision.
+///
+/// This is persisted runtime state used to explain why a proposal exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorTurnProposalKind {
@@ -111,6 +155,10 @@ pub enum SupervisorTurnProposalKind {
     OperatorInterrupt,
 }
 
+/// Persisted status for a supervisor decision.
+///
+/// The values reflect runtime-driven transitions; the code does not enforce a
+/// complete formal state machine beyond the transitions it explicitly applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SupervisorTurnDecisionStatus {
@@ -125,6 +173,7 @@ pub enum SupervisorTurnDecisionStatus {
     Stale,
 }
 
+/// A persisted runtime decision attached to a Codex thread assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorTurnDecision {
     pub decision_id: String,
@@ -156,6 +205,10 @@ pub struct SupervisorTurnDecision {
     pub notes: Option<String>,
 }
 
+/// Collaboration/runtime status for a workstream.
+///
+/// This status is persisted with the daemon execution model and is not the
+/// authority planning record status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkstreamStatus {
@@ -165,6 +218,10 @@ pub enum WorkstreamStatus {
     Completed,
 }
 
+/// Daemon-side execution model for a workstream.
+///
+/// These rows are persisted in collaboration state and may mirror authority
+/// planning rows via compatibility bridges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workstream {
     pub id: String,
@@ -176,6 +233,10 @@ pub struct Workstream {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Collaboration/runtime status for a work unit.
+///
+/// This status is persisted with execution state and may differ from the
+/// authority planning record status used to seed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkUnitStatus {
@@ -189,6 +250,11 @@ pub enum WorkUnitStatus {
     Completed,
 }
 
+/// Daemon-side execution model for a work unit.
+///
+/// Work units live in collaboration state because assignments, reports, and
+/// decisions need a mutable runtime record even when planning authority is
+/// managed elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkUnit {
     pub id: String,
@@ -205,6 +271,10 @@ pub struct WorkUnit {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Lifecycle of an execution assignment.
+///
+/// These transitions are runtime-derived and persisted with collaboration
+/// state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentStatus {
@@ -218,6 +288,7 @@ pub enum AssignmentStatus {
     Lost,
 }
 
+/// A persisted runtime assignment binding a worker to a work unit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assignment {
     pub id: String,
@@ -234,6 +305,9 @@ pub struct Assignment {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Execution worker availability in the collaboration model.
+///
+/// This is a runtime concern only; it does not describe planning authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStatus {
@@ -243,6 +317,7 @@ pub enum WorkerStatus {
     Unavailable,
 }
 
+/// A worker that can receive assignments in the daemon execution model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worker {
     pub id: String,
@@ -252,6 +327,10 @@ pub struct Worker {
     pub current_assignment_id: Option<String>,
 }
 
+/// Persisted runtime state for a worker session.
+///
+/// This is the daemon's view of a worker session lifecycle, not the TUI-local
+/// PTY session manager state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerSessionRuntimeStatus {
@@ -264,6 +343,9 @@ pub enum WorkerSessionRuntimeStatus {
     Lost,
 }
 
+/// Whether a worker session can currently be attached to.
+///
+/// This is a runtime-attachment concern, not a planning authority concept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerSessionAttachability {
@@ -273,6 +355,7 @@ pub enum WorkerSessionAttachability {
     Unknown,
 }
 
+/// A worker session record persisted by the daemon runtime model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSession {
     pub id: String,
@@ -289,6 +372,9 @@ pub struct WorkerSession {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Outcome classification for a report produced by an assignment.
+///
+/// The values are execution-derived and persisted in collaboration state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportDisposition {
@@ -301,6 +387,7 @@ pub enum ReportDisposition {
     Unknown,
 }
 
+/// Confidence classification for a persisted report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportConfidence {
@@ -311,6 +398,7 @@ pub enum ReportConfidence {
     Unknown,
 }
 
+/// Parse result classification for a persisted report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportParseResult {
@@ -320,6 +408,7 @@ pub enum ReportParseResult {
     Invalid,
 }
 
+/// A persisted runtime report for an assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     pub id: String,
@@ -347,6 +436,10 @@ pub struct Report {
     pub created_at: DateTime<Utc>,
 }
 
+/// Resulting decision applied to a report.
+///
+/// This is runtime-derived from report review and persisted in collaboration
+/// state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionType {
@@ -357,6 +450,7 @@ pub enum DecisionType {
     EscalateToHuman,
 }
 
+/// A persisted runtime decision made against a report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
     pub id: String,

@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +30,12 @@ pub use orcasd::OrcasRuntimeOverrides as RuntimeOverrides;
 
 const SUPERVISOR_CLI_OPERATOR: &str = "supervisor_cli_operator";
 const ORCAS_CLI_NODE_ID: &str = "orcas-cli";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalArtifactExportFormat {
+    Json,
+    Markdown,
+}
 
 #[async_trait]
 trait SupervisorCodexBackend {
@@ -1151,6 +1159,37 @@ impl SupervisorService {
             })
             .await?;
         Self::print_proposal_artifact_detail(&response.detail);
+        Ok(())
+    }
+
+    pub async fn proposal_artifact_export(
+        &self,
+        proposal_id: &str,
+        format: ProposalArtifactExportFormat,
+        output: Option<&Path>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .proposal_artifact_export_get(&ipc::ProposalArtifactExportGetRequest {
+                proposal_id: proposal_id.to_string(),
+            })
+            .await?;
+        let rendered = match format {
+            ProposalArtifactExportFormat::Json => {
+                Self::render_proposal_artifact_export_json(&response.export)?
+            }
+            ProposalArtifactExportFormat::Markdown => {
+                Self::render_proposal_artifact_export_markdown(&response.export)?
+            }
+        };
+        if let Some(path) = output {
+            fs::write(path, rendered)?;
+        } else {
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
+        }
         Ok(())
     }
 
@@ -2814,6 +2853,206 @@ impl SupervisorService {
         }
     }
 
+    fn render_proposal_artifact_export_json(
+        export: &ipc::SupervisorProposalArtifactExport,
+    ) -> Result<String> {
+        Ok(format!("{}\n", serde_json::to_string_pretty(export)?))
+    }
+
+    fn render_proposal_artifact_export_markdown(
+        export: &ipc::SupervisorProposalArtifactExport,
+    ) -> Result<String> {
+        let mut out = String::new();
+        out.push_str("# Supervisor Proposal Artifact Export\n\n");
+        out.push_str("## Proposal Metadata\n");
+        out.push_str(&format!("- Proposal ID: `{}`\n", export.proposal_id));
+        out.push_str(&format!(
+            "- Work Unit ID: `{}`\n",
+            export.primary_work_unit_id
+        ));
+        out.push_str(&format!(
+            "- Source Report ID: `{}`\n",
+            export.source_report_id
+        ));
+        out.push_str(&format!("- Status: `{:?}`\n", export.proposal_status));
+        out.push_str(&format!("- Created At: `{}`\n", export.created_at));
+        out.push_str(&format!(
+            "- Validated At: `{}`\n",
+            export
+                .validated_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "- Reviewed At: `{}`\n",
+            export
+                .reviewed_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        out.push_str(&format!(
+            "- Reviewed By: `{}`\n",
+            export.reviewed_by.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Review Note: `{}`\n",
+            export.review_note.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Approved Decision ID: `{}`\n",
+            export.approved_decision_id.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Approved Assignment ID: `{}`\n\n",
+            export.approved_assignment_id.as_deref().unwrap_or("-")
+        ));
+
+        out.push_str("## Artifact Summary\n");
+        out.push_str(&format!(
+            "- Prompt Artifact Present: `{}`\n",
+            export.artifact_summary.prompt_artifact_present
+        ));
+        out.push_str(&format!(
+            "- Prompt Template Version: `{}`\n",
+            export
+                .artifact_summary
+                .prompt_template_version
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Prompt Hash: `{}`\n",
+            export
+                .artifact_summary
+                .prompt_hash
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Request Body Hash: `{}`\n",
+            export
+                .artifact_summary
+                .request_body_hash
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Response Artifact Present: `{}`\n",
+            export.artifact_summary.response_artifact_present
+        ));
+        out.push_str(&format!(
+            "- Response Hash: `{}`\n",
+            export
+                .artifact_summary
+                .response_hash
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Raw Response Body Present: `{}`\n",
+            export.artifact_summary.raw_response_body_present
+        ));
+        out.push_str(&format!(
+            "- Raw Response Body Hash: `{}`\n",
+            export
+                .artifact_summary
+                .raw_response_body_hash
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Reasoner Backend: `{}`\n",
+            export.artifact_summary.reasoner_backend
+        ));
+        out.push_str(&format!(
+            "- Reasoner Model: `{}`\n",
+            export.artifact_summary.reasoner_model
+        ));
+        out.push_str(&format!(
+            "- Reasoner Response ID: `{}`\n",
+            export
+                .artifact_summary
+                .reasoner_response_id
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "- Parsed Proposal Present: `{}`\n",
+            export.artifact_summary.parsed_proposal_present
+        ));
+        out.push_str(&format!(
+            "- Approved Proposal Present: `{}`\n",
+            export.artifact_summary.approved_proposal_present
+        ));
+        out.push_str(&format!(
+            "- Generation Failure Stage: `{}`\n\n",
+            export
+                .artifact_summary
+                .generation_failure_stage
+                .map(|value| format!("{value:?}"))
+                .unwrap_or_else(|| "-".to_string())
+        ));
+
+        Self::push_markdown_json_section(
+            &mut out,
+            "Prompt Artifact",
+            serde_json::to_value(&export.artifact_detail.prompt_render)?,
+        )?;
+        Self::push_markdown_json_section(
+            &mut out,
+            "Response Artifact",
+            serde_json::to_value(&export.artifact_detail.response_artifact)?,
+        )?;
+        Self::push_markdown_text_section(
+            &mut out,
+            "Extracted Output Text",
+            export.artifact_detail.reasoner_output_text.as_deref(),
+        );
+        Self::push_markdown_json_section(
+            &mut out,
+            "Parsed Proposal",
+            serde_json::to_value(&export.artifact_detail.parsed_proposal)?,
+        )?;
+        Self::push_markdown_json_section(
+            &mut out,
+            "Approved Proposal",
+            serde_json::to_value(&export.artifact_detail.approved_proposal)?,
+        )?;
+        Self::push_markdown_json_section(
+            &mut out,
+            "Failure Metadata",
+            serde_json::to_value(&export.artifact_detail.generation_failure)?,
+        )?;
+        Ok(out)
+    }
+
+    fn push_markdown_json_section(
+        out: &mut String,
+        title: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        out.push_str(&format!("## {title}\n"));
+        out.push_str("```json\n");
+        out.push_str(&serde_json::to_string_pretty(&value)?);
+        out.push_str("\n```\n\n");
+        Ok(())
+    }
+
+    fn push_markdown_text_section(out: &mut String, title: &str, value: Option<&str>) {
+        out.push_str(&format!("## {title}\n"));
+        match value {
+            Some(value) => {
+                out.push_str("```text\n");
+                out.push_str(value);
+                if !value.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n\n");
+            }
+            None => out.push_str("_none_\n\n"),
+        }
+    }
+
     fn print_draft_assignment(prefix: &str, draft: &orcas_core::DraftAssignment) {
         println!(
             "{prefix}_draft_assignment_target_work_unit_id: {}",
@@ -2880,7 +3119,10 @@ mod tests {
 
     use chrono::Utc;
     use orcas_core::{
-        CodexThreadBootstrapState, CodexThreadSendPolicy, SupervisorTurnProposalKind,
+        CodexThreadBootstrapState, CodexThreadSendPolicy, SupervisorPromptRenderArtifact,
+        SupervisorPromptRenderSpec, SupervisorProposalFailure, SupervisorProposalFailureStage,
+        SupervisorProposalStatus, SupervisorReasonerUsage, SupervisorResponseArtifact,
+        SupervisorResponseContentPart, SupervisorResponseOutputItem, SupervisorTurnProposalKind,
     };
 
     #[derive(Debug, Default)]
@@ -4305,5 +4547,150 @@ mod tests {
             notes: decision.notes.clone(),
             open: decision.status == SupervisorTurnDecisionStatus::ProposedToHuman,
         }
+    }
+
+    fn sample_proposal_artifact_export(
+        status: SupervisorProposalStatus,
+        failure: Option<SupervisorProposalFailure>,
+    ) -> ipc::SupervisorProposalArtifactExport {
+        ipc::SupervisorProposalArtifactExport {
+            proposal_id: "proposal-1".to_string(),
+            primary_work_unit_id: "wu-1".to_string(),
+            source_report_id: "report-1".to_string(),
+            proposal_status: status,
+            created_at: Utc::now(),
+            validated_at: Some(Utc::now()),
+            reviewed_at: Some(Utc::now()),
+            reviewed_by: Some("reviewer".to_string()),
+            review_note: Some("review note".to_string()),
+            approved_decision_id: Some("decision-1".to_string()),
+            approved_assignment_id: Some("assignment-2".to_string()),
+            artifact_summary: ipc::SupervisorProposalArtifactSummary {
+                proposal_id: "proposal-1".to_string(),
+                proposal_status: status,
+                prompt_artifact_present: true,
+                prompt_template_version: Some("supervisor_prompt.v1".to_string()),
+                prompt_hash: Some("prompt-hash".to_string()),
+                request_body_hash: Some("request-hash".to_string()),
+                response_artifact_present: true,
+                response_hash: Some("response-hash".to_string()),
+                raw_response_body_present: true,
+                raw_response_body_hash: Some("raw-hash".to_string()),
+                reasoner_backend: "test".to_string(),
+                reasoner_model: "test-model".to_string(),
+                reasoner_response_id: Some("resp-1".to_string()),
+                parsed_proposal_present: failure.is_none(),
+                approved_proposal_present: status == SupervisorProposalStatus::Approved,
+                generation_failure_stage: failure.as_ref().map(|value| value.stage),
+            },
+            artifact_detail: ipc::SupervisorProposalArtifactDetail {
+                proposal_id: "proposal-1".to_string(),
+                proposal_status: status,
+                created_at: Utc::now(),
+                validated_at: Some(Utc::now()),
+                reviewed_at: Some(Utc::now()),
+                reasoner_backend: "test".to_string(),
+                reasoner_model: "test-model".to_string(),
+                reasoner_response_id: Some("resp-1".to_string()),
+                prompt_render: Some(SupervisorPromptRenderArtifact {
+                    render_spec: SupervisorPromptRenderSpec {
+                        template_version: "supervisor_prompt.v1".to_string(),
+                        context_schema_version: "supervisor_context.v1".to_string(),
+                        proposal_schema_name: "supervisor_proposal".to_string(),
+                        proposal_schema_version: "supervisor_proposal.v1".to_string(),
+                        response_format: "json_schema".to_string(),
+                        strict_schema: true,
+                        context_serialization: "json_pretty".to_string(),
+                        style: "plain_text_markdown".to_string(),
+                    },
+                    instructions_text: "You are the Orcas supervisor reasoner.".to_string(),
+                    user_content_text: "SupervisorContextPack:\n{}".to_string(),
+                    context_pack_text: "{\n  \"schema_version\": \"supervisor_context.v1\"\n}"
+                        .to_string(),
+                    prompt_hash: "prompt-hash".to_string(),
+                    request_body_hash: Some("request-hash".to_string()),
+                    rendered_at: Utc::now(),
+                }),
+                response_artifact: Some(SupervisorResponseArtifact {
+                    backend_kind: "test".to_string(),
+                    model: "test-model".to_string(),
+                    response_id: Some("resp-1".to_string()),
+                    usage: Some(SupervisorReasonerUsage {
+                        input_tokens: Some(10),
+                        output_tokens: Some(20),
+                        total_tokens: Some(30),
+                    }),
+                    output_items: vec![SupervisorResponseOutputItem {
+                        item_type: "message".to_string(),
+                        role: Some("assistant".to_string()),
+                        status: Some("completed".to_string()),
+                        content: vec![SupervisorResponseContentPart {
+                            part_type: "output_text".to_string(),
+                            text: Some(
+                                "{\"schema_version\":\"supervisor_proposal.v1\"}".to_string(),
+                            ),
+                        }],
+                    }],
+                    extracted_output_text: Some(
+                        "{\"schema_version\":\"supervisor_proposal.v1\"}".to_string(),
+                    ),
+                    response_hash: "response-hash".to_string(),
+                    raw_response_body: Some("{\"id\":\"resp-1\"}".to_string()),
+                    raw_response_body_hash: Some("raw-hash".to_string()),
+                    captured_at: Utc::now(),
+                }),
+                reasoner_output_text: Some(
+                    "{\"schema_version\":\"supervisor_proposal.v1\"}".to_string(),
+                ),
+                parsed_proposal: None,
+                approved_proposal: None,
+                generation_failure: failure,
+            },
+        }
+    }
+
+    #[test]
+    fn proposal_artifact_export_json_is_lossless() {
+        let export = sample_proposal_artifact_export(SupervisorProposalStatus::Open, None);
+        let rendered =
+            SupervisorService::render_proposal_artifact_export_json(&export).expect("render json");
+        let round_trip: ipc::SupervisorProposalArtifactExport =
+            serde_json::from_str(&rendered).expect("parse export json");
+
+        assert_eq!(round_trip.proposal_id, export.proposal_id);
+        assert_eq!(
+            round_trip.artifact_summary.prompt_hash,
+            export.artifact_summary.prompt_hash
+        );
+        assert_eq!(
+            round_trip.artifact_detail.reasoner_output_text,
+            export.artifact_detail.reasoner_output_text
+        );
+        assert!(rendered.contains("\"prompt_render\""));
+        assert!(rendered.contains("\"response_artifact\""));
+    }
+
+    #[test]
+    fn proposal_artifact_export_markdown_is_structured() {
+        let export = sample_proposal_artifact_export(
+            SupervisorProposalStatus::GenerationFailed,
+            Some(SupervisorProposalFailure {
+                stage: SupervisorProposalFailureStage::ProposalMalformed,
+                message: "failed to decode supervisor proposal JSON".to_string(),
+            }),
+        );
+        let rendered = SupervisorService::render_proposal_artifact_export_markdown(&export)
+            .expect("render markdown");
+
+        assert!(rendered.contains("# Supervisor Proposal Artifact Export"));
+        assert!(rendered.contains("## Proposal Metadata"));
+        assert!(rendered.contains("## Artifact Summary"));
+        assert!(rendered.contains("## Prompt Artifact"));
+        assert!(rendered.contains("## Response Artifact"));
+        assert!(rendered.contains("## Extracted Output Text"));
+        assert!(rendered.contains("## Failure Metadata"));
+        assert!(rendered.contains("prompt-hash"));
+        assert!(rendered.contains("response-hash"));
+        assert!(rendered.contains("ProposalMalformed"));
     }
 }

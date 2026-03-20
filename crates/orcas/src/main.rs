@@ -204,6 +204,7 @@ enum ProposalsCommand {
     Get(ProposalRefArgs),
     ArtifactSummary(ProposalRefArgs),
     ArtifactDetail(ProposalRefArgs),
+    ArtifactExport(ProposalArtifactExportArgs),
     ListForWorkunit(WorkunitRefArgs),
     Approve(ProposalApproveArgs),
     Reject(ProposalRejectArgs),
@@ -412,6 +413,16 @@ struct ProposalRefArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+struct ProposalArtifactExportArgs {
+    #[arg(long)]
+    proposal: String,
+    #[arg(long, value_enum, default_value_t = ProposalArtifactExportFormatArg::Json)]
+    format: ProposalArtifactExportFormatArg,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
 struct ProposalCreateArgs {
     #[arg(long)]
     workunit: String,
@@ -590,6 +601,12 @@ enum DecisionTypeArg {
     Redirect,
     MarkComplete,
     EscalateToHuman,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProposalArtifactExportFormatArg {
+    Json,
+    Md,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -964,6 +981,22 @@ async fn main() -> Result<()> {
                 }
                 ProposalsCommand::ArtifactDetail(args) => {
                     service.proposal_artifact_detail_get(&args.proposal).await?;
+                }
+                ProposalsCommand::ArtifactExport(args) => {
+                    service
+                        .proposal_artifact_export(
+                            &args.proposal,
+                            match args.format {
+                                ProposalArtifactExportFormatArg::Json => {
+                                    service::ProposalArtifactExportFormat::Json
+                                }
+                                ProposalArtifactExportFormatArg::Md => {
+                                    service::ProposalArtifactExportFormat::Markdown
+                                }
+                            },
+                            args.output.as_deref(),
+                        )
+                        .await?;
                 }
                 ProposalsCommand::ListForWorkunit(args) => {
                     service.proposal_list_for_workunit(&args.workunit).await?;
@@ -1542,6 +1575,32 @@ mod tests {
                 command: ProposalsCommand::ArtifactDetail(args),
             } => {
                 assert_eq!(args.proposal, "proposal-1");
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_proposal_artifact_export_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "proposals",
+            "artifact-export",
+            "--proposal",
+            "proposal-1",
+            "--format",
+            "md",
+            "--output",
+            "/tmp/proposal.md",
+        ]);
+
+        match cli.command {
+            TopCommand::Proposals {
+                command: ProposalsCommand::ArtifactExport(args),
+            } => {
+                assert_eq!(args.proposal, "proposal-1");
+                assert!(matches!(args.format, ProposalArtifactExportFormatArg::Md));
+                assert_eq!(args.output, Some(PathBuf::from("/tmp/proposal.md")));
             }
             other => panic!("unexpected command parse: {other:?}"),
         }

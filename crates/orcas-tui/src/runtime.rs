@@ -1,3 +1,10 @@
+//! TUI runtime loop and recovery scheduler.
+//!
+//! This module drives effect execution, IPC interaction, and reconnect
+//! scheduling for the TUI. Recovery is snapshot-first and event subscriptions
+//! are socket-bound, so this layer rebuilds runtime state around reconnect
+//! boundaries instead of trying to replay missed daemon history.
+
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,11 +22,17 @@ const RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy)]
+/// Internal timer for a deferred reconnect attempt.
 struct ReconnectSchedule {
     due_at: Instant,
 }
 
 #[derive(Debug)]
+/// Bookkeeping for a finished effect.
+///
+/// Some completions intentionally schedule follow-up effects or connection
+/// invalidation because recovery is staged: snapshot first, then event
+/// subscription, then incremental updates.
 struct EffectCompletion {
     effect: Effect,
     actions: Vec<Action>,
@@ -59,6 +72,11 @@ impl EffectCompletion {
     }
 }
 
+/// Runtime controller for the TUI reducer.
+///
+/// The runtime owns effect execution, event subscription, and reconnect timing.
+/// It does not own durable domain state; it rebuilds state by feeding snapshots
+/// and incremental events back through the reducer.
 pub struct AppRuntime<B: TuiBackend> {
     backend: Arc<B>,
     state: AppState,
@@ -183,6 +201,8 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
             self.schedule_reconnect();
         }
         if completion.request_event_subscription && self.event_rx.is_none() {
+            // Subscription is recreated only after a fresh snapshot has been
+            // applied; the old socket stream is not treated as replayable state.
             self.enqueue_effect(Effect::SubscribeEvents);
         }
 
@@ -243,6 +263,8 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
             return;
         }
         self.reconnect = None;
+        // Reconnect always re-enters through a snapshot reload rather than
+        // assuming missed daemon events can be replayed.
         if !self
             .pending_effects
             .iter()
@@ -274,6 +296,9 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
         match effect {
             effect @ Effect::RefreshSnapshot => match backend.get_snapshot().await {
                 Ok(snapshot) => {
+                    // The snapshot re-establishes the current state first. Once
+                    // it is applied, the runtime requests a new event
+                    // subscription on the same socket lifecycle.
                     let mut completion = EffectCompletion::success(
                         effect,
                         vec![Action::Event(UiEvent::SnapshotLoaded(snapshot))],
@@ -289,6 +314,9 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
             },
             effect @ Effect::SubscribeEvents => match backend.subscribe_events().await {
                 Ok(events) => {
+                    // This subscription is tied to the current daemon socket.
+                    // If it fails, the runtime invalidates the stream and lets
+                    // reconnect rebuild it from a fresh snapshot.
                     let mut completion = EffectCompletion::success(effect, Vec::new());
                     completion.set_event_rx = Some(events);
                     completion
@@ -305,6 +333,8 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 }
             },
             effect @ Effect::ScheduleReconnect => {
+                // Scheduling reconnect is a state-machine transition, not a
+                // replay request; the old event stream is intentionally dropped.
                 let mut completion = EffectCompletion::success(effect, Vec::new());
                 completion.clear_event_rx = true;
                 completion.schedule_reconnect = true;
@@ -980,6 +1010,61 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
                 )
                 .await
             }
+            Effect::ExportProposalArtifact {
+                proposal_id,
+                destination,
+                format,
+            } => {
+                let effect = Effect::ExportProposalArtifact {
+                    proposal_id: proposal_id.clone(),
+                    destination: destination.clone(),
+                    format,
+                };
+                let success_proposal_id = proposal_id.clone();
+                let success_destination = destination.clone();
+                let failure_proposal_id = proposal_id.clone();
+                let success_format = format;
+                Self::run_backend_effect(
+                    backend,
+                    effect,
+                    BackendCommand::GetProposalArtifactExport {
+                        proposal_id: proposal_id.clone(),
+                    },
+                    move |response| match response {
+                        BackendCommandResult::ProposalArtifactExport(export) => {
+                            vec![Action::Event(
+                                match write_proposal_artifact_export(
+                                    &success_destination,
+                                    success_format,
+                                    &export,
+                                ) {
+                                    Ok(()) => UiEvent::ProposalArtifactExported {
+                                        proposal_id: success_proposal_id.clone(),
+                                        destination: success_destination.clone(),
+                                        format: success_format,
+                                    },
+                                    Err(error) => UiEvent::ProposalArtifactExportFailed {
+                                        proposal_id: success_proposal_id.clone(),
+                                        message: error.to_string(),
+                                        format: success_format,
+                                    },
+                                },
+                            )]
+                        }
+                        other => vec![Action::Event(UiEvent::Error(format!(
+                            "unexpected proposal artifact export response: {other:?}"
+                        )))],
+                    },
+                    move |error| {
+                        Action::Event(UiEvent::ProposalArtifactExportFailed {
+                            proposal_id: failure_proposal_id.clone(),
+                            message: error.to_string(),
+                            format,
+                        })
+                    },
+                )
+                .await
+            }
             effect @ Effect::LoadModels => {
                 Self::run_backend_effect(
                     backend,
@@ -1518,6 +1603,140 @@ impl<B: TuiBackend + Send + Sync + 'static> AppRuntime<B> {
     }
 }
 
+fn write_proposal_artifact_export(
+    destination: &str,
+    format: crate::app::ReviewArtifactExportFormat,
+    export: &orcas_core::ipc::SupervisorProposalArtifactExport,
+) -> Result<()> {
+    let path = std::path::Path::new(destination);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let serialized = match format {
+        crate::app::ReviewArtifactExportFormat::Json => {
+            format!("{}\n", serde_json::to_string_pretty(export)?)
+        }
+        crate::app::ReviewArtifactExportFormat::Markdown => {
+            render_proposal_artifact_export_markdown(export)?
+        }
+    };
+    std::fs::write(path, serialized)?;
+    Ok(())
+}
+
+fn render_proposal_artifact_export_markdown(
+    export: &orcas_core::ipc::SupervisorProposalArtifactExport,
+) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("# Supervisor Proposal Artifact Export\n\n");
+    out.push_str("## Proposal Metadata\n");
+    out.push_str(&format!("- Proposal ID: `{}`\n", export.proposal_id));
+    out.push_str(&format!(
+        "- Work Unit ID: `{}`\n",
+        export.primary_work_unit_id
+    ));
+    out.push_str(&format!(
+        "- Source Report ID: `{}`\n",
+        export.source_report_id
+    ));
+    out.push_str(&format!("- Status: `{:?}`\n", export.proposal_status));
+    out.push_str(&format!("- Created At: `{}`\n", export.created_at));
+    out.push_str(&format!(
+        "- Validated At: `{}`\n",
+        export
+            .validated_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    ));
+    out.push_str(&format!(
+        "- Reviewed At: `{}`\n",
+        export
+            .reviewed_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    ));
+    out.push_str(&format!(
+        "- Reviewed By: `{}`\n",
+        export.reviewed_by.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!(
+        "- Review Note: `{}`\n",
+        export.review_note.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!(
+        "- Approved Decision ID: `{}`\n",
+        export.approved_decision_id.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!(
+        "- Approved Assignment ID: `{}`\n\n",
+        export.approved_assignment_id.as_deref().unwrap_or("-")
+    ));
+
+    push_markdown_json_section(
+        &mut out,
+        "Artifact Summary",
+        serde_json::to_value(&export.artifact_summary)?,
+    )?;
+    push_markdown_json_section(
+        &mut out,
+        "Prompt Artifact",
+        serde_json::to_value(&export.artifact_detail.prompt_render)?,
+    )?;
+    push_markdown_json_section(
+        &mut out,
+        "Response Artifact",
+        serde_json::to_value(&export.artifact_detail.response_artifact)?,
+    )?;
+    push_markdown_text_section(
+        &mut out,
+        "Extracted Output Text",
+        export.artifact_detail.reasoner_output_text.as_deref(),
+    );
+    push_markdown_json_section(
+        &mut out,
+        "Parsed Proposal",
+        serde_json::to_value(&export.artifact_detail.parsed_proposal)?,
+    )?;
+    push_markdown_json_section(
+        &mut out,
+        "Approved Proposal",
+        serde_json::to_value(&export.artifact_detail.approved_proposal)?,
+    )?;
+    push_markdown_json_section(
+        &mut out,
+        "Failure Metadata",
+        serde_json::to_value(&export.artifact_detail.generation_failure)?,
+    )?;
+    Ok(out)
+}
+
+fn push_markdown_json_section(
+    out: &mut String,
+    title: &str,
+    value: serde_json::Value,
+) -> Result<()> {
+    out.push_str(&format!("## {title}\n"));
+    out.push_str("```json\n");
+    out.push_str(&serde_json::to_string_pretty(&value)?);
+    out.push_str("\n```\n\n");
+    Ok(())
+}
+
+fn push_markdown_text_section(out: &mut String, title: &str, value: Option<&str>) {
+    out.push_str(&format!("## {title}\n"));
+    match value {
+        Some(value) => {
+            out.push_str("```text\n");
+            out.push_str(value);
+            if !value.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
+        None => out.push_str("_none_\n\n"),
+    }
+}
+
 fn effect_label(effect: &Effect) -> &'static str {
     match effect {
         Effect::RefreshSnapshot => "refresh_snapshot",
@@ -1547,6 +1766,7 @@ fn effect_label(effect: &Effect) -> &'static str {
         }
         Effect::LoadProposalArtifactSummary { .. } => "load_proposal_artifact_summary",
         Effect::LoadProposalArtifactDetail { .. } => "load_proposal_artifact_detail",
+        Effect::ExportProposalArtifact { .. } => "export_proposal_artifact",
         Effect::SubmitPrompt { .. } => "submit_prompt",
         Effect::ProposeSteerDecision { .. } => "propose_steer_decision",
         Effect::ReplacePendingSteerDecision { .. } => "replace_pending_steer_decision",
@@ -1587,6 +1807,7 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         }
         BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
         BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
+        BackendCommand::GetProposalArtifactExport { .. } => "get_proposal_artifact_export",
         BackendCommand::GetActiveTurns => "get_active_turns",
         BackendCommand::LoadModels => "load_models",
         BackendCommand::StartDaemon => "start_daemon",
@@ -1680,6 +1901,15 @@ fn user_action_label(action: &UserAction) -> &'static str {
         UserAction::OpenSelectedProposalArtifactDetail => "open_selected_proposal_artifact_detail",
         UserAction::CloseReviewArtifactDetail => "close_review_artifact_detail",
         UserAction::ScrollReviewArtifactDetail(_) => "scroll_review_artifact_detail",
+        UserAction::OpenSelectedProposalArtifactExport => "open_selected_proposal_artifact_export",
+        UserAction::CloseReviewArtifactExport => "close_review_artifact_export",
+        UserAction::SubmitReviewArtifactExport => "submit_review_artifact_export",
+        UserAction::ReviewArtifactExportToggleFormat => "review_artifact_export_toggle_format",
+        UserAction::ReviewArtifactExportAppend(_) => "review_artifact_export_append",
+        UserAction::ReviewArtifactExportBackspace => "review_artifact_export_backspace",
+        UserAction::ReviewArtifactExportDelete => "review_artifact_export_delete",
+        UserAction::ReviewArtifactExportMoveLeft => "review_artifact_export_move_left",
+        UserAction::ReviewArtifactExportMoveRight => "review_artifact_export_move_right",
     }
 }
 

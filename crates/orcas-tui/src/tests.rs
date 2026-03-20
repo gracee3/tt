@@ -1,8 +1,12 @@
+use std::fs;
+use std::path::PathBuf;
+
 use chrono::Utc;
 
 use crate::app::{
     BannerLevel, CollaborationFocus, DaemonConnectionPhase, DaemonLifecycleState, MainFooterState,
-    MainHierarchySelection, ProgramView, ReviewSelection, TopLevelView, UiEvent, UserAction,
+    MainHierarchySelection, ProgramView, ReviewArtifactExportFormat, ReviewSelection, TopLevelView,
+    UiEvent, UserAction,
 };
 use crate::backend::BackendCommand;
 use crate::codex::{
@@ -75,6 +79,19 @@ fn sample_thread_view(id: &str, preview: &str, output: &str) -> ipc::ThreadView 
             }],
         }],
     }
+}
+
+fn unique_export_path(proposal_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "orcas-tui-export-test-{proposal_id}-{}.json",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ))
+}
+
+fn default_review_export_path(proposal_id: &str, format: ReviewArtifactExportFormat) -> PathBuf {
+    std::env::temp_dir()
+        .join("orcas-proposal-exports")
+        .join(format!("{proposal_id}.{}", format.extension()))
 }
 
 fn sample_codex_assignment_summary(
@@ -4808,6 +4825,316 @@ async fn review_queue_rows_show_artifact_triage_cues() {
             .as_deref()
             .is_some_and(|secondary| secondary.contains("failure=backend"))
     );
+
+    let footer = review.footer;
+    assert!(footer.actions.iter().any(|action| action.key == "x"));
+}
+
+#[tokio::test]
+async fn review_export_action_is_not_shown_for_decision_rows() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+
+    let review = harness.review_vm();
+    assert!(matches!(review.queue.selected_index, Some(0)));
+    assert!(!review.footer.actions.iter().any(|action| action.key == "x"));
+}
+
+#[tokio::test]
+async fn review_artifact_export_defaults_to_json_with_json_destination() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+
+    let export = harness
+        .state()
+        .review_view
+        .artifact_export
+        .as_ref()
+        .expect("export state");
+    assert_eq!(export.format, ReviewArtifactExportFormat::Json);
+    assert!(export.destination.value.ends_with(".json"));
+    assert!(export.destination_is_auto);
+}
+
+#[tokio::test]
+async fn review_artifact_export_toggle_format_updates_destination_extension() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+    harness
+        .dispatch(UserAction::ReviewArtifactExportToggleFormat)
+        .await;
+
+    let export = harness
+        .state()
+        .review_view
+        .artifact_export
+        .as_ref()
+        .expect("export state");
+    assert_eq!(export.format, ReviewArtifactExportFormat::Markdown);
+    assert!(export.destination.value.ends_with(".md"));
+    assert!(export.destination_is_auto);
+}
+
+#[tokio::test]
+async fn review_proposal_artifact_export_writes_json_bundle() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+
+    let destination = unique_export_path("proposal-1");
+    let destination_string = destination.display().to_string();
+    if destination.exists() {
+        let _ = fs::remove_file(&destination);
+    }
+    for _ in 0..harness
+        .state()
+        .review_view
+        .artifact_export
+        .as_ref()
+        .expect("export state")
+        .destination
+        .value
+        .len()
+    {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportBackspace)
+            .await;
+    }
+    for ch in destination_string.chars() {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportAppend(ch))
+            .await;
+    }
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    let written = fs::read_to_string(&destination).expect("export file");
+    assert!(written.contains("\"proposal_id\": \"proposal-1\""));
+    assert!(written.contains("\"artifact_summary\""));
+    assert!(written.contains("\"artifact_detail\""));
+    assert!(written.contains("\"prompt_render\""));
+    assert!(written.contains("\"response_artifact\""));
+    assert!(
+        harness
+            .state()
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.message.contains(&destination_string))
+    );
+    assert!(harness.state().review_view.artifact_export.is_none());
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactExport { proposal_id }
+            if proposal_id == "proposal-1"
+    )));
+
+    let _ = fs::remove_file(destination);
+}
+
+#[tokio::test]
+async fn review_proposal_artifact_export_writes_markdown_bundle() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+    harness
+        .dispatch(UserAction::ReviewArtifactExportToggleFormat)
+        .await;
+
+    let destination =
+        default_review_export_path("proposal-1", ReviewArtifactExportFormat::Markdown);
+    if destination.exists() {
+        let _ = fs::remove_file(&destination);
+    }
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    let written = fs::read_to_string(&destination).expect("markdown export file");
+    assert!(written.contains("# Supervisor Proposal Artifact Export"));
+    assert!(written.contains("## Proposal Metadata"));
+    assert!(written.contains("## Failure Metadata"));
+    assert!(written.contains("## Prompt Artifact"));
+    assert!(written.contains("## Response Artifact"));
+    assert!(
+        harness
+            .state()
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.message.contains(".md"))
+    );
+
+    let _ = fs::remove_file(destination);
+}
+
+#[tokio::test]
+async fn failure_proposal_artifact_export_writes_json_bundle() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+
+    let destination = unique_export_path("proposal-failure-1");
+    let destination_string = destination.display().to_string();
+    if destination.exists() {
+        let _ = fs::remove_file(&destination);
+    }
+    for _ in 0..harness
+        .state()
+        .review_view
+        .artifact_export
+        .as_ref()
+        .expect("export state")
+        .destination
+        .value
+        .len()
+    {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportBackspace)
+            .await;
+    }
+    for ch in destination_string.chars() {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportAppend(ch))
+            .await;
+    }
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    let written = fs::read_to_string(&destination).expect("failure export file");
+    assert!(written.contains("\"proposal_id\": \"proposal-failure-1\""));
+    assert!(written.contains("\"proposal_status\""));
+    assert!(written.contains("request timed out while supervisor proposal was generating"));
+
+    let _ = fs::remove_file(destination);
+}
+
+#[tokio::test]
+async fn failure_proposal_artifact_export_writes_markdown_bundle() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-2"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+    harness
+        .dispatch(UserAction::ReviewArtifactExportToggleFormat)
+        .await;
+
+    let destination =
+        default_review_export_path("proposal-failure-1", ReviewArtifactExportFormat::Markdown);
+    if destination.exists() {
+        let _ = fs::remove_file(&destination);
+    }
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    let written = fs::read_to_string(&destination).expect("failure markdown export file");
+    assert!(written.contains("# Supervisor Proposal Artifact Export"));
+    assert!(written.contains("## Proposal Metadata"));
+    assert!(written.contains("## Failure Metadata"));
+    assert!(written.contains("request timed out while supervisor proposal was generating"));
+
+    let _ = fs::remove_file(destination);
+}
+
+#[tokio::test]
+async fn review_proposal_artifact_export_failure_surfaces_banner_and_keeps_prompt_open() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+    harness.fail_next_command("export unavailable").await;
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    assert!(
+        harness
+            .state()
+            .review_view
+            .artifact_export
+            .as_ref()
+            .and_then(|export| export.error.as_ref())
+            .is_some_and(|error| error.contains("export unavailable"))
+    );
+    assert!(
+        harness
+            .state()
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.level == BannerLevel::Error
+                && banner.message.contains("export unavailable"))
+    );
 }
 
 #[tokio::test]
@@ -4945,6 +5272,64 @@ async fn review_artifact_flow_uses_explicit_summary_and_detail_commands_not_snap
         harness.snapshot_requests().await,
         initial_snapshot_requests + 1
     );
+}
+
+#[tokio::test]
+async fn review_artifact_export_uses_explicit_export_command_not_snapshot() {
+    let mut harness = AppHarness::new(sample_review_snapshot()).await.unwrap();
+    harness
+        .set_workunit_detail(sample_workunit_detail("wu-1"))
+        .await;
+    let initial_snapshot_requests = harness.snapshot_requests().await;
+    harness
+        .dispatch(UserAction::ShowProgramView(ProgramView::Review))
+        .await;
+    harness.dispatch(UserAction::Refresh).await;
+    harness.dispatch(UserAction::SelectNextInView).await;
+    harness
+        .dispatch(UserAction::OpenSelectedProposalArtifactExport)
+        .await;
+    let destination = unique_export_path("proposal-1-explicit");
+    let destination_string = destination.display().to_string();
+    for _ in 0..harness
+        .state()
+        .review_view
+        .artifact_export
+        .as_ref()
+        .expect("export state")
+        .destination
+        .value
+        .len()
+    {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportBackspace)
+            .await;
+    }
+    for ch in destination_string.chars() {
+        harness
+            .dispatch(UserAction::ReviewArtifactExportAppend(ch))
+            .await;
+    }
+    harness
+        .dispatch(UserAction::SubmitReviewArtifactExport)
+        .await;
+
+    let commands = harness.recorded_commands().await;
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactSummaryListForWorkUnit { .. }
+    )));
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        BackendCommand::GetProposalArtifactExport { proposal_id }
+            if proposal_id == "proposal-1"
+    )));
+    assert_eq!(
+        harness.snapshot_requests().await,
+        initial_snapshot_requests + 1
+    );
+
+    let _ = fs::remove_file(destination);
 }
 
 #[tokio::test]

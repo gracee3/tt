@@ -315,6 +315,15 @@ fn user_action_label(action: &UserAction) -> &'static str {
         UserAction::OpenSelectedProposalArtifactDetail => "open_selected_proposal_artifact_detail",
         UserAction::CloseReviewArtifactDetail => "close_review_artifact_detail",
         UserAction::ScrollReviewArtifactDetail(_) => "scroll_review_artifact_detail",
+        UserAction::OpenSelectedProposalArtifactExport => "open_selected_proposal_artifact_export",
+        UserAction::CloseReviewArtifactExport => "close_review_artifact_export",
+        UserAction::SubmitReviewArtifactExport => "submit_review_artifact_export",
+        UserAction::ReviewArtifactExportToggleFormat => "review_artifact_export_toggle_format",
+        UserAction::ReviewArtifactExportAppend(_) => "review_artifact_export_append",
+        UserAction::ReviewArtifactExportBackspace => "review_artifact_export_backspace",
+        UserAction::ReviewArtifactExportDelete => "review_artifact_export_delete",
+        UserAction::ReviewArtifactExportMoveLeft => "review_artifact_export_move_left",
+        UserAction::ReviewArtifactExportMoveRight => "review_artifact_export_move_right",
     }
 }
 
@@ -406,6 +415,23 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
     let in_supervisor_view = current_view == TopLevelView::Supervisor;
     let in_threads_view = current_view == TopLevelView::Threads;
     let in_overview_program = current_view == TopLevelView::Overview;
+    if in_review_view && state.review_view.artifact_export.is_some() {
+        return match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => Some(UserAction::CloseReviewArtifactExport),
+            (KeyCode::Enter, _) => Some(UserAction::SubmitReviewArtifactExport),
+            (KeyCode::Tab, KeyModifiers::NONE) => {
+                Some(UserAction::ReviewArtifactExportToggleFormat)
+            }
+            (KeyCode::Backspace, _) => Some(UserAction::ReviewArtifactExportBackspace),
+            (KeyCode::Delete, _) => Some(UserAction::ReviewArtifactExportDelete),
+            (KeyCode::Left, _) => Some(UserAction::ReviewArtifactExportMoveLeft),
+            (KeyCode::Right, _) => Some(UserAction::ReviewArtifactExportMoveRight),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                Some(UserAction::ReviewArtifactExportAppend(ch))
+            }
+            _ => None,
+        };
+    }
     if in_review_view && state.review_view.artifact_detail.is_some() {
         return match key.code {
             KeyCode::Esc => Some(UserAction::CloseReviewArtifactDetail),
@@ -437,6 +463,9 @@ fn action_for_key(state: &orcas_tui::app::AppState, key: KeyEvent) -> Option<Use
         }
         KeyCode::Char('v') if in_review_view => {
             Some(UserAction::OpenSelectedProposalArtifactDetail)
+        }
+        KeyCode::Char('x') if in_review_view => {
+            Some(UserAction::OpenSelectedProposalArtifactExport)
         }
         KeyCode::Char('s') if in_threads_view => Some(UserAction::ProposeSteerForSelectedThread),
         KeyCode::Char('e') if in_threads_view => {
@@ -757,6 +786,13 @@ mod tests {
             ),
             Some(UserAction::OpenSelectedProposalArtifactDetail)
         );
+        assert_eq!(
+            action_for_key(
+                &state_for_overview_program(ProgramView::Review),
+                key(KeyCode::Char('x'))
+            ),
+            Some(UserAction::OpenSelectedProposalArtifactExport)
+        );
     }
 
     #[test]
@@ -780,6 +816,53 @@ mod tests {
             Some(UserAction::ScrollReviewArtifactDetail(-1))
         );
         assert_eq!(action_for_key(&state, key(KeyCode::Char('a'))), None);
+    }
+
+    #[test]
+    fn review_artifact_export_overlay_captures_edit_and_submit_keys() {
+        let mut state = state_for_overview_program(ProgramView::Review);
+        state.review_view.artifact_export = Some(orcas_tui::app::ReviewArtifactExportState {
+            proposal_id: "proposal-1".to_string(),
+            format: orcas_tui::app::ReviewArtifactExportFormat::Json,
+            destination: orcas_tui::app::FooterFieldState::new("/tmp/proposal-1.json"),
+            auto_destination: "/tmp/proposal-1.json".to_string(),
+            destination_is_auto: true,
+            in_flight: false,
+            error: None,
+        });
+
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Esc)),
+            Some(UserAction::CloseReviewArtifactExport)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Enter)),
+            Some(UserAction::SubmitReviewArtifactExport)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Tab)),
+            Some(UserAction::ReviewArtifactExportToggleFormat)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Backspace)),
+            Some(UserAction::ReviewArtifactExportBackspace)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Delete)),
+            Some(UserAction::ReviewArtifactExportDelete)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Left)),
+            Some(UserAction::ReviewArtifactExportMoveLeft)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Right)),
+            Some(UserAction::ReviewArtifactExportMoveRight)
+        );
+        assert_eq!(
+            action_for_key(&state, key(KeyCode::Char('x'))),
+            Some(UserAction::ReviewArtifactExportAppend('x'))
+        );
     }
 
     #[test]

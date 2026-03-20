@@ -1,3 +1,14 @@
+//! Local daemon process lifecycle and discovery.
+//!
+//! This module is responsible for finding, validating, starting, stopping, and
+//! restarting the Orcas daemon under the current user-scoped runtime model. It
+//! is not a durable orchestration system: it reasons about socket ownership,
+//! runtime metadata, and local launch overrides so higher layers can decide
+//! whether a daemon is running, stale, or needs to be spawned.
+//!
+//! Read this alongside `orcasd::client` for socket-lifetime request behavior
+//! and `orcas_core::ipc` for the daemon/runtime metadata carried over the wire.
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -33,6 +44,9 @@ pub struct OrcasRuntimeOverrides {
 }
 
 impl OrcasRuntimeOverrides {
+    /// Runtime overrides come from environment variables and are later layered
+    /// on top of the persisted config. They only affect the current
+    /// user-scoped process tree and do not imply any cross-restart persistence.
     pub fn from_env() -> Self {
         let codex_bin = std::env::var_os(ENV_CODEX_BIN).map(PathBuf::from);
         let listen_url = std::env::var(ENV_CODEX_LISTEN_URL).ok();
@@ -72,6 +86,11 @@ impl OrcasRuntimeOverrides {
     }
 }
 
+/// Launch policy for the local daemon process.
+///
+/// `Never` is for status checks only, `IfNeeded` preserves the current
+/// user-scoped runtime contract, and `Always` forces a restart rather than
+/// trying to treat a stale socket as healthy.
 #[derive(Debug, Clone, Copy)]
 pub enum OrcasDaemonLaunch {
     Never,
@@ -79,6 +98,11 @@ pub enum OrcasDaemonLaunch {
     Always,
 }
 
+/// Observable socket/runtime state for the local daemon process.
+///
+/// `running` reflects socket responsiveness, while the stale flags identify
+/// runtime metadata or sockets that exist on disk but no longer correspond to a
+/// healthy daemon process.
 #[derive(Debug, Clone)]
 pub struct OrcasDaemonSocketStatus {
     pub socket_path: PathBuf,
@@ -130,6 +154,9 @@ impl OrcasDaemonProcessManager {
     }
 
     pub async fn status(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        // This is an operational truth check, not a durability check: it
+        // classifies socket responsiveness, stale metadata, and binary
+        // mismatches so higher layers can decide whether to launch or repair.
         debug!(
             socket = %self.paths.socket_file.display(),
             logs = %self.paths.daemon_log_file.display(),
@@ -198,6 +225,9 @@ impl OrcasDaemonProcessManager {
         &self,
         launch: OrcasDaemonLaunch,
     ) -> OrcasResult<OrcasDaemonSocketStatus> {
+        // `IfNeeded` means "spawn in the current user-scoped runtime if the
+        // socket is not responsive." It does not try to preserve or reconstruct
+        // anything across daemon restarts.
         debug!(?launch, socket = %self.paths.socket_file.display(), "ensure_running called");
         let status = self.status().await?;
         match launch {
@@ -228,6 +258,9 @@ impl OrcasDaemonProcessManager {
     }
 
     pub async fn restart(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        // Restart means stop the current local daemon if one exists, clean up
+        // stale runtime artifacts, then spawn a fresh process under the current
+        // user-scoped runtime configuration.
         debug!("restarting daemon");
         let status = self.status().await?;
         if status.running {
@@ -244,6 +277,9 @@ impl OrcasDaemonProcessManager {
     }
 
     pub async fn stop(&self) -> OrcasResult<OrcasDaemonSocketStatus> {
+        // Stop is best-effort and local: it signals the current daemon process
+        // or removes stale runtime files, but it does not promise any cross-
+        // restart continuity for sockets or background work.
         debug!("stopping daemon");
         let status = self.status().await?;
         if status.running {
@@ -384,6 +420,9 @@ impl OrcasDaemonProcessManager {
     }
 
     async fn cleanup_stale_runtime(&self) -> OrcasResult<()> {
+        // Remove only on-disk artifacts that no longer belong to a responsive
+        // daemon. This keeps stale socket/metadata files from masquerading as
+        // a healthy process without pretending to be a process supervisor.
         let status = self.status().await?;
         if status.stale_socket && tokio::fs::try_exists(&self.paths.socket_file).await? {
             tokio::fs::remove_file(&self.paths.socket_file).await?;
@@ -515,6 +554,8 @@ impl OrcasDaemonProcessManager {
     pub async fn runtime_metadata_for_current_process(
         paths: &AppPaths,
     ) -> OrcasResult<ipc::DaemonRuntimeMetadata> {
+        // Capture the current process and user-scoped runtime paths so a later
+        // status check can tell which daemon instance owns the socket.
         let binary_path = std::env::var(ENV_DAEMON_BINARY_PATH)
             .map(PathBuf::from)
             .or_else(|_| std::env::current_exe())
@@ -542,6 +583,7 @@ impl OrcasDaemonProcessManager {
         paths: &AppPaths,
         runtime: &ipc::DaemonRuntimeMetadata,
     ) -> OrcasResult<()> {
+        // The metadata file is an operational breadcrumb, not durable state.
         paths.ensure().await?;
         let raw = serde_json::to_string_pretty(runtime)?;
         tokio::fs::write(&paths.daemon_metadata_file, raw).await?;
@@ -551,11 +593,15 @@ impl OrcasDaemonProcessManager {
     pub async fn read_runtime_metadata(
         paths: &AppPaths,
     ) -> OrcasResult<ipc::DaemonRuntimeMetadata> {
+        // Missing or invalid metadata is treated as "not available", not as a
+        // fatal corruption event for the whole runtime model.
         let raw = tokio::fs::read_to_string(&paths.daemon_metadata_file).await?;
         Ok(serde_json::from_str(&raw)?)
     }
 
     pub async fn socket_responsive(path: &Path) -> bool {
+        // Responsive means the socket accepts a connection quickly, not that
+        // the daemon has fully recovered its higher-level state.
         tokio::time::timeout(Duration::from_millis(300), UnixStream::connect(path))
             .await
             .map(|result| result.is_ok())
@@ -585,6 +631,8 @@ impl OrcasDaemonProcessManager {
     }
 
     async fn fetch_daemon_status(paths: &AppPaths) -> Option<ipc::DaemonStatusResponse> {
+        // Best-effort status fetch over a fresh client connection. If the socket
+        // is dead or mid-restart, callers fall back to local status signals.
         let client = OrcasIpcClient::connect(paths).await.ok()?;
         client.daemon_status().await.ok()
     }

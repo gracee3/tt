@@ -28,6 +28,9 @@ pub(super) fn render_surface(frame: &mut Frame<'_>, state: &AppState) {
     render_header(frame, review.header.clone(), layout[0]);
     render_body(frame, review.queue, review.detail_panel, layout[1]);
     frame.render_widget(render_footer(review.footer), layout[2]);
+    if let Some(overlay) = review.artifact_export_overlay {
+        render_export_overlay(frame, overlay);
+    }
     if let Some(overlay) = review.artifact_detail_overlay {
         render_artifact_overlay(frame, overlay);
     }
@@ -293,6 +296,31 @@ fn render_artifact_overlay(
                 .border_style(focus_block_style(true)),
         )
         .scroll((scroll_offset as u16, 0))
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_export_overlay(
+    frame: &mut Frame<'_>,
+    overlay: view_model::ReviewArtifactExportOverlayViewModel,
+) {
+    let area = centered_rect(74, 34, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(Text::from(
+            overlay
+                .lines
+                .into_iter()
+                .map(|line| Line::styled(line, value_style()))
+                .collect::<Vec<_>>(),
+        ))
+        .block(
+            Block::default()
+                .title(Line::styled(overlay.title, panel_title_style(true)))
+                .borders(Borders::ALL)
+                .border_style(focus_block_style(true)),
+        )
         .wrap(Wrap { trim: false }),
         area,
     );

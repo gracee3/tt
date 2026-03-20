@@ -1,3 +1,10 @@
+//! TUI-local PTY-backed Codex session management.
+//!
+//! These sessions are an operator convenience layer owned by the TUI process.
+//! They are separate from daemon-owned state and from authority tracked-thread
+//! records. Attach, detach, and reattach are local PTY lifecycle operations and
+//! do not imply daemon persistence or restart recovery.
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -61,6 +68,10 @@ impl fmt::Display for CodexSessionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Rolling history of TUI-local PTY sessions for a thread.
+///
+/// This is a local UX history, not a daemon-owned history of the authority
+/// tracked-thread record.
 pub struct CodexThreadSessionSummary {
     pub session_id: CodexSessionId,
     pub thread_id: String,
@@ -71,6 +82,7 @@ pub struct CodexThreadSessionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Per-thread local PTY session history.
 pub struct CodexThreadSessions {
     pub thread_id: String,
     pub sessions: Vec<CodexThreadSessionSummary>,
@@ -84,6 +96,10 @@ impl CodexThreadSessions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Descriptor for launching or reattaching a local Codex PTY session.
+///
+/// The descriptor is built from the current TUI selection and daemon-provided
+/// runtime info, but the resulting PTY process is owned by the TUI process.
 pub struct CodexResumeDescriptor {
     pub thread_id: String,
     pub program: PathBuf,
@@ -95,6 +111,8 @@ pub struct CodexResumeDescriptor {
 
 impl CodexResumeDescriptor {
     pub fn for_selected_thread(state: &AppState) -> Result<Self, CodexResumeDescriptorError> {
+        // Build the local PTY command from the selected thread and the current
+        // daemon runtime info. This does not create or persist daemon state.
         let daemon = state
             .daemon
             .as_ref()
@@ -176,6 +194,11 @@ impl fmt::Display for CodexResumeDescriptorError {
 impl std::error::Error for CodexResumeDescriptorError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Local PTY session state for a selected thread.
+///
+/// `Launching` and `Attached` are live states. `Detached` means the PTY host
+/// is still present and can be reattached while the TUI process lives, while
+/// `Exited` and `Failed` are terminal for the local session.
 pub enum CodexSessionState {
     Launching,
     Attached { pid: u32 },
@@ -227,6 +250,10 @@ impl From<PtyExitStatus> for CodexExit {
 }
 
 #[derive(Debug)]
+/// Local PTY-backed Codex session owned by the TUI process.
+///
+/// The session tracks the PTY descriptor, current lifecycle state, and local
+/// output buffer. It is not daemon-persisted runtime state.
 pub struct CodexSession {
     pub id: CodexSessionId,
     pub thread_id: String,
@@ -258,6 +285,8 @@ impl CodexSession {
     pub fn mark_attached(&mut self, pid: u32) -> Result<(), SessionTransitionError> {
         match self.state {
             CodexSessionState::Launching | CodexSessionState::Detached { .. } => {
+                // Reattach is a local PTY transition: the TUI may reconnect to
+                // the same process while the local host remains alive.
                 self.state = CodexSessionState::Attached { pid };
                 self.last_activity_at = Some(Instant::now());
                 Ok(())
@@ -271,6 +300,8 @@ impl CodexSession {
     pub fn mark_detached(&mut self) -> Result<(), SessionTransitionError> {
         match self.state {
             CodexSessionState::Attached { pid } => {
+                // Detach keeps the PTY host alive so the same local session can
+                // later be reattached by the TUI process.
                 self.state = CodexSessionState::Detached { pid };
                 Ok(())
             }
@@ -396,6 +427,10 @@ struct CodexSessionHost {
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
+/// PTY session manager owned by the TUI process.
+///
+/// It keeps local session history, PTY hosts, and the input/output relay used
+/// for attach/detach/reattach. None of this is daemon-persisted state.
 pub struct CodexSessionManager {
     next_session_id: u64,
     ring_capacity: usize,
@@ -427,6 +462,8 @@ impl CodexSessionManager {
     }
 
     pub fn shutdown(&mut self) {
+        // Shutdown terminates only the TUI-owned PTY hosts. The authority
+        // tracked-thread record, if any, is separate from this local session.
         self.shutdown_requested.store(true, Ordering::Relaxed);
         let session_ids = self.hosts.keys().copied().collect::<Vec<_>>();
         for session_id in session_ids {
@@ -442,6 +479,9 @@ impl CodexSessionManager {
 
     #[must_use]
     pub fn session_for_thread(&self, thread_id: &str) -> Option<&CodexSession> {
+        // Prefer a live PTY session when one exists. If none is live, fall
+        // back to the most recent historical session so the TUI can still show
+        // local session history without implying that the PTY host is runnable.
         self.live_session_id_for_thread(thread_id)
             .and_then(|session_id| self.sessions.get(&session_id))
             .or_else(|| {
@@ -481,6 +521,8 @@ impl CodexSessionManager {
         terminal: &mut OrcasTerminal,
         descriptor: CodexResumeDescriptor,
     ) -> Result<CodexSessionId> {
+        // Attach-or-resume is a local TUI decision: reuse a live PTY session
+        // if one exists for the thread, otherwise start a new PTY host.
         self.drain_background_events()?;
         let session_id = match self.live_session_id_for_thread(&descriptor.thread_id) {
             Some(existing_id) => existing_id,
@@ -783,6 +825,8 @@ impl CodexSessionManager {
     }
 
     fn live_session_id_for_thread(&self, thread_id: &str) -> Option<CodexSessionId> {
+        // Only live sessions are eligible for reattach. Historical sessions may
+        // still appear in summaries, but they do not imply a runnable PTY host.
         self.sessions
             .iter()
             .rev()
@@ -791,6 +835,9 @@ impl CodexSessionManager {
     }
 
     fn cleanup_terminal_sessions(&mut self) -> Result<()> {
+        // Drop PTY host bookkeeping for sessions that are no longer live. This
+        // keeps the local manager consistent without pretending to persist the
+        // host across TUI or daemon restarts.
         self.hosts.retain(|session_id, _| {
             self.sessions
                 .get(session_id)

@@ -223,6 +223,21 @@ fn key_bindings_hint(state: &AppState) -> Vec<Span<'static>> {
     match state.current_view {
         TopLevelView::Overview
             if state.main_view.program_view == crate::app::ProgramView::Review
+                && state.review_view.artifact_export.is_some() =>
+        {
+            let mut spans = action_hint("type", "edit path");
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("left/right", "move cursor"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("tab", "toggle format"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("enter", "export"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("esc", "cancel"));
+            spans
+        }
+        TopLevelView::Overview
+            if state.main_view.program_view == crate::app::ProgramView::Review
                 && state.review_view.artifact_detail.is_some() =>
         {
             let mut spans = action_hint("esc/v", "close artifacts");
@@ -238,6 +253,8 @@ fn key_bindings_hint(state: &AppState) -> Vec<Span<'static>> {
             let mut spans = action_hint("up/down", "review selection");
             spans.push(Span::styled("  ", metadata_style()));
             spans.extend(action_hint("v", "artifact detail"));
+            spans.push(Span::styled("  ", metadata_style()));
+            spans.extend(action_hint("x", "export"));
             spans.push(Span::styled("  ", metadata_style()));
             spans.extend(action_hint("a/d", "approve/reject decision"));
             spans.push(Span::styled("  ", metadata_style()));

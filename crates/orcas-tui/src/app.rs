@@ -1,3 +1,13 @@
+//! Reducer-driven TUI state and state transitions.
+//!
+//! This module owns the TUI's in-memory state tree and the rules for how it is
+//! updated. Different slices of `AppState` have different authority levels:
+//! collaboration snapshot state comes from `state/get`, authority hierarchy and
+//! detail caches come from authority RPCs, footer/editor state is transient UI
+//! state, and PTY/session references are TUI-local. Reconnect and delete
+//! boundaries are handled as invalidation plus reload, not replay-driven
+//! convergence.
+
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::codex::CodexThreadSessions;
@@ -104,13 +114,21 @@ pub enum ReviewSelection {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Main hierarchy view state.
+///
+/// `selected` is the visible row, while `pending_selection` preserves user
+/// intent across refreshes until the hierarchy is rebuilt and the row is known
+/// to exist again.
 pub struct MainViewState {
     pub program_view: ProgramView,
+    /// Current visible hierarchy row in the main view.
     pub selected: Option<MainHierarchySelection>,
+    /// Selection intent preserved across invalidation boundaries.
     pub pending_selection: Option<MainHierarchySelection>,
     pub expanded_workstreams: BTreeSet<String>,
     pub expanded_work_units: BTreeSet<String>,
     pub scroll_offset: usize,
+    /// Tracks whether the view has already performed its first auto-expansion.
     pub initialized: bool,
 }
 
@@ -200,26 +218,81 @@ impl Default for MainFooterState {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Cached authority hierarchy plus detail responses and transient footer state.
+///
+/// The hierarchy is refreshed separately from the collaboration snapshot, and
+/// the detail caches are invalidated on reconnect/delete boundaries rather than
+/// being treated as part of the snapshot.
 pub struct AuthorityMainState {
+    /// Canonical planning hierarchy read from the authority surface.
     pub hierarchy: authority::HierarchySnapshot,
+    /// Cached authority workstream detail responses keyed by id.
     pub workstream_details: HashMap<String, ipc::AuthorityWorkstreamGetResponse>,
+    /// Cached authority work-unit detail responses keyed by id.
     pub work_unit_details: HashMap<String, ipc::AuthorityWorkunitGetResponse>,
+    /// Cached authority tracked-thread detail responses keyed by id.
     pub tracked_thread_details: HashMap<String, ipc::AuthorityTrackedThreadGetResponse>,
+    /// Transient editor/delete state for authority-facing mutations.
     pub footer: MainFooterState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Review-queue selection and artifact detail/export state.
+///
+/// This state is driven by collaboration/runtime data and the retained
+/// supervisor artifact surfaces, not by the canonical authority hierarchy.
 pub struct ReviewViewState {
     pub selected: Option<ReviewSelection>,
     pub scroll_offset: usize,
     pub selection_anchor: usize,
     pub artifact_detail: Option<ReviewArtifactDetailState>,
+    pub artifact_export: Option<ReviewArtifactExportState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewArtifactDetailState {
     pub proposal_id: String,
     pub scroll_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewArtifactExportState {
+    pub proposal_id: String,
+    pub format: ReviewArtifactExportFormat,
+    pub destination: FooterFieldState,
+    pub auto_destination: String,
+    pub destination_is_auto: bool,
+    pub in_flight: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReviewArtifactExportFormat {
+    Json,
+    Markdown,
+}
+
+impl ReviewArtifactExportFormat {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Json => Self::Markdown,
+            Self::Markdown => Self::Json,
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "md",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -243,13 +316,26 @@ pub enum DaemonLifecycleState {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Full TUI state tree.
+///
+/// `AppState` intentionally mixes several ownership classes: collaboration
+/// snapshot data, authority caches, transient UI/editor state, and TUI-local
+/// PTY/session state references. That split matters when deciding what to
+/// preserve versus invalidate on reconnect or delete.
 pub struct AppState {
+    /// Latest daemon status response from `state/get`.
     pub daemon: Option<ipc::DaemonStatusResponse>,
+    /// Connection phase for the current daemon socket.
     pub daemon_phase: DaemonConnectionPhase,
+    /// Lifecycle state for the daemon process as observed by the TUI.
     pub daemon_lifecycle: DaemonLifecycleState,
     pub daemon_lifecycle_error: Option<String>,
+    /// How many reconnect attempts have been scheduled since the last good snapshot.
     pub reconnect_attempt: u32,
+    /// Collaboration/runtime snapshot from `state/get`.
     pub session: ipc::SessionState,
+    /// Collaboration snapshot data from `state/get`. This is not the canonical
+    /// planning hierarchy read surface.
     pub collaboration: ipc::CollaborationSnapshot,
     pub proposal_artifact_summary_work_units: HashMap<String, Vec<String>>,
     pub loaded_proposal_artifact_summary_work_units: BTreeSet<String>,
@@ -261,25 +347,43 @@ pub struct AppState {
     pub loading_proposal_artifact_details: BTreeSet<String>,
     pub proposal_artifact_summary_errors: HashMap<String, String>,
     pub proposal_artifact_detail_errors: HashMap<String, String>,
+    /// Canonical planning hierarchy and detail cache state.
     pub authority_main: AuthorityMainState,
+    /// TUI-visible thread summaries and details from the daemon runtime view.
     pub threads: Vec<ipc::ThreadSummary>,
+    /// Cached daemon model list for the supervisor view.
     pub daemon_models: Vec<ipc::ModelSummary>,
     pub models_loading: bool,
+    /// Cached daemon thread detail views for the currently loaded threads.
     pub thread_details: HashMap<String, ipc::ThreadView>,
+    /// Cached turn state by thread/turn id.
     pub turn_states: HashMap<String, ipc::TurnStateView>,
+    /// TUI-local PTY-backed Codex session history. These sessions are owned by
+    /// the TUI process, not the daemon or the authority model.
     pub codex_sessions: HashMap<String, CodexThreadSessions>,
+    /// Current top-level screen.
     pub current_view: TopLevelView,
+    /// Main hierarchy substate, including selection intent and cached expansion.
     pub main_view: MainViewState,
+    /// Review queue substate.
     pub review_view: ReviewViewState,
+    /// Currently selected daemon thread id, if any.
     pub selected_thread_id: Option<String>,
+    /// Selected collaboration workstream id for sidebar/context navigation.
     pub selected_workstream_id: Option<String>,
+    /// Selected collaboration work-unit id for sidebar/context navigation.
     pub selected_work_unit_id: Option<String>,
+    /// Retained runtime-detail work-unit responses from `workunit/get`.
     pub work_unit_details: HashMap<String, ipc::WorkunitGetResponse>,
     pub collaboration_focus: CollaborationFocus,
     pub recent_events: VecDeque<ipc::EventSummary>,
+    /// Whether a prompt/turn interaction is currently active in the TUI.
     pub prompt_in_flight: bool,
+    /// Transient draft state for steer/review composition.
     pub steer_compose: Option<SteerComposeState>,
+    /// Status banner shown in the TUI chrome.
     pub banner: Option<StatusBanner>,
+    /// Help overlay toggle.
     pub show_help: bool,
 }
 
@@ -373,6 +477,15 @@ pub enum UserAction {
     OpenSelectedProposalArtifactDetail,
     CloseReviewArtifactDetail,
     ScrollReviewArtifactDetail(i16),
+    OpenSelectedProposalArtifactExport,
+    CloseReviewArtifactExport,
+    SubmitReviewArtifactExport,
+    ReviewArtifactExportToggleFormat,
+    ReviewArtifactExportAppend(char),
+    ReviewArtifactExportBackspace,
+    ReviewArtifactExportDelete,
+    ReviewArtifactExportMoveLeft,
+    ReviewArtifactExportMoveRight,
 }
 
 #[derive(Debug, Clone)]
@@ -465,6 +578,16 @@ pub enum UiEvent {
     ProposalArtifactDetailLoadFailed {
         proposal_id: String,
         message: String,
+    },
+    ProposalArtifactExported {
+        proposal_id: String,
+        destination: String,
+        format: ReviewArtifactExportFormat,
+    },
+    ProposalArtifactExportFailed {
+        proposal_id: String,
+        message: String,
+        format: ReviewArtifactExportFormat,
     },
     WorkUnitDetailLoaded(ipc::WorkunitGetResponse),
     TurnUpdated {
@@ -624,6 +747,11 @@ pub enum Effect {
     },
     LoadProposalArtifactDetail {
         proposal_id: String,
+    },
+    ExportProposalArtifact {
+        proposal_id: String,
+        destination: String,
+        format: ReviewArtifactExportFormat,
     },
     SubmitPrompt {
         thread_id: String,
@@ -1192,6 +1320,7 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 });
                 return Vec::new();
             };
+            state.review_view.artifact_export = None;
             state.review_view.artifact_detail = Some(ReviewArtifactDetailState {
                 proposal_id: proposal_id.clone(),
                 scroll_offset: 0,
@@ -1234,6 +1363,141 @@ fn reduce_user_action(state: &mut AppState, action: UserAction) -> Vec<Effect> {
                 } else {
                     detail.scroll_offset = detail.scroll_offset.saturating_add(delta as usize);
                 }
+            }
+            Vec::new()
+        }
+        UserAction::OpenSelectedProposalArtifactExport => {
+            let Some(proposal_id) = selected_review_proposal_id(state).map(ToOwned::to_owned)
+            else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Select a proposal or failure row to export artifacts.".to_string(),
+                });
+                return Vec::new();
+            };
+            state.review_view.artifact_detail = None;
+            let format = ReviewArtifactExportFormat::Json;
+            let auto_destination =
+                default_review_artifact_export_path(proposal_id.as_str(), format);
+            state.review_view.artifact_export = Some(ReviewArtifactExportState {
+                proposal_id: proposal_id.clone(),
+                format,
+                destination: FooterFieldState::new(auto_destination.clone()),
+                auto_destination,
+                destination_is_auto: true,
+                in_flight: false,
+                error: None,
+            });
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!(
+                    "Preparing JSON artifact export for proposal {}.",
+                    proposal_id
+                ),
+            });
+            Vec::new()
+        }
+        UserAction::CloseReviewArtifactExport => {
+            if state.review_view.artifact_export.take().is_some() {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Info,
+                    message: "Cancelled proposal artifact export.".to_string(),
+                });
+            }
+            Vec::new()
+        }
+        UserAction::SubmitReviewArtifactExport => {
+            let Some(export) = state.review_view.artifact_export.as_mut() else {
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "No proposal artifact export is active.".to_string(),
+                });
+                return Vec::new();
+            };
+            let destination = export.destination.value.trim().to_string();
+            if destination.is_empty() {
+                export.error = Some("Destination path must not be empty.".to_string());
+                state.banner = Some(StatusBanner {
+                    level: BannerLevel::Warning,
+                    message: "Destination path must not be empty.".to_string(),
+                });
+                return Vec::new();
+            }
+            export.destination = FooterFieldState::new(destination.clone());
+            export.in_flight = true;
+            export.error = None;
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!(
+                    "Exporting proposal artifact as {} to {}...",
+                    export.format.label(),
+                    destination
+                ),
+            });
+            vec![Effect::ExportProposalArtifact {
+                proposal_id: export.proposal_id.clone(),
+                destination,
+                format: export.format,
+            }]
+        }
+        UserAction::ReviewArtifactExportToggleFormat => {
+            let Some(export) = state.review_view.artifact_export.as_mut() else {
+                return Vec::new();
+            };
+            export.format = export.format.toggle();
+            export.error = None;
+            let next_auto =
+                default_review_artifact_export_path(export.proposal_id.as_str(), export.format);
+            if export.destination_is_auto && export.destination.value == export.auto_destination {
+                export.destination = FooterFieldState::new(next_auto.clone());
+            }
+            export.auto_destination = next_auto;
+            if export.destination.value == export.auto_destination {
+                export.destination_is_auto = true;
+            }
+            state.banner = None;
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportAppend(ch) => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_insert(&mut export.destination, ch);
+                export.destination_is_auto = false;
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportBackspace => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_backspace(&mut export.destination);
+                export.destination_is_auto = false;
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportDelete => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_delete(&mut export.destination);
+                export.destination_is_auto = false;
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportMoveLeft => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_move_left(&mut export.destination);
+                export.error = None;
+                state.banner = None;
+            }
+            Vec::new()
+        }
+        UserAction::ReviewArtifactExportMoveRight => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                footer_field_move_right(&mut export.destination);
+                export.error = None;
+                state.banner = None;
             }
             Vec::new()
         }
@@ -1325,6 +1589,9 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             });
         }
         UiEvent::ConnectionLost(message) => {
+            // Disconnect invalidates authority caches immediately. Keep only the
+            // user's selection intent so the next snapshot can restore the same
+            // row if it still exists.
             state.models_loading = false;
             state.daemon_phase = DaemonConnectionPhase::Reconnecting;
             state.prompt_in_flight = false;
@@ -1377,6 +1644,9 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.banner = None;
         }
         UiEvent::AuthorityHierarchyLoaded(hierarchy) => {
+            // The hierarchy refresh updates the selectable tree, but detail
+            // panes are still loaded independently so stale edit forms do not
+            // survive a reconnect or delete.
             state.authority_main.hierarchy = hierarchy;
             if state.main_view.expanded_workstreams.is_empty()
                 && state.main_view.expanded_work_units.is_empty()
@@ -1407,6 +1677,8 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             effects.extend(load_selected_main_detail_if_needed(state));
         }
         UiEvent::AuthorityWorkstreamDetailLoaded(detail) => {
+            // Authority detail caches are separate from the hierarchy snapshot;
+            // load them explicitly so edit forms always read a current record.
             state
                 .authority_main
                 .workstream_details
@@ -1454,6 +1726,10 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 message: format!("Confirm delete for `{}`.", delete_plan.target.label),
             });
         }
+        // Authority mutations follow the same pattern across workstream,
+        // work unit, and tracked-thread records: keep user intent, clear the
+        // stale footer, and reload hierarchy/detail caches rather than trying
+        // to mutate the event payload in place.
         UiEvent::AuthorityWorkstreamCreated(workstream)
         | UiEvent::AuthorityWorkstreamEdited(workstream) => {
             state.authority_main.footer = MainFooterState::Inspect;
@@ -1473,6 +1749,9 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 workstream_id: workstream.id.to_string(),
             });
         }
+        // Authority delete boundaries follow the same pattern across workstream,
+        // work unit, and tracked-thread records: close stale detail panes and
+        // preserve a valid fallback selection instead of keeping deleted rows alive.
         UiEvent::AuthorityWorkstreamDeleted(workstream) => {
             let fallback = selected_main_delete_fallback(state);
             state.authority_main.footer = MainFooterState::Inspect;
@@ -1962,6 +2241,46 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
                 ),
             });
         }
+        UiEvent::ProposalArtifactExported {
+            proposal_id,
+            destination,
+            format,
+        } => {
+            if state
+                .review_view
+                .artifact_export
+                .as_ref()
+                .is_some_and(|export| export.proposal_id == proposal_id)
+            {
+                state.review_view.artifact_export = None;
+            }
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Info,
+                message: format!(
+                    "Exported proposal artifact {proposal_id} as {} to {destination}.",
+                    format.label()
+                ),
+            });
+        }
+        UiEvent::ProposalArtifactExportFailed {
+            proposal_id,
+            message,
+            format,
+        } => {
+            if let Some(export) = state.review_view.artifact_export.as_mut() {
+                if export.proposal_id == proposal_id {
+                    export.in_flight = false;
+                    export.error = Some(message.clone());
+                }
+            }
+            state.banner = Some(StatusBanner {
+                level: BannerLevel::Error,
+                message: format!(
+                    "Proposal artifact export failed for {proposal_id} as {}: {message}",
+                    format.label()
+                ),
+            });
+        }
         UiEvent::WorkUnitDetailLoaded(detail) => {
             state
                 .work_unit_details
@@ -2122,6 +2441,9 @@ fn activate_program_view(state: &mut AppState) -> Vec<Effect> {
 }
 
 fn reconcile_main_view(state: &mut AppState) {
+    // Reconcile selection against the current authority hierarchy. `pending`
+    // selection preserves intent across invalidation boundaries, but it only
+    // becomes the active selection once the row is visible again.
     state
         .main_view
         .expanded_workstreams
@@ -2206,6 +2528,7 @@ fn reconcile_review_view(state: &mut AppState) {
         state.review_view.scroll_offset = 0;
         state.review_view.selection_anchor = 0;
         state.review_view.artifact_detail = None;
+        state.review_view.artifact_export = None;
         return;
     }
 
@@ -2237,6 +2560,21 @@ fn reconcile_review_view(state: &mut AppState) {
         })
     {
         state.review_view.artifact_detail = None;
+    }
+    if state
+        .review_view
+        .artifact_export
+        .as_ref()
+        .is_some_and(|export| {
+            state
+                .review_view
+                .selected
+                .as_ref()
+                .and_then(review_selection_proposal_id)
+                != Some(export.proposal_id.as_str())
+        })
+    {
+        state.review_view.artifact_export = None;
     }
 }
 
@@ -2755,6 +3093,17 @@ fn selected_review_proposal_id(state: &AppState) -> Option<&str> {
         .selected
         .as_ref()
         .and_then(review_selection_proposal_id)
+}
+
+fn default_review_artifact_export_path(
+    proposal_id: &str,
+    format: ReviewArtifactExportFormat,
+) -> String {
+    std::env::temp_dir()
+        .join("orcas-proposal-exports")
+        .join(format!("{proposal_id}.{}", format.extension()))
+        .display()
+        .to_string()
 }
 
 fn expand_main_selection_ancestors(state: &mut AppState, selection: &MainHierarchySelection) {
@@ -3963,6 +4312,8 @@ fn daemon_is_connected(state: &AppState) -> bool {
 
 fn invalidate_authority_view_state(state: &mut AppState, preserve_selection: bool) {
     if preserve_selection && state.main_view.pending_selection.is_none() {
+        // Preserve intent, not stale data. The cached hierarchy/detail panes are
+        // always cleared so a reconnect/delete boundary can rebuild them fresh.
         state.main_view.pending_selection = state.main_view.selected.clone();
     }
     state.authority_main.hierarchy = authority::HierarchySnapshot::default();
@@ -4433,7 +4784,9 @@ fn event_summary_from_ui_event(event: &UiEvent) -> Option<ipc::EventSummary> {
         | UiEvent::ProposalArtifactSummaryLoaded(_)
         | UiEvent::ProposalArtifactSummaryLoadFailed { .. }
         | UiEvent::ProposalArtifactDetailLoaded(_)
-        | UiEvent::ProposalArtifactDetailLoadFailed { .. } => return None,
+        | UiEvent::ProposalArtifactDetailLoadFailed { .. }
+        | UiEvent::ProposalArtifactExported { .. }
+        | UiEvent::ProposalArtifactExportFailed { .. } => return None,
         UiEvent::Ignored => return None,
         UiEvent::CodexSessionsChanged { .. } => return None,
         UiEvent::ReconnectScheduled { attempt, .. } => (

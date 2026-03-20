@@ -1,3 +1,11 @@
+//! Backend command surface used by the TUI.
+//!
+//! The commands here are not a flat bag of interchangeable RPCs. Some target
+//! canonical authority planning reads/writes, some target collaboration/runtime
+//! surfaces, and one retained path exists only for runtime-detail reads. The
+//! distinction matters for both the production backend and the fake backend
+//! used in tests.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,6 +22,11 @@ use orcas_core::{
 };
 use orcasd::{OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides};
 
+/// Commands issued by the TUI backend.
+///
+/// Most commands fall into canonical authority planning, collaboration/runtime
+/// reads, or operator actions. `GetWorkUnit` is the retained runtime-detail
+/// exception and should not accumulate new planning behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendCommand {
     GetAuthorityHierarchy {
@@ -80,6 +93,9 @@ pub enum BackendCommand {
     GetProposalArtifactDetail {
         proposal_id: String,
     },
+    GetProposalArtifactExport {
+        proposal_id: String,
+    },
     GetActiveTurns,
     LoadModels,
     StartDaemon,
@@ -113,6 +129,11 @@ pub enum BackendCommand {
     },
 }
 
+/// Results returned by the TUI backend.
+///
+/// The result family mirrors the command classification: authority planning,
+/// collaboration/runtime, retained runtime-detail, and operator lifecycle
+/// actions.
 #[derive(Debug, Clone)]
 pub enum BackendCommandResult {
     AuthorityHierarchy(authority::HierarchySnapshot),
@@ -131,6 +152,7 @@ pub enum BackendCommandResult {
     ProposalArtifactSummaryListForWorkUnit(ipc::ProposalArtifactSummaryListForWorkunitResponse),
     ProposalArtifactSummary(ipc::SupervisorProposalArtifactSummary),
     ProposalArtifactDetail(ipc::SupervisorProposalArtifactDetail),
+    ProposalArtifactExport(ipc::SupervisorProposalArtifactExport),
     ActiveTurns(Vec<ipc::TurnStateView>),
     Models(Vec<ipc::ModelSummary>),
     DaemonStarted { connected: bool },
@@ -140,6 +162,11 @@ pub enum BackendCommandResult {
 }
 
 #[async_trait]
+/// TUI backend abstraction.
+///
+/// Production uses the daemon-backed implementation, while tests can provide a
+/// fake backend. Both must preserve the same command classification even when
+/// the transport is mocked.
 pub trait TuiBackend: Send + Sync {
     async fn get_snapshot(&self) -> Result<ipc::StateSnapshot>;
     async fn subscribe_events(&self) -> Result<mpsc::Receiver<ipc::DaemonEventEnvelope>>;
@@ -465,6 +492,7 @@ fn backend_command_label(command: &BackendCommand) -> &'static str {
         }
         BackendCommand::GetProposalArtifactSummary { .. } => "get_proposal_artifact_summary",
         BackendCommand::GetProposalArtifactDetail { .. } => "get_proposal_artifact_detail",
+        BackendCommand::GetProposalArtifactExport { .. } => "get_proposal_artifact_export",
         BackendCommand::GetActiveTurns => "get_active_turns",
         BackendCommand::LoadModels => "load_models",
         BackendCommand::StartDaemon => "start_daemon",
@@ -670,6 +698,7 @@ impl OrcasDaemonBackend {
             )),
             // Retained runtime-detail exception: this collaboration read carries execution
             // detail that is outside the canonical authority planning hierarchy.
+            // New planning features should not target this path.
             BackendCommand::GetWorkUnit { work_unit_id } => Ok(BackendCommandResult::WorkUnit(
                 client
                     .workunit_get(&ipc::WorkunitGetRequest { work_unit_id })
@@ -702,6 +731,16 @@ impl OrcasDaemonBackend {
                         })
                         .await?
                         .detail,
+                ))
+            }
+            BackendCommand::GetProposalArtifactExport { proposal_id } => {
+                Ok(BackendCommandResult::ProposalArtifactExport(
+                    client
+                        .proposal_artifact_export_get(&ipc::ProposalArtifactExportGetRequest {
+                            proposal_id,
+                        })
+                        .await?
+                        .export,
                 ))
             }
             BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
@@ -1080,6 +1119,7 @@ struct FakeBackendState {
         HashMap<String, ipc::ProposalArtifactSummaryListForWorkunitResponse>,
     proposal_artifact_summaries: HashMap<String, ipc::SupervisorProposalArtifactSummary>,
     proposal_artifact_details: HashMap<String, ipc::SupervisorProposalArtifactDetail>,
+    proposal_artifact_exports: HashMap<String, ipc::SupervisorProposalArtifactExport>,
     authority_workstreams: HashMap<String, authority::WorkstreamRecord>,
     authority_work_units: HashMap<String, authority::WorkUnitRecord>,
     authority_tracked_threads: HashMap<String, authority::TrackedThreadRecord>,
@@ -1118,6 +1158,7 @@ impl FakeBackend {
                 ),
                 proposal_artifact_summaries: proposal_artifact_summaries_from_snapshot(&snapshot),
                 proposal_artifact_details: proposal_artifact_details_from_snapshot(&snapshot),
+                proposal_artifact_exports: proposal_artifact_exports_from_snapshot(&snapshot),
                 authority_workstreams: authority_state.workstreams,
                 authority_work_units: authority_state.work_units,
                 authority_tracked_threads: authority_state.tracked_threads,
@@ -1173,6 +1214,7 @@ impl FakeBackend {
             proposal_artifact_summary_lists_from_snapshot(&snapshot);
         guard.proposal_artifact_summaries = proposal_artifact_summaries_from_snapshot(&snapshot);
         guard.proposal_artifact_details = proposal_artifact_details_from_snapshot(&snapshot);
+        guard.proposal_artifact_exports = proposal_artifact_exports_from_snapshot(&snapshot);
         guard.authority_workstreams = authority_state.workstreams;
         guard.authority_work_units = authority_state.work_units;
         guard.authority_tracked_threads = authority_state.tracked_threads;
@@ -1191,6 +1233,11 @@ impl FakeBackend {
             .iter()
             .map(proposal_artifact_detail_from_record)
             .collect::<Vec<_>>();
+        let exports = detail
+            .proposals
+            .iter()
+            .map(|proposal| proposal_artifact_export_from_record(&detail.work_unit.id, proposal))
+            .collect::<Vec<_>>();
         let summary_list = ipc::ProposalArtifactSummaryListForWorkunitResponse {
             work_unit_id: detail.work_unit.id.clone(),
             summaries: summaries.clone(),
@@ -1205,6 +1252,11 @@ impl FakeBackend {
             guard
                 .proposal_artifact_details
                 .insert(artifact_detail.proposal_id.clone(), artifact_detail);
+        }
+        for export in exports {
+            guard
+                .proposal_artifact_exports
+                .insert(export.proposal_id.clone(), export);
         }
         guard
             .proposal_artifact_summary_lists
@@ -1753,6 +1805,12 @@ impl TuiBackend for FakeBackend {
                 .cloned()
                 .map(BackendCommandResult::ProposalArtifactDetail)
                 .ok_or_else(|| anyhow!("unknown proposal artifact detail `{proposal_id}`")),
+            BackendCommand::GetProposalArtifactExport { proposal_id } => guard
+                .proposal_artifact_exports
+                .get(&proposal_id)
+                .cloned()
+                .map(BackendCommandResult::ProposalArtifactExport)
+                .ok_or_else(|| anyhow!("unknown proposal artifact export `{proposal_id}`")),
             BackendCommand::GetActiveTurns => Ok(BackendCommandResult::ActiveTurns(
                 guard.active_turns.clone(),
             )),
@@ -2896,6 +2954,22 @@ fn proposal_artifact_details_from_snapshot(
         .collect()
 }
 
+fn proposal_artifact_exports_from_snapshot(
+    snapshot: &ipc::StateSnapshot,
+) -> HashMap<String, ipc::SupervisorProposalArtifactExport> {
+    workunit_details_from_snapshot(snapshot)
+        .into_values()
+        .flat_map(|detail| {
+            let work_unit_id = detail.work_unit.id.clone();
+            detail
+                .proposals
+                .into_iter()
+                .map(move |proposal| proposal_artifact_export_from_record(&work_unit_id, &proposal))
+        })
+        .map(|export| (export.proposal_id.clone(), export))
+        .collect()
+}
+
 fn proposal_artifact_summary_from_record(
     proposal: &SupervisorProposalRecord,
 ) -> ipc::SupervisorProposalArtifactSummary {
@@ -2958,5 +3032,26 @@ fn proposal_artifact_detail_from_record(
         parsed_proposal: proposal.proposal.clone(),
         approved_proposal: proposal.approved_proposal.clone(),
         generation_failure: proposal.generation_failure.clone(),
+    }
+}
+
+fn proposal_artifact_export_from_record(
+    work_unit_id: &str,
+    proposal: &SupervisorProposalRecord,
+) -> ipc::SupervisorProposalArtifactExport {
+    ipc::SupervisorProposalArtifactExport {
+        proposal_id: proposal.id.clone(),
+        primary_work_unit_id: work_unit_id.to_string(),
+        source_report_id: proposal.source_report_id.clone(),
+        proposal_status: proposal.status,
+        created_at: proposal.created_at,
+        validated_at: proposal.validated_at,
+        reviewed_at: proposal.reviewed_at,
+        reviewed_by: proposal.reviewed_by.clone(),
+        review_note: proposal.review_note.clone(),
+        approved_decision_id: proposal.approved_decision_id.clone(),
+        approved_assignment_id: proposal.approved_assignment_id.clone(),
+        artifact_summary: proposal_artifact_summary_from_record(proposal),
+        artifact_detail: proposal_artifact_detail_from_record(proposal),
     }
 }

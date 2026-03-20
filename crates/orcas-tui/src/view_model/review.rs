@@ -17,6 +17,7 @@ pub struct ReviewViewModel {
     pub queue: ReviewQueueViewModel,
     pub detail_panel: PanelViewModel,
     pub artifact_detail_overlay: Option<ReviewArtifactDetailOverlayViewModel>,
+    pub artifact_export_overlay: Option<ReviewArtifactExportOverlayViewModel>,
     pub footer: ReviewFooterViewModel,
 }
 
@@ -77,6 +78,12 @@ pub struct ReviewArtifactDetailOverlayViewModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewArtifactExportOverlayViewModel {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewQueueDisplayRowViewModel {
     Section(ReviewQueueSectionViewModel),
     Row(ReviewQueueRowViewModel),
@@ -95,6 +102,7 @@ pub fn review_view(state: &AppState) -> ReviewViewModel {
         queue: review_queue(state),
         detail_panel: review_detail_panel(state),
         artifact_detail_overlay: review_artifact_detail_overlay(state),
+        artifact_export_overlay: review_artifact_export_overlay(state),
         footer: review_footer(state),
     }
 }
@@ -755,6 +763,41 @@ fn review_artifact_detail_overlay(
     })
 }
 
+fn review_artifact_export_overlay(
+    state: &AppState,
+) -> Option<ReviewArtifactExportOverlayViewModel> {
+    let export_state = state.review_view.artifact_export.as_ref()?;
+    let mut lines = vec![
+        format!("proposal_id: {}", export_state.proposal_id),
+        format!("format: {}", export_state.format.label()),
+        "destination:".to_string(),
+        format!("  {}", export_state.destination.value),
+    ];
+    if export_state.in_flight {
+        lines.push(format!(
+            "status: exporting canonical proposal artifact bundle as {}",
+            export_state.format.label()
+        ));
+    } else if let Some(error) = export_state.error.as_ref() {
+        lines.push("status: export failed".to_string());
+        lines.push(format!("error: {}", abbreviate(&compact_line(error), 140)));
+    } else {
+        lines.push("status: ready to export".to_string());
+        lines.push(
+            "tab toggles json/md; edit the destination path if needed, then press enter to write the bundle."
+                .to_string(),
+        );
+    }
+
+    Some(ReviewArtifactExportOverlayViewModel {
+        title: format!(
+            "Export Proposal Artifact {}",
+            short_id(&export_state.proposal_id)
+        ),
+        lines,
+    })
+}
+
 fn proposal_artifact_summary_lines(state: &AppState, proposal_id: &str) -> Vec<String> {
     let mut lines = vec!["artifact_summary:".to_string()];
     if state
@@ -1181,6 +1224,42 @@ fn review_required_detail_panel(
 }
 
 fn review_footer(state: &AppState) -> ReviewFooterViewModel {
+    if state.review_view.artifact_export.is_some() {
+        return ReviewFooterViewModel {
+            title: "Artifact Export".to_string(),
+            lines: vec![
+                "Export writes the canonical supervisor evidence bundle for the selected proposal."
+                    .to_string(),
+                "The destination path is explicit and editable here; tab toggles json/md; export uses the daemon's canonical artifact-export path, not snapshot state."
+                    .to_string(),
+            ],
+            actions: vec![
+                ReviewActionViewModel {
+                    key: "enter".to_string(),
+                    label: format!(
+                        "export {}",
+                        state
+                            .review_view
+                            .artifact_export
+                            .as_ref()
+                            .map(|export| export.format.label())
+                            .unwrap_or("json")
+                    ),
+                },
+                ReviewActionViewModel {
+                    key: "tab".to_string(),
+                    label: "toggle format".to_string(),
+                },
+                ReviewActionViewModel {
+                    key: "esc".to_string(),
+                    label: "cancel".to_string(),
+                },
+            ],
+            hint_line:
+                "type edit path  left/right move cursor  backspace/delete edit  tab toggle format  enter export  esc cancel"
+                    .to_string(),
+        };
+    }
     if state.review_view.artifact_detail.is_some() {
         return ReviewFooterViewModel {
             title: "Artifact Detail".to_string(),
@@ -1243,11 +1322,18 @@ fn review_footer(state: &AppState) -> ReviewFooterViewModel {
                 "Use the detail pane to review summary, timing, and decision type; press v to inspect persisted prompt/response evidence without leaving the review flow."
                     .to_string(),
             ],
-            vec![ReviewActionViewModel {
-                key: "v".to_string(),
-                label: "view artifact detail".to_string(),
-            }],
-            "up/down move  v view artifacts  tab switch tabs  r refresh  ? help".to_string(),
+            vec![
+                ReviewActionViewModel {
+                    key: "v".to_string(),
+                    label: "view artifact detail".to_string(),
+                },
+                ReviewActionViewModel {
+                    key: "x".to_string(),
+                    label: "export".to_string(),
+                },
+            ],
+            "up/down move  v view artifacts  x export  tab switch tabs  r refresh  ? help"
+                .to_string(),
         ),
         Some(ReviewSelection::Failure { .. }) => (
             vec![
@@ -1255,11 +1341,18 @@ fn review_footer(state: &AppState) -> ReviewFooterViewModel {
                 "Use the failure stage and source linkage to decide whether to retry generation or inspect the originating work context; press v for full reasoning evidence."
                     .to_string(),
             ],
-            vec![ReviewActionViewModel {
-                key: "v".to_string(),
-                label: "view artifact detail".to_string(),
-            }],
-            "up/down move  v view artifacts  tab switch tabs  r refresh  ? help".to_string(),
+            vec![
+                ReviewActionViewModel {
+                    key: "v".to_string(),
+                    label: "view artifact detail".to_string(),
+                },
+                ReviewActionViewModel {
+                    key: "x".to_string(),
+                    label: "export".to_string(),
+                },
+            ],
+            "up/down move  v view artifacts  x export  tab switch tabs  r refresh  ? help"
+                .to_string(),
         ),
         Some(ReviewSelection::ReviewRequired { .. }) => (
             vec![

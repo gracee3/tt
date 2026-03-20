@@ -1257,6 +1257,7 @@ dependencies = [
  "orcasd",
  "portable-pty",
  "ratatui",
+ "serde_json",
  "tokio",
  "tracing",
 ]
