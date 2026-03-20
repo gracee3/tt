@@ -42,7 +42,7 @@ impl TestDaemon {
 
     pub async fn start(&mut self) {
         self.paths.ensure().await.expect("create app paths");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_orcasd"));
+        let mut command = Command::new(Self::orcasd_binary_path());
         command
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -59,6 +59,22 @@ impl TestDaemon {
         self.wait_until_ready().await;
     }
 
+    fn orcasd_binary_path() -> PathBuf {
+        if let Some(path) = option_env!("CARGO_BIN_EXE_orcasd") {
+            return PathBuf::from(path);
+        }
+
+        let current_exe = std::env::current_exe().expect("resolve current test executable path");
+        let exe_dir = current_exe
+            .parent()
+            .expect("current test executable should have a parent");
+        let bin_dir = exe_dir
+            .parent()
+            .filter(|_| exe_dir.file_name().is_some_and(|name| name == "deps"))
+            .unwrap_or(exe_dir);
+        bin_dir.join("orcasd")
+    }
+
     pub async fn restart(&mut self) {
         self.stop().await;
         self.start().await;
@@ -68,6 +84,23 @@ impl TestDaemon {
         OrcasIpcClient::connect(&self.paths)
             .await
             .expect("connect real OrcasIpcClient")
+    }
+
+    pub fn xdg_env(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                self.root.join("config").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".to_string(),
+                self.root.join("data").display().to_string(),
+            ),
+            (
+                "XDG_RUNTIME_DIR".to_string(),
+                self.root.join("runtime").display().to_string(),
+            ),
+        ]
     }
 
     pub async fn wait_until_ready(&self) {
