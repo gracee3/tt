@@ -1892,6 +1892,7 @@ mod tests {
             worker_id: "worker-1".to_string(),
             backend_type: "codex".to_string(),
             thread_id: Some("thread-1".to_string()),
+            tracked_thread_id: None,
             active_turn_id: None,
             runtime_status: WorkerSessionRuntimeStatus::Completed,
             attachability: WorkerSessionAttachability::Attachable,

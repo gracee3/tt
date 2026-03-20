@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::authority;
 use crate::communication::{AssignmentCommunicationRecord, AssignmentCommunicationSeed};
 use crate::supervisor::SupervisorProposalRecord;
 
@@ -278,6 +279,8 @@ pub struct WorkerSession {
     pub worker_id: String,
     pub backend_type: String,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub tracked_thread_id: Option<authority::TrackedThreadId>,
     pub active_turn_id: Option<String>,
     #[serde(default)]
     pub runtime_status: WorkerSessionRuntimeStatus,

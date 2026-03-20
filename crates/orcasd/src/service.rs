@@ -341,36 +341,40 @@ impl OrcasDaemonService {
     async fn initialize_state(&self) -> OrcasResult<()> {
         debug!("initializing daemon state from persisted store");
         let stored = self.store.load().await.unwrap_or_default();
-        let mut state = self.state.write().await;
-        state.upstream = ConnectionState {
-            endpoint: self.config.codex.listen_url.clone(),
-            status: "disconnected".to_string(),
-            detail: None,
-        };
-        state.threads = if stored.thread_views.is_empty() {
-            stored
-                .registry
+        {
+            let mut state = self.state.write().await;
+            state.upstream = ConnectionState {
+                endpoint: self.config.codex.listen_url.clone(),
+                status: "disconnected".to_string(),
+                detail: None,
+            };
+            state.threads = if stored.thread_views.is_empty() {
+                stored
+                    .registry
+                    .threads
+                    .values()
+                    .map(|metadata| {
+                        let view = Self::thread_view_from_metadata(metadata);
+                        (view.summary.id.clone(), view)
+                    })
+                    .collect()
+            } else {
+                stored.thread_views.into_iter().collect()
+            };
+            state.turns = stored
+                .turn_states
+                .into_values()
+                .map(|turn| (TurnKey::new(&turn.thread_id, &turn.turn_id), turn))
+                .collect();
+            state.recent_thread_id = state
                 .threads
                 .values()
-                .map(|metadata| {
-                    let view = Self::thread_view_from_metadata(metadata);
-                    (view.summary.id.clone(), view)
-                })
-                .collect()
-        } else {
-            stored.thread_views.into_iter().collect()
-        };
-        state.turns = stored
-            .turn_states
-            .into_values()
-            .map(|turn| (TurnKey::new(&turn.thread_id, &turn.turn_id), turn))
-            .collect();
-        state.recent_thread_id = state
-            .threads
-            .values()
-            .max_by_key(|thread| thread.summary.updated_at)
-            .map(|thread| thread.summary.id.clone());
-        state.collaboration = stored.collaboration;
+                .max_by_key(|thread| thread.summary.updated_at)
+                .map(|thread| thread.summary.id.clone());
+            state.collaboration = stored.collaboration;
+        }
+        self.reconcile_worker_session_tracked_thread_bindings()
+            .await?;
         Ok(())
     }
 
@@ -1928,6 +1932,12 @@ impl OrcasDaemonService {
             .await?
         {
             AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                self.sync_worker_session_tracked_thread_binding(
+                    &tracked_thread.id,
+                    tracked_thread.upstream_thread_id.as_deref(),
+                    tracked_thread.deleted_at.clone(),
+                )
+                .await?;
                 self.emit_authority_tracked_thread_lifecycle(
                     ipc::CollaborationLifecycleAction::Created,
                     &tracked_thread,
@@ -1953,6 +1963,12 @@ impl OrcasDaemonService {
             .await?
         {
             AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                self.sync_worker_session_tracked_thread_binding(
+                    &tracked_thread.id,
+                    tracked_thread.upstream_thread_id.as_deref(),
+                    tracked_thread.deleted_at.clone(),
+                )
+                .await?;
                 self.emit_authority_tracked_thread_lifecycle(
                     ipc::CollaborationLifecycleAction::Updated,
                     &tracked_thread,
@@ -1978,6 +1994,12 @@ impl OrcasDaemonService {
             .await?
         {
             AuthorityMutationResult::TrackedThread(tracked_thread) => {
+                self.sync_worker_session_tracked_thread_binding(
+                    &tracked_thread.id,
+                    tracked_thread.upstream_thread_id.as_deref(),
+                    tracked_thread.deleted_at.clone(),
+                )
+                .await?;
                 self.emit_authority_tracked_thread_lifecycle(
                     ipc::CollaborationLifecycleAction::Deleted,
                     &tracked_thread,
@@ -2068,6 +2090,11 @@ impl OrcasDaemonService {
                 .await;
             return Err(error);
         };
+        self.sync_worker_session_tracked_thread_binding_for_assignment(
+            &worker_session_id,
+            &prepared.assignment.work_unit_id,
+        )
+        .await?;
 
         self.ensure_assignment_communication_record(
             &assignment_id,
@@ -6272,7 +6299,7 @@ impl OrcasDaemonService {
         requested_cwd: Option<String>,
     ) -> OrcasResult<()> {
         let started_at = Instant::now();
-        let (assignment, worker_thread_id, existing_workspace_contract, has_record) = {
+        let (assignment, worker_session, existing_workspace_contract, has_record) = {
             let state = self.state.read().await;
             let assignment = state
                 .collaboration
@@ -6289,11 +6316,11 @@ impl OrcasDaemonService {
                         "unknown assignment `{assignment_id}` for communication record"
                     ))
                 })?;
-            let worker_thread_id = state
+            let worker_session = state
                 .collaboration
                 .worker_sessions
                 .get(&assignment.worker_session_id)
-                .and_then(|worker_session| worker_session.thread_id.clone());
+                .cloned();
             let existing_workspace_contract = state
                 .collaboration
                 .assignment_communications
@@ -6305,13 +6332,13 @@ impl OrcasDaemonService {
                 .contains_key(assignment_id);
             (
                 assignment,
-                worker_thread_id,
+                worker_session,
                 existing_workspace_contract,
                 has_record,
             )
         };
         let workspace_contract = self
-            .resolve_assignment_workspace_contract(&assignment, worker_thread_id.as_deref())
+            .resolve_assignment_workspace_contract(&assignment, worker_session.as_ref())
             .await?;
         if has_record && existing_workspace_contract == workspace_contract {
             debug!(
@@ -6399,13 +6426,37 @@ impl OrcasDaemonService {
     async fn resolve_assignment_workspace_contract(
         &self,
         assignment: &Assignment,
-        worker_thread_id: Option<&str>,
+        worker_session: Option<&WorkerSession>,
     ) -> OrcasResult<Option<AssignmentWorkspaceContract>> {
-        let Some(worker_thread_id) = worker_thread_id else {
+        if let Some(worker_session) = worker_session {
+            if let Some(tracked_thread_id) = worker_session.tracked_thread_id.as_ref() {
+                if let Some(tracked_thread) = self
+                    .authority_store
+                    .get_tracked_thread(tracked_thread_id)
+                    .await?
+                {
+                    if tracked_thread.deleted_at.is_none() {
+                        if let Some(workspace) = tracked_thread.workspace.clone() {
+                            return Ok(Some(AssignmentWorkspaceContract {
+                                tracked_thread_id: tracked_thread.id,
+                                tracked_thread_title: tracked_thread.title,
+                                workspace,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(worker_thread_id) =
+            worker_session.and_then(|session| session.thread_id.as_deref())
+        else {
             return Ok(None);
         };
         let work_unit_id =
             orcas_core::authority::WorkUnitId::parse(assignment.work_unit_id.clone())?;
+        // Temporary compatibility fallback: legacy assignments may still only be tied to a live
+        // worker Codex thread id. New prompt binding should flow through worker_session.tracked_thread_id.
         let tracked_thread_id = self
             .authority_store
             .list_tracked_threads(&work_unit_id, false)
@@ -6433,6 +6484,129 @@ impl OrcasDaemonService {
             tracked_thread_title: tracked_thread.title,
             workspace,
         }))
+    }
+
+    async fn sync_worker_session_tracked_thread_binding(
+        &self,
+        tracked_thread_id: &orcas_core::authority::TrackedThreadId,
+        upstream_thread_id: Option<&str>,
+        deleted_at: Option<chrono::DateTime<Utc>>,
+    ) -> OrcasResult<()> {
+        let desired_thread_id = if deleted_at.is_some() {
+            None
+        } else {
+            upstream_thread_id
+        };
+        let mut changed = false;
+        {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            for worker_session in state.collaboration.worker_sessions.values_mut() {
+                let matches_desired_thread = desired_thread_id.is_some()
+                    && worker_session.thread_id.as_deref() == desired_thread_id;
+                if worker_session.tracked_thread_id.as_ref() == Some(tracked_thread_id)
+                    && !matches_desired_thread
+                {
+                    worker_session.tracked_thread_id = None;
+                    worker_session.updated_at = now;
+                    changed = true;
+                }
+                if matches_desired_thread
+                    && worker_session.tracked_thread_id.as_ref() != Some(tracked_thread_id)
+                {
+                    worker_session.tracked_thread_id = Some(tracked_thread_id.clone());
+                    worker_session.updated_at = now;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist_collaboration_state().await?;
+        }
+        Ok(())
+    }
+
+    async fn sync_worker_session_tracked_thread_binding_for_assignment(
+        &self,
+        worker_session_id: &str,
+        work_unit_id: &str,
+    ) -> OrcasResult<()> {
+        let worker_session = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .worker_sessions
+            .get(worker_session_id)
+            .cloned();
+        let Some(worker_session) = worker_session else {
+            return Ok(());
+        };
+        let Some(worker_thread_id) = worker_session.thread_id.as_deref() else {
+            return Ok(());
+        };
+        let work_unit_id = orcas_core::authority::WorkUnitId::parse(work_unit_id.to_string())?;
+        let tracked_thread_id = self
+            .authority_store
+            .list_tracked_threads(&work_unit_id, false)
+            .await?
+            .into_iter()
+            .find(|tracked_thread| {
+                tracked_thread.upstream_thread_id.as_deref() == Some(worker_thread_id)
+            })
+            .map(|tracked_thread| tracked_thread.id);
+        let Some(tracked_thread_id) = tracked_thread_id else {
+            return Ok(());
+        };
+        let mut changed = false;
+        {
+            let now = Utc::now();
+            let mut state = self.state.write().await;
+            if let Some(worker_session) = state
+                .collaboration
+                .worker_sessions
+                .get_mut(worker_session_id)
+                .filter(|session| session.thread_id.as_deref() == Some(worker_thread_id))
+                .filter(|session| session.tracked_thread_id.as_ref() != Some(&tracked_thread_id))
+            {
+                worker_session.tracked_thread_id = Some(tracked_thread_id);
+                worker_session.updated_at = now;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist_collaboration_state().await?;
+        }
+        Ok(())
+    }
+
+    async fn reconcile_worker_session_tracked_thread_bindings(&self) -> OrcasResult<()> {
+        let work_unit_ids = {
+            self.state
+                .read()
+                .await
+                .collaboration
+                .work_units
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for work_unit_id in work_unit_ids {
+            let work_unit_id = orcas_core::authority::WorkUnitId::parse(work_unit_id)?;
+            for tracked_thread in self
+                .authority_store
+                .list_tracked_threads(&work_unit_id, false)
+                .await?
+            {
+                self.sync_worker_session_tracked_thread_binding(
+                    &tracked_thread.id,
+                    tracked_thread.upstream_thread_id.as_deref(),
+                    tracked_thread.deleted_at.clone(),
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn ensure_worker_session_thread(
@@ -8142,6 +8316,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             worker_id: worker_id.to_string(),
             backend_type: "codex_thread".to_string(),
             thread_id: None,
+            tracked_thread_id: None,
             active_turn_id: None,
             runtime_status: WorkerSessionRuntimeStatus::Idle,
             attachability: WorkerSessionAttachability::Unknown,
@@ -12906,7 +13081,6 @@ ORCAS_REPORT_END"#
             .await
             .expect("workunit")
             .work_unit;
-
         let response = service
             .assignment_start(ipc::AssignmentStartRequest {
                 work_unit_id: work_unit.id.clone(),
@@ -13083,7 +13257,6 @@ ORCAS_REPORT_END"#
             .await
             .expect("workunit")
             .work_unit;
-
         let response = service
             .assignment_start(ipc::AssignmentStartRequest {
                 work_unit_id: work_unit.id.clone(),
@@ -13152,7 +13325,6 @@ ORCAS_REPORT_END"#
             .await
             .expect("workunit")
             .work_unit;
-
         let response = service
             .assignment_start(ipc::AssignmentStartRequest {
                 work_unit_id: work_unit.id.clone(),
@@ -18411,6 +18583,23 @@ ORCAS_REPORT_END"#
             })
             .await
             .expect("tracked thread create");
+
+        let bound_session = service
+            .state
+            .read()
+            .await
+            .collaboration
+            .worker_sessions
+            .get(&prepared.assignment.worker_session_id)
+            .cloned()
+            .expect("worker session");
+        assert_eq!(
+            bound_session
+                .tracked_thread_id
+                .as_ref()
+                .map(|tracked_thread_id| tracked_thread_id.as_str()),
+            Some("workspace-tt")
+        );
 
         service
             .ensure_assignment_communication_record(&prepared.assignment.id, None, None)
