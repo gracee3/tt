@@ -3,6 +3,8 @@
 mod harness;
 
 use orcas_core::ipc;
+use tokio::sync::broadcast;
+use tokio::time::{Duration, timeout};
 
 use harness::TestDaemon;
 
@@ -186,6 +188,56 @@ async fn restart_preserves_state_and_allows_reconnect() {
             assert_eq!(workstream.title, "Post-restart workstream");
         }
         other => panic!("expected post-restart workstream lifecycle event, got {other:?}"),
+    }
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn restart_closes_old_event_subscription_and_requires_fresh_resubscribe() {
+    let mut daemon = TestDaemon::spawn("restart-event-subscription").await;
+
+    let first_client = daemon.connect().await;
+    let (mut old_events, _) = first_client
+        .subscribe_events(false)
+        .await
+        .expect("subscribe before restart");
+
+    daemon.restart().await;
+
+    let closed = timeout(Duration::from_secs(5), old_events.recv())
+        .await
+        .expect("old subscription should resolve after restart");
+    assert!(matches!(closed, Err(broadcast::error::RecvError::Closed)));
+
+    let second_client = daemon.connect().await;
+    let (mut new_events, _) = second_client
+        .subscribe_events(false)
+        .await
+        .expect("subscribe after restart");
+    let follow_up = second_client
+        .workstream_create(&ipc::WorkstreamCreateRequest {
+            title: "Fresh subscription".to_string(),
+            objective: "Verify restart requires a new subscription".to_string(),
+            priority: None,
+        })
+        .await
+        .expect("create post-restart workstream");
+
+    let event = TestDaemon::next_event_matching(&mut new_events, |envelope| {
+        matches!(
+            &envelope.event,
+            ipc::DaemonEvent::WorkstreamLifecycle { action, workstream }
+                if *action == ipc::CollaborationLifecycleAction::Created
+                    && workstream.id == follow_up.workstream.id
+        )
+    })
+    .await;
+    match event.event {
+        ipc::DaemonEvent::WorkstreamLifecycle { workstream, .. } => {
+            assert_eq!(workstream.title, "Fresh subscription");
+        }
+        other => panic!("expected workstream lifecycle event, got {other:?}"),
     }
 
     daemon.stop().await;

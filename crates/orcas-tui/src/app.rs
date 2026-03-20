@@ -1151,6 +1151,10 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
     match event {
         UiEvent::SnapshotLoaded(snapshot) => {
             let preserved_thread_selection = state.selected_thread_id.clone();
+            // A fresh snapshot only re-establishes the collaboration/runtime view. The authority
+            // hierarchy and authority detail panes must be reloaded separately after reconnect or
+            // restart so the TUI does not keep rendering stale pre-restart authority records.
+            invalidate_authority_view_state(state, true);
             state.daemon_phase = DaemonConnectionPhase::Connected;
             state.reconnect_attempt = 0;
             state.daemon_lifecycle =
@@ -1215,6 +1219,7 @@ fn reduce_event(state: &mut AppState, event: UiEvent) -> Vec<Effect> {
             state.models_loading = false;
             state.daemon_phase = DaemonConnectionPhase::Reconnecting;
             state.prompt_in_flight = false;
+            invalidate_authority_view_state(state, true);
             if let Some(daemon) = state.daemon.as_mut() {
                 daemon.upstream.status = "disconnected".to_string();
                 daemon.upstream.detail = Some(message.clone());
@@ -3612,6 +3617,18 @@ fn daemon_is_connected(state: &AppState) -> bool {
         .daemon
         .as_ref()
         .is_some_and(|daemon| daemon.upstream.status == "connected")
+}
+
+fn invalidate_authority_view_state(state: &mut AppState, preserve_selection: bool) {
+    if preserve_selection && state.main_view.pending_selection.is_none() {
+        state.main_view.pending_selection = state.main_view.selected.clone();
+    }
+    state.authority_main.hierarchy = authority::HierarchySnapshot::default();
+    state.authority_main.workstream_details.clear();
+    state.authority_main.work_unit_details.clear();
+    state.authority_main.tracked_thread_details.clear();
+    state.authority_main.footer = MainFooterState::Inspect;
+    reconcile_main_view(state);
 }
 
 fn lifecycle_from_upstream_status(status: &str) -> DaemonLifecycleState {

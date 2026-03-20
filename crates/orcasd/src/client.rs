@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
@@ -25,7 +26,8 @@ pub type EventSubscription = broadcast::Receiver<ipc::DaemonEventEnvelope>;
 pub struct OrcasIpcClient {
     pending: Mutex<HashMap<RequestId, PendingResponse>>,
     outbound: mpsc::Sender<String>,
-    event_tx: broadcast::Sender<ipc::DaemonEventEnvelope>,
+    event_tx: RwLock<Option<broadcast::Sender<ipc::DaemonEventEnvelope>>>,
+    closed: std::sync::atomic::AtomicBool,
     next_request_id: AtomicI64,
     socket: String,
 }
@@ -62,7 +64,12 @@ impl OrcasIpcClient {
             socket = self.socket.as_str(),
             "subscribing to Orcas daemon events"
         );
-        self.event_tx.subscribe()
+        self.event_tx
+            .read()
+            .expect("event sender lock poisoned")
+            .as_ref()
+            .map(broadcast::Sender::subscribe)
+            .unwrap_or_else(closed_event_subscription)
     }
 
     pub async fn daemon_status(&self) -> OrcasResult<ipc::DaemonStatusResponse> {
@@ -639,7 +646,8 @@ impl OrcasIpcClient {
         let client = Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             outbound: outbound_tx,
-            event_tx,
+            event_tx: RwLock::new(Some(event_tx)),
+            closed: std::sync::atomic::AtomicBool::new(false),
             next_request_id: AtomicI64::new(1),
             socket,
         });
@@ -653,6 +661,9 @@ impl OrcasIpcClient {
                         error = %error,
                         "Orcas IPC client write failed"
                     );
+                    client_write
+                        .close_connection(format!("Orcas daemon write failed: {error}").as_str())
+                        .await;
                     break;
                 }
                 if let Err(error) = write_half.write_all(b"\n").await {
@@ -661,6 +672,9 @@ impl OrcasIpcClient {
                         error = %error,
                         "Orcas IPC client write framing failed"
                     );
+                    client_write
+                        .close_connection(format!("Orcas daemon write failed: {error}").as_str())
+                        .await;
                     break;
                 }
             }
@@ -682,7 +696,9 @@ impl OrcasIpcClient {
                                 error = %error,
                                 "Orcas IPC client protocol handling failed"
                             );
-                            client_read.fail_pending(error.to_string().as_str()).await;
+                            client_read
+                                .close_connection(error.to_string().as_str())
+                                .await;
                             break;
                         }
                     }
@@ -692,7 +708,7 @@ impl OrcasIpcClient {
                             "Orcas IPC client disconnected"
                         );
                         client_read
-                            .fail_pending("Orcas daemon connection closed")
+                            .close_connection("Orcas daemon connection closed")
                             .await;
                         break;
                     }
@@ -703,7 +719,7 @@ impl OrcasIpcClient {
                             "Orcas IPC client read failed"
                         );
                         client_read
-                            .fail_pending(format!("Orcas daemon read failed: {error}").as_str())
+                            .close_connection(format!("Orcas daemon read failed: {error}").as_str())
                             .await;
                         break;
                     }
@@ -753,7 +769,15 @@ impl OrcasIpcClient {
             && let Some(params) = notification.params
             && let Ok(event) = serde_json::from_value::<ipc::EventsNotification>(params)
         {
-            let _ = self.event_tx.send(event.event);
+            let event_tx = self
+                .event_tx
+                .read()
+                .expect("event sender lock poisoned")
+                .as_ref()
+                .cloned();
+            if let Some(event_tx) = event_tx {
+                let _ = event_tx.send(event.event);
+            }
         }
     }
 
@@ -779,15 +803,45 @@ impl OrcasIpcClient {
         }
     }
 
+    async fn close_connection(&self, message: &str) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // Event subscriptions are scoped to one daemon socket lifetime. Closing the sender makes
+        // existing receivers terminate cleanly so callers resubscribe after reconnect instead of
+        // hanging as if missed events could be replayed from the old connection.
+        self.close_event_stream();
+        self.fail_pending(message).await;
+    }
+
+    fn close_event_stream(&self) {
+        self.event_tx
+            .write()
+            .expect("event sender lock poisoned")
+            .take();
+    }
+
     async fn request<T>(&self, method: &str, params: &impl Serialize) -> OrcasResult<T>
     where
         T: DeserializeOwned,
     {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(OrcasError::Transport(format!(
+                "Orcas daemon connection is closed; cannot send `{method}` request"
+            )));
+        }
         let start = Instant::now();
         let payload = serde_json::to_value(params)?;
         let request_id = RequestId::Integer(self.next_request_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(request_id.clone(), tx);
+
+        if self.closed.load(Ordering::Acquire) {
+            self.pending.lock().await.remove(&request_id);
+            return Err(OrcasError::Transport(format!(
+                "Orcas daemon connection is closed; cannot send `{method}` request"
+            )));
+        }
 
         debug!(
             socket = self.socket.as_str(),
@@ -863,6 +917,12 @@ impl OrcasIpcClient {
     }
 }
 
+fn closed_event_subscription() -> EventSubscription {
+    let (tx, rx) = broadcast::channel(1);
+    drop(tx);
+    rx
+}
+
 fn request_id_label(request_id: &RequestId) -> String {
     match request_id {
         RequestId::Integer(value) => value.to_string(),
@@ -878,6 +938,7 @@ mod tests {
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+    use tokio::time::{Duration, timeout};
 
     use orcas_core::ipc::{
         self, CollaborationSnapshot, DaemonEvent, DaemonEventEnvelope, DaemonRuntimeMetadata,
@@ -1210,5 +1271,69 @@ mod tests {
         assert!(
             matches!(error, OrcasError::Transport(message) if message.contains("Orcas daemon connection closed"))
         );
+    }
+
+    #[tokio::test]
+    async fn server_close_closes_existing_event_subscriptions() {
+        let (client, mut server) = test_client_and_server();
+
+        let subscribe_task = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.subscribe_events(false).await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::EVENTS_SUBSCRIBE);
+        server
+            .send_message(JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: serde_json::to_value(ipc::EventsSubscribeResponse {
+                    subscribed: true,
+                    snapshot: None,
+                })
+                .expect("serialize subscribe response"),
+            }))
+            .await;
+
+        let (mut events, _) = subscribe_task
+            .await
+            .expect("join subscribe task")
+            .expect("subscribe succeeds");
+        server.close();
+
+        let recv_result = timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("event receiver should resolve after server close");
+        assert!(matches!(
+            recv_result,
+            Err(tokio::sync::broadcast::error::RecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn requests_fail_immediately_after_server_close() {
+        let (client, mut server) = test_client_and_server();
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.state_get().await })
+        };
+        let request = recv_request(&mut server).await;
+        assert_eq!(request.method, ipc::methods::STATE_GET);
+        server.close();
+        pending
+            .await
+            .expect("join pending request")
+            .expect_err("closed server should fail request");
+
+        let error = client
+            .state_get()
+            .await
+            .expect_err("subsequent request should fail immediately");
+        assert!(matches!(
+            error,
+            OrcasError::Transport(message)
+                if message.contains("Orcas daemon connection is closed")
+        ));
     }
 }

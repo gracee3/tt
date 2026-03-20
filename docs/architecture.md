@@ -20,6 +20,8 @@ Orcas uses a local Unix domain socket for IPC. The wire format is structured JSO
 
 The daemon provides both snapshots and events. A client can ask for a point-in-time snapshot to bootstrap its view, then subscribe to events to keep that view current. The CLI relies on focused RPCs for authority-backed planning CRUD and on `state/get` plus focused RPCs for collaboration and runtime views. The TUI bootstraps from both `state/get` and `authority/hierarchy/get`, because `state/get` is now a collaboration-first snapshot plus any explicit assignment-compatibility bridge rows rather than a general authority planning read. Authority workstream, work unit, and tracked-thread CRUD mutations emit post-commit lifecycle notifications, but those notifications are still visibility signals layered on top of authority reloads rather than a replacement for canonical authority reads.
 
+Recovery remains snapshot-first rather than replay-based. If a daemon connection drops or the daemon restarts, old event subscriptions close with that socket lifetime. Clients reconnect, reload current state, and then establish a fresh subscription; they do not assume missed history will be replayed.
+
 The daemon’s state model is Orcas-native, but it currently has two live local persistence systems. Legacy collaboration and thread/turn mirror state are loaded from and persisted to `state.json`. Authority-owned workstreams, work units, and tracked threads are stored in `state.db` with explicit commands, revisions, and tombstones. `state/get` is therefore a merged derived snapshot rather than a single-store read, while `authority/hierarchy/get` and authority detail RPCs remain the canonical planning hierarchy surfaces.
 
 ## Workflow Lifecycle
@@ -36,7 +38,7 @@ The daemon owns the upstream Codex connection and the local supervision state. S
 
 If the daemon is managed by systemd, the service is started and stopped there. If it is run manually, it behaves like a normal foreground process. In both cases the daemon is the long-lived process and the clients are transient.
 
-This separation matters operationally. Restarting the CLI does not affect the Codex connection. Restarting the daemon does, because it owns the live upstream session and the supervised state surfaces. Restarting the TUI does not affect daemon-owned state, but any TUI-local PTY-backed `codex resume` session belongs to that TUI process rather than the daemon.
+This separation matters operationally. Restarting the CLI does not affect the Codex connection. Restarting the daemon does, because it owns the live upstream session and the supervised state surfaces. Restarting the TUI does not affect daemon-owned state, but any TUI-local PTY-backed `codex resume` session belongs to that TUI process rather than the daemon. After a daemon restart, the TUI invalidates its authority-only hierarchy and detail caches, reloads `state/get`, reloads `authority/hierarchy/get`, and then refetches focused detail when the selected row still exists. If the TUI process itself remains alive, an already-running local PTY session can continue independently during daemon reconnect because it is not daemon-managed state.
 
 ## Design Principles
 

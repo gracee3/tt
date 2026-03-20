@@ -402,3 +402,101 @@ async fn deleted_authority_rows_are_hidden_from_state_even_after_assignment_brid
 
     daemon.stop().await;
 }
+
+#[tokio::test]
+async fn assignment_bridge_and_authority_hierarchy_remain_coherent_after_restart() {
+    let fake_codex = FakeCodexAppServer::spawn().await;
+    let mut daemon = TestDaemon::spawn_with_env(
+        "authority-assignment-restart",
+        vec![(
+            "ORCAS_CODEX_LISTEN_URL".to_string(),
+            fake_codex.endpoint.clone(),
+        )],
+    )
+    .await;
+    let client = daemon.connect().await;
+    let fixture = AuthorityFixture::new();
+
+    let workstream = create_authority_workstream(
+        &client,
+        &fixture,
+        "authority-assignment-restart-ws",
+        "Restart Root",
+    )
+    .await;
+    let work_unit = create_authority_workunit(
+        &client,
+        &fixture,
+        "authority-assignment-restart-wu",
+        &workstream.id,
+        "Restart Unit",
+    )
+    .await;
+
+    let started = client
+        .assignment_start(&ipc::AssignmentStartRequest {
+            work_unit_id: work_unit.id.to_string(),
+            worker_id: "worker-restart".to_string(),
+            worker_kind: Some("codex".to_string()),
+            instructions: Some("Bridge before restart".to_string()),
+            model: None,
+            cwd: None,
+        })
+        .await
+        .expect("assignment start should bridge authority work unit");
+
+    daemon.restart().await;
+
+    let reconnected = daemon.connect().await;
+    let state_after_restart = reconnected
+        .state_get()
+        .await
+        .expect("state/get after restart");
+    let bridged_workstream = state_after_restart
+        .snapshot
+        .collaboration
+        .workstreams
+        .iter()
+        .find(|summary| summary.id == workstream.id.as_str())
+        .expect("bridged workstream should remain visible after restart");
+    assert_eq!(
+        bridged_workstream.source_kind,
+        ipc::PlanningSummarySourceKind::AuthorityCompatibilityBridge
+    );
+    let bridged_work_unit = state_after_restart
+        .snapshot
+        .collaboration
+        .work_units
+        .iter()
+        .find(|summary| summary.id == work_unit.id.as_str())
+        .expect("bridged work unit should remain visible after restart");
+    assert_eq!(
+        bridged_work_unit.source_kind,
+        ipc::PlanningSummarySourceKind::AuthorityCompatibilityBridge
+    );
+    assert_eq!(
+        bridged_work_unit.current_assignment_id.as_deref(),
+        Some(started.assignment.id.as_str())
+    );
+
+    let hierarchy_after_restart = reconnected
+        .authority_hierarchy_get(&ipc::AuthorityHierarchyGetRequest {
+            include_deleted: false,
+        })
+        .await
+        .expect("authority hierarchy after restart");
+    let authority_workstream = hierarchy_after_restart
+        .hierarchy
+        .workstreams
+        .iter()
+        .find(|node| node.workstream.id == workstream.id)
+        .expect("authority workstream should remain canonical after restart");
+    assert!(
+        authority_workstream
+            .work_units
+            .iter()
+            .any(|node| node.work_unit.id == work_unit.id)
+    );
+
+    daemon.stop().await;
+}

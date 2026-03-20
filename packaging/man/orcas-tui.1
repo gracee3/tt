@@ -17,6 +17,18 @@ intentional local exception: it can launch a PTY-backed \fBcodex resume\fR
 session for interactive attachment to a selected thread. That local PTY session
 is not daemon-owned workflow state.
 
+Recovery is snapshot-first rather than replay-based. If the daemon connection
+drops or the daemon restarts, the old event subscription closes with that
+socket lifetime. The TUI reconnects, reloads \fBstate/get\fR, refreshes the
+authority hierarchy and focused detail as needed, and establishes a fresh event
+subscription for new notifications. Local
+PTY-backed \fBcodex resume\fR sessions are not reconstructed by daemon
+reconnect.
+
+An already-running local PTY-backed \fBcodex resume\fR session remains owned by
+the TUI process rather than the daemon. It can continue independently while the
+daemon reconnects, but it is not daemon-persisted planning or workflow state.
+
 The TUI is intended for local use on a Linux workstation or terminal session.
 It shares the same configuration, runtime state, and log locations as the rest
 of the Orcas suite.

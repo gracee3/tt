@@ -249,9 +249,12 @@ The current client reconnect flow is:
 2. Request `state/get`.
 3. Request focused reads as needed.
 4. Subscribe to `events/subscribe`.
-5. After reconnect or daemon restart, rebuild from fresh reads first and only then consume incremental events.
+5. If the socket drops or the daemon restarts, treat the old subscription as closed.
+6. Reconnect, request fresh reads again, and only then consume new incremental events.
 
 This remains the recommended flow for both the CLI and the TUI. The TUI adds an authority reload step because its main hierarchy depends on both `state/get` and `authority/hierarchy/get`.
+
+There is still no replay contract for missed daemon events. A closed or interrupted subscription means the client must re-read current state rather than infer what happened while it was disconnected.
 
 ### Persistence Notes
 
@@ -272,9 +275,21 @@ This remains the recommended flow for both the CLI and the TUI. The TUI adds an 
 - authority detail queries when exact authority fields are needed
 - proposal and other focused RPCs for data that is not included in `state/get`
 
+The current TUI reconnect path also treats authority-only view state as invalidated until those reloads complete:
+
+- authority hierarchy rows are cleared when the daemon connection is lost
+- cached authority detail records are cleared when the daemon connection is lost
+- the main-footer edit or delete mode resets to inspect on disconnect or fresh snapshot load
+- the current authority selection is preserved only as selection intent and is restored after a fresh hierarchy reload if that row still exists
+
 ### TUI PTY Exception
 
 The TUI-local PTY-backed `codex resume` session manager is not part of daemon state. It does not live in `state/get` or `authority/hierarchy/get`, and it is not reconstructed by daemon reconnect.
+
+- If the daemon restarts, the TUI must reconnect and reload daemon-owned state separately.
+- If the TUI process stays alive, an already-running local PTY helper can continue independently while the daemon reconnects because that PTY session is TUI-owned rather than daemon-owned.
+- If the TUI exits, the local PTY helper exits with it unless the operator detached it separately.
+- Local PTY session state should therefore be treated as operator convenience state rather than durable workflow state.
 
 ## Upstream Codex Integration
 

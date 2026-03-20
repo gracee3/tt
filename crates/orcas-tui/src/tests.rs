@@ -3772,6 +3772,81 @@ async fn snapshot_refresh_keeps_main_selection_stable() {
 }
 
 #[tokio::test]
+async fn reconnect_invalidates_stale_authority_state_then_reloads_hierarchy() {
+    let mut harness = AppHarness::new(sample_main_surface_snapshot())
+        .await
+        .unwrap();
+
+    harness.dispatch(UserAction::EditSelectedMainEntity).await;
+    harness.dispatch(UserAction::EditSelectedMainEntity).await;
+    assert!(matches!(
+        harness.state().authority_main.footer,
+        MainFooterState::EditTrackedThread(_)
+    ));
+    assert!(
+        !harness
+            .state()
+            .authority_main
+            .tracked_thread_details
+            .is_empty()
+    );
+    let expected_selection = harness.state().main_view.selected.clone();
+
+    harness
+        .replace_snapshot(sample_main_surface_snapshot())
+        .await;
+    harness.disconnect_events().await;
+    harness.process().await;
+
+    assert_eq!(
+        harness.state().daemon_phase,
+        DaemonConnectionPhase::Reconnecting
+    );
+    assert!(
+        harness
+            .state()
+            .authority_main
+            .hierarchy
+            .workstreams
+            .is_empty()
+    );
+    assert!(harness.state().authority_main.workstream_details.is_empty());
+    assert!(harness.state().authority_main.work_unit_details.is_empty());
+    assert!(
+        harness
+            .state()
+            .authority_main
+            .tracked_thread_details
+            .is_empty()
+    );
+    assert!(matches!(
+        harness.state().authority_main.footer,
+        MainFooterState::Inspect
+    ));
+    assert_eq!(
+        harness.state().main_view.pending_selection,
+        expected_selection
+    );
+
+    harness.force_reconnect_now();
+    harness.process().await;
+
+    assert_eq!(
+        harness.state().daemon_phase,
+        DaemonConnectionPhase::Connected
+    );
+    assert!(
+        !harness
+            .state()
+            .authority_main
+            .hierarchy
+            .workstreams
+            .is_empty()
+    );
+    assert_eq!(harness.state().main_view.selected, expected_selection);
+}
+
+#[tokio::test]
 async fn main_footer_mode_transitions_and_contextual_hints_are_explicit() {
     let mut harness = AppHarness::new(sample_main_surface_snapshot())
         .await

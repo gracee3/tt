@@ -93,6 +93,13 @@ The current read model is split:
 - `state/get` is a merged daemon snapshot that includes collaboration state plus any explicit authority compatibility bridge summaries needed for assignment execution
 - `authority/hierarchy/get` is the canonical authority-only hierarchy query for planning hierarchy, tracked threads, revisions, and other authority metadata; the TUI uses it directly and other clients should prefer authority reads when they need canonical planning state
 
+Recovery is snapshot-first rather than replay-based:
+
+- if a daemon connection drops or the daemon restarts, clients reconnect, reload current reads, and then resubscribe for new events
+- old event subscriptions are tied to the old socket lifetime and are not a missed-history replay channel
+- the TUI reloads both `state/get` and `authority/hierarchy/get` after reconnect, then refetches focused authority detail when the selected row still exists
+- TUI-local PTY-backed `codex resume` sessions are not rebuilt by daemon reconnect or restart; if the TUI process stays alive, an already-running local PTY session remains a TUI-owned attachment surface rather than daemon-persisted state
+
 The current operator mutation surface is also split, but no longer ambiguous:
 
 - `orcas workstreams ...`, `orcas workunits ...`, and `orcas tracked-threads ...` are the canonical authority-backed planning hierarchy CRUD commands
