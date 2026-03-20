@@ -1,3 +1,10 @@
+//! Socket-lifetime IPC client for the Orcas daemon.
+//!
+//! This layer is intentionally thin: it does not replay missed events, it does
+//! not keep subscriptions alive across reconnect, and it does not try to mask a
+//! dead daemon socket as a reusable cache. Callers are expected to rebuild the
+//! client after disconnect and perform snapshot-first recovery above this layer.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -21,8 +28,17 @@ use orcas_core::jsonrpc::{
 use orcas_core::{AppPaths, OrcasError, OrcasResult};
 
 type PendingResponse = oneshot::Sender<OrcasResult<Value>>;
+/// Event receiver bound to one daemon socket lifetime.
+///
+/// The stream ends when the client closes the connection, so callers must
+/// resubscribe after reconnect instead of assuming missed events were replayed.
 pub type EventSubscription = broadcast::Receiver<ipc::DaemonEventEnvelope>;
 
+/// Thin JSON-RPC client for the current daemon socket.
+///
+/// A closed client is not recoverable. Once the socket dies, outstanding
+/// requests fail and event subscriptions terminate so higher layers can rebuild
+/// state from a fresh snapshot.
 pub struct OrcasIpcClient {
     pending: Mutex<HashMap<RequestId, PendingResponse>>,
     outbound: mpsc::Sender<String>,
@@ -60,6 +76,7 @@ impl OrcasIpcClient {
     }
 
     pub fn subscribe(&self) -> EventSubscription {
+        // Subscriptions are per-socket, not per logical daemon identity.
         debug!(
             socket = self.socket.as_str(),
             "subscribing to Orcas daemon events"
@@ -618,6 +635,8 @@ impl OrcasIpcClient {
         &self,
         include_snapshot: bool,
     ) -> OrcasResult<(EventSubscription, Option<ipc::StateSnapshot>)> {
+        // Snapshot-first recovery happens above this layer: request the current
+        // snapshot first, then consume incremental events from this connection.
         debug!(
             socket = self.socket.as_str(),
             include_snapshot, "starting Orcas daemon event subscription"
@@ -824,6 +843,8 @@ impl OrcasIpcClient {
     where
         T: DeserializeOwned,
     {
+        // Once the client is closed, the request path is intentionally hard
+        // fail: a dead socket must be rebuilt rather than recovered in place.
         if self.closed.load(Ordering::Acquire) {
             return Err(OrcasError::Transport(format!(
                 "Orcas daemon connection is closed; cannot send `{method}` request"
