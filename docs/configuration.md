@@ -71,6 +71,23 @@ The current source tree ships a development-oriented default for `codex.binary_p
 
 Orcas binaries write structured tracing output to log files under the data directory rather than to stdout or stderr. For the daemon, the primary log is `orcasd.log` and the aggregate log is `orcas.log`, both under the logs directory derived from XDG data paths.
 
+The current log directory is:
+
+```bash
+${XDG_DATA_HOME:-~/.local/share}/orcas/logs/
+```
+
+The current files are:
+
+1. `orcasd.log` for the daemon component log.
+2. `orcas-tui.log` for the TUI component log.
+3. `orcas.log` for the operator CLI log and the aggregate cross-component log.
+4. `codex-app-server.log` for raw Codex app-server stdout/stderr diagnostics.
+
+Aggregate logging is enabled by default for the daemon, TUI, and supervisor/CLI components. It is disabled by default for the raw app-server stream unless `ORCAS_LOG_AGGREGATE_APP_SERVER` is enabled.
+
+The log, config, data, and runtime directories are created automatically on startup.
+
 When launched under systemd, the daemon still writes its application logs to those files. The system journal will mainly contain service lifecycle messages and any early startup failure that occurs before the file logger is initialized.
 
 To increase verbosity, set `RUST_LOG=debug` or use a component-specific filter such as `RUST_LOG=orcasd=debug,tokio=info`.
