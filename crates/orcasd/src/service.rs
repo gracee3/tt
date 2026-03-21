@@ -75,6 +75,7 @@ use crate::authority_store::{AuthorityMutationResult, AuthoritySqliteStore};
 use crate::landing_authorization::landing_authorization_is_current;
 use crate::landing_execution::landing_execution_matches_authorization_basis;
 use crate::merge_prep::assess_merge_prep;
+use crate::operator_inbox::build_operator_inbox_state;
 use crate::planning_session::{
     build_planning_revision_proposal, build_research_work_unit,
     planning_session_status_is_terminal, planning_session_thread_prompt,
@@ -3779,12 +3780,13 @@ impl OrcasDaemonService {
                     session.session_id
                 )));
             }
+            if params.summary.ready_for_review {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` summary cannot mark the session ready for review; use planning_session_mark_ready_for_review",
+                    session.session_id
+                )));
+            }
             session.latest_structured_summary = params.summary.clone();
-            session.status = if session.latest_structured_summary.ready_for_review {
-                PlanningSessionStatus::AwaitingApproval
-            } else {
-                PlanningSessionStatus::Chatting
-            };
             session.updated_at = Utc::now();
             session.updated_by = updated_by.clone();
             if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
@@ -4032,6 +4034,12 @@ impl OrcasDaemonService {
             if planning_session_status_is_terminal(session.status) {
                 return Err(OrcasError::Protocol(format!(
                     "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            if session.status != PlanningSessionStatus::Chatting {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` can only be marked ready while chatting",
                     session.session_id
                 )));
             }
@@ -11605,6 +11613,7 @@ impl OrcasDaemonService {
             threads,
             active_thread,
             collaboration,
+            operator_inbox: build_operator_inbox_state(&collaboration_state),
             recent_events: self.recent_events.lock().await.iter().cloned().collect(),
         })
     }
@@ -13343,6 +13352,8 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     .map(|turn| (format!("{}::{}", turn.thread_id, turn.turn_id), turn))
                     .collect::<BTreeMap<_, _>>(),
                 collaboration: state.collaboration.clone(),
+                operator_inbox: build_operator_inbox_state(&state.collaboration),
+                operator_inbox_mirrors: Default::default(),
             }
         };
         let result = self.store.save(&stored).await;
@@ -15073,6 +15084,145 @@ mod tests {
             error
                 .to_string()
                 .contains("summary cannot declare research as requested")
+        );
+    }
+
+    #[tokio::test]
+    async fn planning_session_update_summary_rejects_ready_for_review_smuggling() {
+        let service = test_service().await;
+        {
+            let mut state = service.state.write().await;
+            state.collaboration.planning_sessions.insert(
+                "ps-test".to_string(),
+                sample_planning_session("ps-test", "ws-test"),
+            );
+        }
+
+        let error = service
+            .planning_session_update_summary(ipc::PlanningSessionUpdateSummaryRequest {
+                session_id: "ps-test".to_string(),
+                summary: orcas_core::PlanningSessionStructuredSummary {
+                    objective: "Plan one bounded change.".to_string(),
+                    requirements: vec!["Keep it bounded.".to_string()],
+                    constraints: Vec::new(),
+                    non_goals: Vec::new(),
+                    open_questions: Vec::new(),
+                    research_status: orcas_core::PlanningSessionResearchStatus::NotRequested,
+                    draft_plan_summary: Some("Draft summary".to_string()),
+                    ready_for_review: true,
+                },
+                updated_by: None,
+                note: None,
+            })
+            .await
+            .expect_err("ready-for-review smuggling should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("summary cannot mark the session ready for review")
+        );
+    }
+
+    #[tokio::test]
+    async fn planning_session_update_summary_preserves_lifecycle_status_for_normal_edits() {
+        let service = test_service().await;
+        {
+            let mut state = service.state.write().await;
+            let mut session = sample_planning_session("ps-test", "ws-test");
+            session.status = orcas_core::collaboration::PlanningSessionStatus::AwaitingApproval;
+            session.latest_structured_summary.ready_for_review = true;
+            state
+                .collaboration
+                .planning_sessions
+                .insert("ps-test".to_string(), session);
+        }
+
+        let response = service
+            .planning_session_update_summary(ipc::PlanningSessionUpdateSummaryRequest {
+                session_id: "ps-test".to_string(),
+                summary: orcas_core::PlanningSessionStructuredSummary {
+                    objective: "Refined objective".to_string(),
+                    requirements: vec!["Keep it bounded.".to_string(), "Stay descriptive.".to_string()],
+                    constraints: vec!["No broad refactor.".to_string()],
+                    non_goals: vec!["Do not widen scope.".to_string()],
+                    open_questions: vec!["Is this still bounded?".to_string()],
+                    research_status: orcas_core::PlanningSessionResearchStatus::NotRequested,
+                    draft_plan_summary: Some("Updated draft summary".to_string()),
+                    ready_for_review: false,
+                },
+                updated_by: Some("tester".to_string()),
+                note: Some("descriptive update".to_string()),
+            })
+            .await
+            .expect("normal summary update should succeed");
+
+        assert_eq!(
+            response.session.status,
+            orcas_core::collaboration::PlanningSessionStatus::AwaitingApproval
+        );
+        assert_eq!(
+            response.session.latest_structured_summary.objective,
+            "Refined objective"
+        );
+        assert_eq!(
+            response.session.latest_structured_summary.ready_for_review,
+            false
+        );
+        assert_eq!(
+            response.session.review_note,
+            Some("descriptive update".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn planning_session_mark_ready_for_review_requires_chatting_and_sets_status() {
+        let service = test_service().await;
+        {
+            let mut state = service.state.write().await;
+            let mut session = sample_planning_session("ps-chat", "ws-test");
+            session.status = orcas_core::collaboration::PlanningSessionStatus::Chatting;
+            state
+                .collaboration
+                .planning_sessions
+                .insert("ps-chat".to_string(), session);
+
+            let mut awaiting = sample_planning_session("ps-ready", "ws-test");
+            awaiting.status = orcas_core::collaboration::PlanningSessionStatus::AwaitingApproval;
+            state
+                .collaboration
+                .planning_sessions
+                .insert("ps-ready".to_string(), awaiting);
+        }
+
+        let chat_response = service
+            .planning_session_mark_ready_for_review(ipc::PlanningSessionMarkReadyForReviewRequest {
+                session_id: "ps-chat".to_string(),
+                updated_by: Some("tester".to_string()),
+                note: Some("ready to hand off".to_string()),
+            })
+            .await
+            .expect("chatting session should transition");
+        assert_eq!(
+            chat_response.session.status,
+            orcas_core::collaboration::PlanningSessionStatus::AwaitingApproval
+        );
+        assert!(chat_response.session.latest_structured_summary.ready_for_review);
+        assert_eq!(
+            chat_response.session.review_note,
+            Some("ready to hand off".to_string())
+        );
+
+        let err = service
+            .planning_session_mark_ready_for_review(ipc::PlanningSessionMarkReadyForReviewRequest {
+                session_id: "ps-ready".to_string(),
+                updated_by: Some("tester".to_string()),
+                note: None,
+            })
+            .await
+            .expect_err("already awaiting approval should be rejected");
+        assert!(
+            err.to_string()
+                .contains("can only be marked ready while chatting")
         );
     }
 
