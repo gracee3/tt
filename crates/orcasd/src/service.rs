@@ -77,6 +77,9 @@ use crate::authority_store::{AuthorityMutationResult, AuthoritySqliteStore};
 use crate::landing_authorization::landing_authorization_is_current;
 use crate::landing_execution::landing_execution_matches_authorization_basis;
 use crate::merge_prep::assess_merge_prep;
+use crate::operator_inbox::{
+    build_operator_inbox_state, get_operator_inbox_item, list_operator_inbox_items,
+};
 use crate::planning_session::{
     build_planning_revision_proposal, build_research_work_unit,
     planning_session_status_is_terminal, planning_session_thread_prompt,
@@ -963,6 +966,16 @@ impl OrcasDaemonService {
                 let params: ipc::AuthorityEventsReplayRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.authority_events_replay(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_LIST => {
+                let params: ipc::OperatorInboxListRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_list(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_GET => {
+                let params: ipc::OperatorInboxGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_get(params).await?)?
             }
             ipc::methods::WORKSTREAM_PLAN_GET => {
                 let params: ipc::WorkstreamPlanGetRequest =
@@ -3605,6 +3618,27 @@ impl OrcasDaemonService {
                 .then_with(|| left.proposal_id.as_str().cmp(right.proposal_id.as_str()))
         });
         Ok(ipc::PlanRevisionProposalListResponse { proposals })
+    }
+
+    async fn operator_inbox_list(
+        &self,
+        params: ipc::OperatorInboxListRequest,
+    ) -> OrcasResult<ipc::OperatorInboxListResponse> {
+        let state = self.state.read().await;
+        Ok(ipc::OperatorInboxListResponse {
+            items: list_operator_inbox_items(&state.collaboration, &params),
+        })
+    }
+
+    async fn operator_inbox_get(
+        &self,
+        params: ipc::OperatorInboxGetRequest,
+    ) -> OrcasResult<ipc::OperatorInboxGetResponse> {
+        let item = get_operator_inbox_item(&self.state.read().await.collaboration, &params.item_id)
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown operator inbox item `{}`", params.item_id))
+            })?;
+        Ok(ipc::OperatorInboxGetResponse { item })
     }
 
     async fn planning_session_create(
@@ -11516,6 +11550,7 @@ impl OrcasDaemonService {
         // been tombstoned, even though the legacy collaboration copy may still exist on disk.
         let bridge_metadata = self.bridge_snapshot_metadata(&collaboration_state).await?;
         let collaboration = Self::collaboration_snapshot(&collaboration_state, &bridge_metadata);
+        let operator_inbox = build_operator_inbox_state(&collaboration_state);
 
         Ok(ipc::StateSnapshot {
             daemon,
@@ -11523,6 +11558,7 @@ impl OrcasDaemonService {
             threads,
             active_thread,
             collaboration,
+            operator_inbox,
             recent_events: self.recent_events.lock().await.iter().cloned().collect(),
         })
     }
@@ -13263,6 +13299,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     .map(|turn| (format!("{}::{}", turn.thread_id, turn.turn_id), turn))
                     .collect::<BTreeMap<_, _>>(),
                 collaboration: state.collaboration.clone(),
+                operator_inbox: build_operator_inbox_state(&state.collaboration),
             }
         };
         let result = self.store.save(&stored).await;

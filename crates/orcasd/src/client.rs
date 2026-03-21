@@ -116,6 +116,21 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn operator_inbox_list(
+        &self,
+        params: &ipc::OperatorInboxListRequest,
+    ) -> OrcasResult<ipc::OperatorInboxListResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_LIST, params)
+            .await
+    }
+
+    pub async fn operator_inbox_get(
+        &self,
+        params: &ipc::OperatorInboxGetRequest,
+    ) -> OrcasResult<ipc::OperatorInboxGetResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_GET, params).await
+    }
+
     pub async fn session_get_active(&self) -> OrcasResult<ipc::SessionGetActiveResponse> {
         self.request(
             ipc::methods::SESSION_GET_ACTIVE,
@@ -1263,6 +1278,7 @@ mod tests {
                 turns: Vec::new(),
             }),
             collaboration: CollaborationSnapshot::default(),
+            operator_inbox: ipc::OperatorInboxState::default(),
             recent_events: Vec::new(),
         }
     }

@@ -89,6 +89,8 @@ pub mod methods {
     pub const AUTHORITY_EVENTS_EXPORT: &str = "authority/events/export";
     pub const AUTHORITY_EVENTS_ACK: &str = "authority/events/ack";
     pub const AUTHORITY_EVENTS_REPLAY: &str = "authority/events/replay";
+    pub const OPERATOR_INBOX_LIST: &str = "operator_inbox/list";
+    pub const OPERATOR_INBOX_GET: &str = "operator_inbox/get";
     pub const WORKSTREAM_PLAN_GET: &str = "workstream_plan/get";
     pub const WORKSTREAM_PLAN_LIST: &str = "workstream_plan/list";
     pub const PLAN_ASSESSMENT_LIST: &str = "plan_assessment/list";
@@ -247,7 +249,8 @@ pub struct EventsNotification {
 }
 
 /// A daemon snapshot combines runtime daemon/session/thread state with the
-/// collaboration snapshot used for recovery and operator inspection.
+/// collaboration snapshot used for recovery and operator inspection plus the
+/// derived operator inbox read model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub daemon: DaemonStatusResponse,
@@ -256,6 +259,8 @@ pub struct StateSnapshot {
     pub active_thread: Option<ThreadView>,
     #[serde(default)]
     pub collaboration: CollaborationSnapshot,
+    #[serde(default)]
+    pub operator_inbox: OperatorInboxState,
     #[serde(default)]
     pub recent_events: Vec<EventSummary>,
 }
@@ -277,6 +282,117 @@ pub struct CollaborationSnapshot {
     pub decisions: Vec<DecisionSummary>,
     #[serde(default)]
     pub planning: PlanningState,
+}
+
+/// Derived local read model for actionable operator review.
+///
+/// This is not canonical planning truth. It is a persisted projection over
+/// durable collaboration/runtime records so a future server or client can query
+/// review work without reinterpreting the source domains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorInboxSourceKind {
+    #[default]
+    SupervisorProposal,
+    SupervisorDecision,
+    PlanningSession,
+    PlanRevisionProposal,
+}
+
+/// Stable operator-facing status for a derived inbox item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorInboxItemStatus {
+    #[default]
+    Open,
+    Resolved,
+    Stale,
+    Superseded,
+}
+
+/// Available review actions for a derived inbox item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorInboxActionKind {
+    #[default]
+    Approve,
+    Reject,
+    ApproveAndSend,
+    RecordNoAction,
+    ManualRefresh,
+    Reconcile,
+    Retry,
+    Supersede,
+    MarkReadyForReview,
+}
+
+/// A single derived operator-actionable item.
+///
+/// The item id is stable and derived from the source record identity so the
+/// projection can be rebuilt or synced without inventing a new canonical key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorInboxItem {
+    pub id: String,
+    pub source_kind: OperatorInboxSourceKind,
+    pub actionable_object_id: String,
+    #[serde(default)]
+    pub workstream_id: Option<String>,
+    #[serde(default)]
+    pub work_unit_id: Option<String>,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub status: OperatorInboxItemStatus,
+    #[serde(default)]
+    pub available_actions: Vec<OperatorInboxActionKind>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub provenance: Option<String>,
+}
+
+/// Persisted local state for the derived operator inbox projection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorInboxState {
+    #[serde(default)]
+    pub items: Vec<OperatorInboxItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorInboxListRequest {
+    #[serde(default)]
+    pub workstream_id: Option<String>,
+    #[serde(default)]
+    pub work_unit_id: Option<String>,
+    #[serde(default)]
+    pub source_kind: Option<OperatorInboxSourceKind>,
+    #[serde(default)]
+    pub status: Option<OperatorInboxItemStatus>,
+    #[serde(default)]
+    pub include_closed: bool,
+    #[serde(default)]
+    pub actionable_only: bool,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxListResponse {
+    pub items: Vec<OperatorInboxItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxGetRequest {
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxGetResponse {
+    pub item: OperatorInboxItem,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
