@@ -95,6 +95,7 @@ pub mod methods {
     pub const OPERATOR_INBOX_CHECKPOINT: &str = "operator_inbox/checkpoint";
     pub const OPERATOR_INBOX_CHANGES: &str = "operator_inbox/changes";
     pub const OPERATOR_INBOX_ACTION_ROUTE: &str = "operator_inbox/action_route";
+    pub const OPERATOR_INBOX_WAIT_FOR_CHECKPOINT: &str = "operator_inbox/wait_for_checkpoint";
     pub const OPERATOR_INBOX_REPLAY: &str = "operator_inbox/replay";
     pub const OPERATOR_INBOX_EXPORT: &str = "operator_inbox/export";
     pub const OPERATOR_INBOX_ACK: &str = "operator_inbox/ack";
@@ -478,6 +479,21 @@ pub struct OperatorInboxCheckpointRequest {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorInboxCheckpointResponse {
     pub checkpoint: OperatorInboxCheckpoint,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorInboxWaitRequest {
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxWaitResponse {
+    pub checkpoint: OperatorInboxCheckpoint,
+    pub advanced: bool,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

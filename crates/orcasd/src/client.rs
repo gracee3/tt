@@ -155,6 +155,14 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn operator_inbox_wait_for_checkpoint(
+        &self,
+        params: &ipc::OperatorInboxWaitRequest,
+    ) -> OrcasResult<ipc::OperatorInboxWaitResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_WAIT_FOR_CHECKPOINT, params)
+            .await
+    }
+
     pub async fn operator_inbox_replay(
         &self,
         params: &ipc::OperatorInboxReplayRequest,

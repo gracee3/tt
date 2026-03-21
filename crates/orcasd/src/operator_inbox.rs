@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 #[cfg(test)]
 use chrono::{DateTime, Utc};
@@ -10,6 +11,8 @@ use orcas_core::collaboration::{
 use orcas_core::planning::{PlanRevisionProposal, PlanRevisionProposalStatus};
 use orcas_core::supervisor::SupervisorProposalRecord;
 use orcas_core::ipc;
+use tokio::sync::watch;
+use tokio::time::timeout;
 
 #[cfg(test)]
 use chrono::TimeZone;
@@ -144,6 +147,35 @@ pub fn build_operator_inbox_state(collaboration: &CollaborationState) -> ipc::Op
 
 pub fn operator_inbox_checkpoint(state: &ipc::OperatorInboxState) -> ipc::OperatorInboxCheckpoint {
     state.checkpoint.clone()
+}
+
+pub async fn wait_for_operator_inbox_checkpoint(
+    mut checkpoint_rx: watch::Receiver<ipc::OperatorInboxCheckpoint>,
+    after_sequence: u64,
+    timeout_ms: Option<u64>,
+) -> Result<ipc::OperatorInboxCheckpoint, String> {
+    let wait = async {
+        loop {
+            let checkpoint = checkpoint_rx.borrow_and_update().clone();
+            if checkpoint.current_sequence > after_sequence {
+                return Ok(checkpoint);
+            }
+            checkpoint_rx
+                .changed()
+                .await
+                .map_err(|_| "operator inbox checkpoint stream closed".to_string())?;
+        }
+    };
+    match timeout_ms {
+        Some(timeout_ms) => timeout(Duration::from_millis(timeout_ms), wait)
+            .await
+            .map_err(|_| {
+                format!(
+                    "timed out waiting for operator inbox checkpoint after sequence {after_sequence}"
+                )
+            })?,
+        None => wait.await,
+    }
 }
 
 pub fn operator_inbox_changes_after(
@@ -1281,6 +1313,7 @@ mod tests {
     use super::*;
     use orcas_core::store::StoredState;
     use std::collections::BTreeMap;
+    use tokio::sync::watch;
 
     fn apply_inbox_changes(
         mut items: BTreeMap<String, ipc::OperatorInboxItem>,
@@ -1516,6 +1549,134 @@ mod tests {
         let partial = operator_inbox_changes_after(&inbox, 1, Some(2));
         assert!(partial.iter().all(|change| change.sequence > 1));
         assert!(partial.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+    }
+
+    #[tokio::test]
+    async fn inbox_wait_resolves_when_checkpoint_advances() {
+        let inbox = build_operator_inbox_state(&sample_collaboration());
+        let (tx, rx) = watch::channel(inbox.checkpoint.clone());
+        let waiter = tokio::spawn(async move {
+            wait_for_operator_inbox_checkpoint(
+                rx,
+                inbox.checkpoint.current_sequence,
+                Some(250),
+            )
+            .await
+        });
+
+        tx.send(ipc::OperatorInboxCheckpoint {
+            current_sequence: inbox.checkpoint.current_sequence + 1,
+            updated_at: sample_now(),
+        })
+        .expect("advance checkpoint");
+
+        let checkpoint = waiter.await.expect("join waiter").expect("wait succeeds");
+        assert_eq!(
+            checkpoint.current_sequence,
+            inbox.checkpoint.current_sequence + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_wait_times_out_without_material_change() {
+        let inbox = build_operator_inbox_state(&sample_collaboration());
+        let (_, rx) = watch::channel(inbox.checkpoint.clone());
+
+        let result = wait_for_operator_inbox_checkpoint(
+            rx,
+            inbox.checkpoint.current_sequence,
+            Some(25),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mirror_loop_checkpoint_wait_export_ack_behaves_predictably() {
+        let initial_collaboration = sample_collaboration();
+        let base = build_operator_inbox_state(&initial_collaboration);
+        let (tx, rx) = watch::channel(base.checkpoint.clone());
+        let waiter = tokio::spawn(async move {
+            wait_for_operator_inbox_checkpoint(
+                rx,
+                base.checkpoint.current_sequence,
+                Some(500),
+            )
+            .await
+        });
+
+        let mut next_collaboration = initial_collaboration.clone();
+        next_collaboration.supervisor_proposals.insert(
+            "proposal-1".to_string(),
+            sample_supervisor_proposal_record(orcas_core::SupervisorProposalStatus::Approved),
+        );
+        let next = rebuild_operator_inbox_state(&next_collaboration, Some(&base));
+        tx.send(next.checkpoint.clone()).expect("advance checkpoint");
+        let checkpoint = waiter.await.expect("join waiter").expect("wait succeeds");
+        assert_eq!(checkpoint, next.checkpoint);
+
+        let mut mirrors = BTreeMap::new();
+        let export = update_operator_inbox_export_checkpoint(
+            &mut mirrors,
+            "peer-loop",
+            &checkpoint,
+            base.checkpoint.current_sequence,
+            &operator_inbox_changes_after(
+                &next,
+                base.checkpoint.current_sequence,
+                None,
+            ),
+        )
+        .expect("export");
+        assert_eq!(export.last_exported_sequence, checkpoint.current_sequence);
+
+        let ack = update_operator_inbox_ack_checkpoint(
+            &mut mirrors,
+            "peer-loop",
+            export.last_exported_sequence,
+        )
+        .expect("ack");
+        assert_eq!(ack.last_acked_sequence, export.last_exported_sequence);
+        assert_eq!(
+            operator_inbox_mirror_checkpoint_for_peer(&mirrors, "peer-loop"),
+            ack
+        );
+    }
+
+    #[tokio::test]
+    async fn sequential_checkpoint_updates_advance_monotonically() {
+        let inbox = build_operator_inbox_state(&sample_collaboration());
+        let (tx, rx) = watch::channel(inbox.checkpoint.clone());
+        let waiter = tokio::spawn(async move {
+            wait_for_operator_inbox_checkpoint(
+                rx,
+                inbox.checkpoint.current_sequence,
+                Some(500),
+            )
+            .await
+        });
+
+        tx.send(ipc::OperatorInboxCheckpoint {
+            current_sequence: inbox.checkpoint.current_sequence + 1,
+            updated_at: sample_now(),
+        })
+        .expect("advance 1");
+        let first = waiter.await.expect("join waiter").expect("wait succeeds");
+        assert_eq!(first.current_sequence, inbox.checkpoint.current_sequence + 1);
+
+        let rx = tx.subscribe();
+        let waiter = tokio::spawn(async move {
+            wait_for_operator_inbox_checkpoint(rx, first.current_sequence, Some(500)).await
+        });
+
+        tx.send(ipc::OperatorInboxCheckpoint {
+            current_sequence: inbox.checkpoint.current_sequence + 2,
+            updated_at: sample_now(),
+        })
+        .expect("advance 2");
+
+        let second = waiter.await.expect("join waiter").expect("wait succeeds");
+        assert_eq!(second.current_sequence, inbox.checkpoint.current_sequence + 2);
     }
 
     #[test]

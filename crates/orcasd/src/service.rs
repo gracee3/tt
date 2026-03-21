@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, mpsc, watch};
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -81,6 +81,7 @@ use crate::operator_inbox::{
     build_operator_inbox_state, get_operator_inbox_item, list_operator_inbox_items,
     operator_inbox_changes_after, operator_inbox_checkpoint, rebuild_operator_inbox_state,
     operator_inbox_replay_items, resolve_operator_inbox_action_route,
+    wait_for_operator_inbox_checkpoint,
     update_operator_inbox_ack_checkpoint, update_operator_inbox_export_checkpoint,
 };
 use crate::planning_session::{
@@ -248,6 +249,7 @@ pub struct OrcasDaemonService {
     event_tx: broadcast::Sender<ipc::DaemonEventEnvelope>,
     client_count: AtomicUsize,
     shutdown: Notify,
+    operator_inbox_checkpoint_tx: watch::Sender<ipc::OperatorInboxCheckpoint>,
     supervisor_reasoner: Arc<dyn SupervisorReasoner>,
 }
 
@@ -296,6 +298,7 @@ impl OrcasDaemonService {
             event_tx,
             client_count: AtomicUsize::new(0),
             shutdown: Notify::new(),
+            operator_inbox_checkpoint_tx: watch::channel(ipc::OperatorInboxCheckpoint::default()).0,
         });
 
         service.initialize_state().await?;
@@ -440,6 +443,9 @@ impl OrcasDaemonService {
                 stored.operator_inbox
             };
             state.operator_inbox_mirrors = stored.operator_inbox_mirrors;
+            let _ = self
+                .operator_inbox_checkpoint_tx
+                .send(state.operator_inbox.checkpoint.clone());
             bootstrap_persist = Self::bootstrap_planning_state(&mut state.collaboration);
         }
         self.reconcile_worker_session_tracked_thread_bindings()
@@ -1007,6 +1013,11 @@ impl OrcasDaemonService {
                 let params: ipc::OperatorInboxActionRouteRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.operator_inbox_action_route(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_WAIT_FOR_CHECKPOINT => {
+                let params: ipc::OperatorInboxWaitRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_wait_for_checkpoint(params).await?)?
             }
             ipc::methods::OPERATOR_INBOX_REPLAY => {
                 let params: ipc::OperatorInboxReplayRequest =
@@ -3768,6 +3779,40 @@ impl OrcasDaemonService {
             operator_inbox_checkpoint(&state.operator_inbox)
         };
         Ok(ipc::OperatorInboxCheckpointResponse { checkpoint })
+    }
+
+    async fn operator_inbox_wait_for_checkpoint(
+        &self,
+        params: ipc::OperatorInboxWaitRequest,
+    ) -> OrcasResult<ipc::OperatorInboxWaitResponse> {
+        let current_checkpoint = {
+            let state = self.state.read().await;
+            operator_inbox_checkpoint(&state.operator_inbox)
+        };
+        if current_checkpoint.current_sequence > params.after_sequence {
+            return Ok(ipc::OperatorInboxWaitResponse {
+                checkpoint: current_checkpoint,
+                advanced: true,
+                timed_out: false,
+            });
+        }
+
+        let rx = self.operator_inbox_checkpoint_tx.subscribe();
+        match wait_for_operator_inbox_checkpoint(rx, params.after_sequence, params.timeout_ms).await {
+            Ok(checkpoint) => Ok(ipc::OperatorInboxWaitResponse {
+                advanced: checkpoint.current_sequence > params.after_sequence,
+                timed_out: false,
+                checkpoint,
+            }),
+            Err(error) if error.starts_with("timed out waiting for operator inbox checkpoint") => {
+                Ok(ipc::OperatorInboxWaitResponse {
+                    checkpoint: current_checkpoint,
+                    advanced: false,
+                    timed_out: true,
+                })
+            }
+            Err(error) => Err(OrcasError::Protocol(error)),
+        }
     }
 
     async fn operator_inbox_changes(
@@ -13424,10 +13469,15 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
     }
 
     async fn persist_state_snapshot(&self) -> OrcasResult<()> {
+        let mut checkpoint_to_send = None;
         let stored = {
             let mut state = self.state.write().await;
+            let previous_sequence = state.operator_inbox.checkpoint.current_sequence;
             let operator_inbox =
                 rebuild_operator_inbox_state(&state.collaboration, Some(&state.operator_inbox));
+            if operator_inbox.checkpoint.current_sequence > previous_sequence {
+                checkpoint_to_send = Some(operator_inbox.checkpoint.clone());
+            }
             state.operator_inbox = operator_inbox.clone();
             let registry = ThreadRegistry {
                 threads: state
@@ -13464,6 +13514,11 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             }
         };
         let result = self.store.save(&stored).await;
+        if result.is_ok() {
+            if let Some(checkpoint) = checkpoint_to_send {
+                let _ = self.operator_inbox_checkpoint_tx.send(checkpoint);
+            }
+        }
         result
     }
 
@@ -16127,6 +16182,10 @@ mod tests {
             event_tx,
             client_count: AtomicUsize::new(0),
             shutdown: Notify::new(),
+            operator_inbox_checkpoint_tx: tokio::sync::watch::channel(
+                ipc::OperatorInboxCheckpoint::default(),
+            )
+            .0,
             supervisor_reasoner,
         });
         service.initialize_state().await.expect("initialize state");
