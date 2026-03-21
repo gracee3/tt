@@ -11968,6 +11968,13 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             "connecting to upstream codex"
         );
         let _guard = self.connect_gate.lock().await;
+        if self.codex_client.is_ready().await {
+            debug!(
+                listen_url = %self.config.codex.listen_url,
+                "upstream codex client already connected and initialized"
+            );
+            return Ok(());
+        }
         let launch = Self::codex_launch_for_upstream_connect(self.config.codex.connection_mode.clone());
         self.codex_daemon.ensure_running(launch).await?;
         self.codex_client.connect().await?;

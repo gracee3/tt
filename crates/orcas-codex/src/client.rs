@@ -101,6 +101,10 @@ impl CodexClient {
         result
     }
 
+    pub async fn is_ready(&self) -> bool {
+        self.outbound.lock().await.is_some() && *self.initialized.lock().await
+    }
+
     pub async fn initialize(
         self: &Arc<Self>,
         params: types::InitializeParams,
