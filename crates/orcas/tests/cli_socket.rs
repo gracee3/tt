@@ -1616,6 +1616,166 @@ async fn real_cli_planning_session_request_research_succeeds_once_and_rejects_re
 }
 
 #[tokio::test]
+async fn real_cli_planning_session_update_summary_stays_descriptive_and_rejects_ready_smuggling() {
+    let _guard = planning_session_cli_test_lock().lock().await;
+    let (_fake_codex, mut daemon) = spawn_planning_session_cli_daemon("cli-planning-update").await;
+    let workstream_label = "planning update";
+    let workstream_id = create_cli_workstream(&daemon, workstream_label);
+    daemon.stop().await;
+    let session_id = "planning_session_cli_update";
+    seed_cli_planning_session(
+        &daemon,
+        session_id,
+        &workstream_id,
+        workstream_label,
+        "planning-thread-cli-update",
+        "Plan one bounded change.",
+        false,
+        true,
+    );
+    daemon.start().await;
+
+    let update_output = run_orcas(
+        &daemon,
+        &[
+            "planning-sessions",
+            "update-summary",
+            "--session",
+            &session_id,
+            "--objective",
+            "Refined objective for the next planning pass.",
+            "--requirement",
+            "Keep it bounded.",
+            "--constraint",
+            "No broad refactor.",
+            "--non-goal",
+            "Do not widen scope.",
+            "--open-question",
+            "Is this still bounded?",
+            "--draft-plan-summary",
+            "A narrow planning pass.",
+            "--updated-by",
+            "cli_operator",
+            "--note",
+            "Keep the session descriptive only",
+        ],
+    );
+    assert!(
+        update_output.status.success(),
+        "stderr: {}",
+        stderr(&update_output)
+    );
+    let update_stdout = stdout(&update_output);
+    assert!(update_stdout.contains("surface: planning_session"));
+    assert!(update_stdout.contains("planning_session_status: Chatting"));
+    assert!(update_stdout.contains("planning_session_update_effect: descriptive_summary_only; use mark-ready-for-review for explicit readiness transition"));
+    assert!(!update_stdout.contains("planning_session_status: AwaitingApproval"));
+
+    let smuggle_output = run_orcas(
+        &daemon,
+        &[
+            "planning-sessions",
+            "update-summary",
+            "--session",
+            &session_id,
+            "--objective",
+            "Attempt to smuggle readiness",
+            "--ready-for-review",
+            "--updated-by",
+            "cli_operator",
+        ],
+    );
+    assert!(!smuggle_output.status.success());
+    assert!(stdout(&smuggle_output).is_empty());
+    assert!(
+        stderr(&smuggle_output).contains("summary cannot mark the session ready for review"),
+        "stderr: {}",
+        stderr(&smuggle_output)
+    );
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn real_cli_planning_session_mark_ready_for_review_explicitly_transitions_and_rejects_invalid_state()
+ {
+    let _guard = planning_session_cli_test_lock().lock().await;
+    let (_fake_codex, mut daemon) = spawn_planning_session_cli_daemon("cli-planning-ready").await;
+    let workstream_label = "planning ready";
+    let workstream_id = create_cli_workstream(&daemon, workstream_label);
+    daemon.stop().await;
+    let ready_session_id = "planning_session_cli_ready";
+    seed_cli_planning_session(
+        &daemon,
+        ready_session_id,
+        &workstream_id,
+        workstream_label,
+        "planning-thread-cli-ready",
+        "Plan one bounded change.",
+        false,
+        true,
+    );
+    let invalid_session_id = "planning_session_cli_ready_invalid";
+    seed_cli_planning_session(
+        &daemon,
+        invalid_session_id,
+        &workstream_id,
+        workstream_label,
+        "planning-thread-cli-ready-invalid",
+        "Plan one bounded change.",
+        true,
+        true,
+    );
+    daemon.start().await;
+
+    let ready_output = run_orcas(
+        &daemon,
+        &[
+            "planning-sessions",
+            "mark-ready-for-review",
+            "--session",
+            &ready_session_id,
+            "--updated-by",
+            "cli_operator",
+            "--note",
+            "Explicitly moving to awaiting-approval",
+        ],
+    );
+    assert!(
+        ready_output.status.success(),
+        "stderr: {}",
+        stderr(&ready_output)
+    );
+    let ready_stdout = stdout(&ready_output);
+    assert!(ready_stdout.contains("surface: planning_session"));
+    assert!(ready_stdout.contains("planning_session_status: AwaitingApproval"));
+    assert!(ready_stdout.contains("planning_session_ready_for_review_effect: explicit_readiness_transition; use approve to stage the canonical revision proposal"));
+
+    let invalid_output = run_orcas(
+        &daemon,
+        &[
+            "planning-sessions",
+            "mark-ready-for-review",
+            "--session",
+            &invalid_session_id,
+            "--updated-by",
+            "cli_operator",
+            "--note",
+            "Should fail because the session is already awaiting approval",
+        ],
+    );
+    assert!(!invalid_output.status.success());
+    assert!(stdout(&invalid_output).is_empty());
+    assert!(
+        stderr(&invalid_output).contains("can only be marked ready while chatting"),
+        "stderr: {}",
+        stderr(&invalid_output)
+    );
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn real_cli_planning_session_help_mentions_lifecycle_boundaries() {
     let _guard = planning_session_cli_test_lock().lock().await;
     let mut daemon = TestDaemon::spawn("cli-planning-help").await;
@@ -1660,7 +1820,9 @@ async fn real_cli_planning_session_help_mentions_lifecycle_boundaries() {
         stderr(&update_help)
     );
     let update_stdout = stdout(&update_help);
-    assert!(update_stdout.contains("descriptive planning summary without changing approval state"));
+    assert!(update_stdout.contains(
+        "Update the descriptive planning summary only; use mark-ready-for-review for readiness"
+    ));
 
     let ready_help = run_orcas(
         &daemon,
@@ -1672,7 +1834,7 @@ async fn real_cli_planning_session_help_mentions_lifecycle_boundaries() {
         stderr(&ready_help)
     );
     let ready_stdout = stdout(&ready_help);
-    assert!(ready_stdout.contains("chat session into awaiting-approval"));
+    assert!(ready_stdout.contains("Explicitly transition a chat session into awaiting-approval"));
 
     daemon.stop().await;
 }

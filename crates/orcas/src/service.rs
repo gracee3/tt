@@ -1734,9 +1734,12 @@ impl SupervisorService {
                 request_note,
                 model,
                 cwd: cwd.map(|path| path.display().to_string()),
-            })
-            .await?;
+        })
+        .await?;
         print_planning_session(&response.session);
+        println!(
+            "planning_session_update_effect: descriptive_summary_only; use mark-ready-for-review for explicit readiness transition"
+        );
         Ok(())
     }
 
@@ -1745,8 +1748,8 @@ impl SupervisorService {
         let response = client
             .planning_session_get(&ipc::PlanningSessionGetRequest {
                 session_id: session_id.to_string(),
-            })
-            .await?;
+        })
+        .await?;
         print_planning_session(&response.session);
         Ok(())
     }
@@ -1813,6 +1816,9 @@ impl SupervisorService {
             })
             .await?;
         print_planning_session(&response.session);
+        println!(
+            "planning_session_update_effect: descriptive_summary_only; use mark-ready-for-review for explicit readiness transition"
+        );
         Ok(())
     }
 
@@ -1895,6 +1901,9 @@ impl SupervisorService {
             )
             .await?;
         print_planning_session(&response.session);
+        println!(
+            "planning_session_ready_for_review_effect: explicit_readiness_transition; use approve to stage the canonical revision proposal"
+        );
         Ok(())
     }
 

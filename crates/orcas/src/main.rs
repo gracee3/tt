@@ -196,13 +196,15 @@ enum PlanningSessionsCommand {
     Create(PlanningSessionCreateArgs),
     Get(PlanningSessionRefArgs),
     List(PlanningSessionListArgs),
-    #[command(about = "Update the descriptive planning summary without changing approval state")]
+    #[command(
+        about = "Update the descriptive planning summary only; use mark-ready-for-review for readiness"
+    )]
     UpdateSummary(PlanningSessionUpdateSummaryArgs),
     #[command(about = "Request more supervisor context while the session is still chatting")]
     RequestSupervisorContext(PlanningSessionRequestSupervisorContextArgs),
     #[command(about = "Request the bounded one-turn research assignment for this session")]
     RequestResearch(PlanningSessionRequestResearchArgs),
-    #[command(about = "Explicitly move a chat session into awaiting-approval")]
+    #[command(about = "Explicitly transition a chat session into awaiting-approval")]
     MarkReadyForReview(PlanningSessionMarkReadyForReviewArgs),
     #[command(about = "Abort the planning session without mutating canonical plan state")]
     Abort(PlanningSessionAbortArgs),
