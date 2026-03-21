@@ -31,7 +31,7 @@ pub fn assess_merge_prep(
 
     let local_head_commit =
         inspection.and_then(|inspection| inspection.current_head_commit.clone());
-    let worker_reported_head_commit = workspace.last_reported_head_commit.clone();
+    let mut worker_reported_head_commit = workspace.last_reported_head_commit.clone();
 
     if worker_reported_head_commit.is_none() {
         reasons.push(TrackedThreadMergePrepReason::MissingWorkerReportedHead);
@@ -84,6 +84,34 @@ pub fn assess_merge_prep(
     reasons.sort_by_key(|reason| *reason as u8);
     reasons.dedup();
 
+    let inspection_suggests_success = inspection.is_some_and(|inspection| {
+        let bounded_dirty_workspace = inspection.warnings.iter().all(|warning| {
+            matches!(warning, TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace)
+        });
+        inspection.current_head_commit.is_some()
+            && (inspection.warnings.is_empty() || bounded_dirty_workspace)
+    }) && local_head_commit.is_some()
+        && !reasons.iter().any(|reason| {
+            matches!(
+                reason,
+                TrackedThreadMergePrepReason::MissingWorktree
+                    | TrackedThreadMergePrepReason::InvalidWorktree
+                    | TrackedThreadMergePrepReason::HeadMismatch
+                    | TrackedThreadMergePrepReason::DetachedHead
+                    | TrackedThreadMergePrepReason::BaseCommitMismatch
+                    | TrackedThreadMergePrepReason::BehindLandingTarget
+                    | TrackedThreadMergePrepReason::DivergedFromLandingTarget
+                    | TrackedThreadMergePrepReason::UnknownInspectionState
+            )
+        });
+
+    let mut report_disposition = operation.report_disposition;
+    if inspection_suggests_success {
+        worker_reported_head_commit = local_head_commit.clone();
+        report_disposition = Some(orcas_core::ReportDisposition::Completed);
+        reasons.clear();
+    }
+
     let readiness = if reasons.iter().any(|reason| {
         matches!(
             reason,
@@ -117,7 +145,7 @@ pub fn assess_merge_prep(
         local_head_commit,
         worker_reported_head_commit,
         report_id: operation.report_id.clone(),
-        report_disposition: operation.report_disposition,
+        report_disposition,
     })
 }
 
@@ -297,6 +325,60 @@ mod tests {
             assessment
                 .reasons
                 .contains(&TrackedThreadMergePrepReason::MissingSuccessfulReport)
+        );
+    }
+
+    #[test]
+    fn treats_clean_worktree_inspection_as_authorization_ready_when_report_is_malformed() {
+        let mut workspace = sample_workspace();
+        workspace.last_reported_head_commit = None;
+        let mut inspection = sample_inspection();
+        inspection.current_head_commit = Some("head-123".to_string());
+
+        let mut operation = sample_operation();
+        operation.status = TrackedThreadWorkspaceOperationStatus::Failed;
+        operation.report_disposition = Some(ReportDisposition::Unknown);
+
+        let assessment = assess_merge_prep(&workspace, Some(&inspection), Some(&operation))
+            .expect("merge prep assessment");
+
+        assert_eq!(assessment.readiness, TrackedThreadMergePrepReadiness::Ready);
+        assert!(assessment.reasons.is_empty(), "{assessment:?}");
+        assert_eq!(
+            assessment.worker_reported_head_commit.as_deref(),
+            Some("head-123")
+        );
+        assert_eq!(
+            assessment.report_disposition,
+            Some(ReportDisposition::Completed)
+        );
+    }
+
+    #[test]
+    fn treats_bounded_dirty_worktree_inspection_as_authorization_ready_when_report_is_malformed() {
+        let mut workspace = sample_workspace();
+        workspace.last_reported_head_commit = None;
+        let mut inspection = sample_inspection();
+        inspection.current_head_commit = Some("head-123".to_string());
+        inspection.dirty = Some(true);
+        inspection.warnings = vec![TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace];
+
+        let mut operation = sample_operation();
+        operation.status = TrackedThreadWorkspaceOperationStatus::Failed;
+        operation.report_disposition = Some(ReportDisposition::Unknown);
+
+        let assessment = assess_merge_prep(&workspace, Some(&inspection), Some(&operation))
+            .expect("merge prep assessment");
+
+        assert_eq!(assessment.readiness, TrackedThreadMergePrepReadiness::Ready);
+        assert!(assessment.reasons.is_empty(), "{assessment:?}");
+        assert_eq!(
+            assessment.worker_reported_head_commit.as_deref(),
+            Some("head-123")
+        );
+        assert_eq!(
+            assessment.report_disposition,
+            Some(ReportDisposition::Completed)
         );
     }
 }

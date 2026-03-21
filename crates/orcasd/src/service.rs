@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -5765,6 +5766,114 @@ impl OrcasDaemonService {
                         Some(TrackedThreadPruneWorkspaceResultStatus::Succeeded)
                     )
                     && plan.parsed_report.disposition == ReportDisposition::Completed;
+                let fallback_successful_prune = if successful_prune {
+                    false
+                } else {
+                    let tracked_thread = self
+                        .authority_store
+                        .get_tracked_thread(&workspace_operation_contract.tracked_thread_id)
+                        .await?
+                        .ok_or_else(|| {
+                            OrcasError::Protocol(format!(
+                                "unknown authority tracked thread `{}`",
+                                workspace_operation_contract.tracked_thread_id
+                            ))
+                        })?;
+                    match tracked_thread.workspace.as_ref() {
+                        Some(workspace) => {
+                            let inspection =
+                                crate::workspace_inspection::inspect_tracked_thread_workspace(
+                                    workspace,
+                                )
+                                .await;
+                            let landing_execution = self
+                                .latest_landing_execution_for_tracked_thread(
+                                    &workspace_operation_contract.tracked_thread_id,
+                                )
+                                .await?;
+                            let landing_execution_successful = matches!(
+                                landing_execution.as_ref().map(|execution| execution.status),
+                                Some(LandingExecutionStatus::Completed)
+                            ) && landing_execution
+                                .as_ref()
+                                .and_then(|execution| execution.result_status)
+                                == Some(TrackedThreadLandingExecutionResultStatus::Succeeded);
+                            if inspection.warnings.is_empty()
+                                && inspection.exists
+                                && inspection.is_git_worktree
+                                && inspection.dirty == Some(false)
+                                && landing_execution_successful
+                            {
+                                let git_status = Command::new("git")
+                                    .arg("-C")
+                                    .arg(&workspace.repository_root)
+                                    .arg("worktree")
+                                    .arg("remove")
+                                    .arg("--force")
+                                    .arg(&workspace.worktree_path)
+                                    .status();
+                                match git_status {
+                                    Ok(status) if status.success() => {
+                                        let metadata = orcas_core::authority::CommandMetadata::new(
+                                            self.authority_store.origin_node_id()?,
+                                            orcas_core::authority::CommandActor::parse(
+                                                "prune_workspace_cleanup",
+                                            )
+                                            .expect("static command actor"),
+                                        );
+                                        let mut updated_workspace = workspace.clone();
+                                        updated_workspace.status =
+                                            authority::TrackedThreadWorkspaceStatus::Pruned;
+                                        let _ = self
+                                            .authority_tracked_thread_edit(
+                                                ipc::AuthorityTrackedThreadEditRequest {
+                                                    command: orcas_core::authority::EditTrackedThread {
+                                                        metadata,
+                                                        tracked_thread_id: tracked_thread.id.clone(),
+                                                        expected_revision: tracked_thread.revision,
+                                                        changes: orcas_core::authority::TrackedThreadPatch {
+                                                            title: None,
+                                                            notes: None,
+                                                            backend_kind: None,
+                                                            upstream_thread_id: None,
+                                                            binding_state: None,
+                                                            preferred_cwd: None,
+                                                            preferred_model: None,
+                                                            last_seen_turn_id: None,
+                                                            workspace: Some(Some(updated_workspace)),
+                                                        },
+                                                    },
+                                                },
+                                            )
+                                            .await;
+                                        true
+                                    }
+                                    Ok(status) => {
+                                        warn!(
+                                            assignment_id = %plan.assignment_id,
+                                            tracked_thread_id = %workspace_operation_contract.tracked_thread_id,
+                                            exit_status = ?status,
+                                            "workspace prune cleanup fallback failed to remove worktree"
+                                        );
+                                        false
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            assignment_id = %plan.assignment_id,
+                                            tracked_thread_id = %workspace_operation_contract.tracked_thread_id,
+                                            error = %error,
+                                            "workspace prune cleanup fallback failed to invoke git worktree remove"
+                                        );
+                                        false
+                                    }
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        None => false,
+                    }
+                };
                 if successful_prune {
                     self.mark_workspace_operation_completed(
                         &plan.assignment_id,
@@ -5775,6 +5884,27 @@ impl OrcasDaemonService {
                         target_worktree_path,
                         target_branch_name,
                         worktree_removed,
+                        branch_removed,
+                        refusal_reason,
+                        failure_reason,
+                        prune_notes,
+                    )
+                    .await?;
+                } else if fallback_successful_prune {
+                    info!(
+                        assignment_id = %plan.assignment_id,
+                        tracked_thread_id = %workspace_operation_contract.tracked_thread_id,
+                        "workspace prune completed from clean post-prune inspection after malformed worker report"
+                    );
+                    self.mark_workspace_operation_completed(
+                        &plan.assignment_id,
+                        Some(core.report.id.clone()),
+                        Some(ReportDisposition::Completed),
+                        Some(plan.parsed_report.summary.clone()),
+                        Some(TrackedThreadPruneWorkspaceResultStatus::Succeeded),
+                        target_worktree_path,
+                        target_branch_name,
+                        Some(true),
                         branch_removed,
                         refusal_reason,
                         failure_reason,
@@ -5862,6 +5992,40 @@ impl OrcasDaemonService {
         let failure_reason =
             landing_execution_result.and_then(|result| result.failure_reason.clone());
         let notes = landing_execution_result.and_then(|result| result.notes.clone());
+        let tracked_thread = self
+            .authority_store
+            .get_tracked_thread(&landing_execution_contract.tracked_thread_id)
+            .await?
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!(
+                    "unknown authority tracked thread `{}`",
+                    landing_execution_contract.tracked_thread_id
+                ))
+            })?;
+        let Some(workspace) = tracked_thread.workspace.as_ref() else {
+            return Err(OrcasError::Protocol(format!(
+                "tracked thread `{}` has no declared workspace",
+                tracked_thread.id
+            )));
+        };
+        let workspace_inspection =
+            crate::workspace_inspection::inspect_tracked_thread_workspace(workspace).await;
+        let landing_authorization = self
+            .latest_landing_authorization_for_tracked_thread(
+                &landing_execution_contract.tracked_thread_id,
+            )
+            .await?;
+        let inspection_suggests_success =
+            landing_authorization.as_ref().is_some_and(|authorization| {
+                workspace_inspection.warnings.is_empty()
+                    && workspace_inspection.exists
+                    && workspace_inspection.is_git_worktree
+                    && workspace_inspection.dirty == Some(false)
+                    && workspace_inspection.current_head_commit.as_deref()
+                        == Some(authorization.authorized_head_commit.as_str())
+                    && workspace_inspection.landing_target.as_deref()
+                        == Some(authorization.landing_target.as_str())
+            });
         let authorized = matches!(
             execution_result_status,
             Some(TrackedThreadLandingExecutionResultStatus::Succeeded)
@@ -5883,6 +6047,34 @@ impl OrcasDaemonService {
                 landing_ref_updated,
                 failure_reason,
                 notes,
+            )
+            .await?;
+            self.mark_landing_authorization_completed(
+                &landing_execution_contract.landing_authorization_id,
+                Some(plan.parsed_report.summary.clone()),
+            )
+            .await?;
+        } else if inspection_suggests_success {
+            let authorized_head_commit = landing_authorization
+                .as_ref()
+                .map(|authorization| authorization.authorized_head_commit.clone())
+                .unwrap_or_else(|| landing_execution_contract.authorized_head_commit.clone());
+            info!(
+                assignment_id = %plan.assignment_id,
+                tracked_thread_id = %landing_execution_contract.tracked_thread_id,
+                "landing execution completed from clean post-run inspection after malformed worker report"
+            );
+            self.mark_landing_execution_completed(
+                &plan.assignment_id,
+                Some(core.report.id.clone()),
+                Some(ReportDisposition::Completed),
+                Some(plan.parsed_report.summary.clone()),
+                Some(TrackedThreadLandingExecutionResultStatus::Succeeded),
+                Some(authorized_head_commit.clone()),
+                Some(authorized_head_commit),
+                Some(true),
+                None,
+                None,
             )
             .await?;
             self.mark_landing_authorization_completed(

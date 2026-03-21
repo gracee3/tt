@@ -406,6 +406,25 @@ fn repair_worker_report_envelope_payload(
         "acceptance_results",
         "triggered_stop_condition_ids",
     );
+    changed |= repair_or_clear_json_array_field(
+        &mut repaired,
+        "triggered_stop_condition_ids",
+        "touched_files",
+    );
+    changed |= repair_or_clear_json_array_field(&mut repaired, "touched_files", "commands_run");
+    changed |= repair_or_clear_json_array_field(&mut repaired, "commands_run", "artifacts");
+    changed |= repair_or_clear_json_array_field(&mut repaired, "artifacts", "blockers");
+    changed |= repair_or_clear_json_array_field(&mut repaired, "blockers", "questions");
+    changed |=
+        repair_or_clear_json_array_field(&mut repaired, "questions", "recommended_next_actions");
+    changed |= repair_or_clear_json_array_field(
+        &mut repaired,
+        "recommended_next_actions",
+        "uncertainties",
+    );
+    changed |= repair_or_clear_json_array_field(&mut repaired, "uncertainties", "review_signal");
+    changed |= repair_or_clear_json_array_field(&mut repaired, "semantic_changes", "tests_run");
+    changed |= repair_or_clear_json_array_field(&mut repaired, "tests_run", "rough_edges");
     changed |= repair_or_insert_json_string_field(
         &mut repaired,
         "summary",
@@ -449,7 +468,7 @@ fn repair_or_clear_json_array_field(
         .chars()
         .take_while(|ch| ch.is_whitespace())
         .collect::<String>();
-    let replacement = format!("\n{indent}\"{field}\": [],");
+    let replacement = format!("\n{indent}\"{field}\": [],\n");
     json_payload.replace_range(line_start..next_line_start, &replacement);
     true
 }
@@ -1074,6 +1093,62 @@ mod tests {
                 "{}/main.c",
                 record.packet.execution_context.cwd.as_ref().expect("cwd")
             )
+        );
+    }
+
+    #[test]
+    fn parse_worker_report_repairs_malformed_commands_run_block_and_keeps_workspace_report() {
+        let assignment = sample_assignment();
+        let record = sample_record(&assignment);
+        let mut envelope = sample_envelope(&assignment, &record.packet.packet_id);
+        envelope.workspace_report = Some(orcas_core::WorkerWorkspaceReport {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
+                .expect("tracked thread id"),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/.worktrees/tt-1".to_string(),
+            branch_name: "orcas/tt-1".to_string(),
+            base_ref: "origin/main".to_string(),
+            base_commit: Some("base-123".to_string()),
+            head_commit: Some("head-456".to_string()),
+            workspace_status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ahead,
+            worktree_created: Some(false),
+            worktree_reused: Some(true),
+            workspace_dirty: Some(false),
+            rebase_attempted: Some(true),
+            rebase_succeeded: Some(true),
+        });
+
+        let mut raw_json = serde_json::to_string_pretty(&envelope).expect("serialize envelope");
+        let commands_run_start = raw_json
+            .find("\"commands_run\": [")
+            .expect("commands_run field");
+        let artifacts_start = raw_json.find("\"artifacts\": [").expect("artifacts field");
+        raw_json.replace_range(
+            commands_run_start..artifacts_start,
+            "  \"commands_run\": [\n    \"ls -la\",\n    \"git status --porcelain=v1 -b\n  ],\n",
+        );
+        let raw = wrap_report(&raw_json);
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+
+        if parsed.validation.parse_result == ReportParseResult::Invalid {
+            let repaired =
+                super::repair_worker_report_envelope_payload(&raw_json, &assignment, &record)
+                    .expect("repaired payload");
+            panic!(
+                "repair failed: structural={:?} semantic={:?} policy={:?} repaired={repaired}",
+                parsed.validation.structural_issues,
+                parsed.validation.semantic_issues,
+                parsed.validation.policy_violations
+            );
+        }
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        let workspace_report = parsed.envelope.expect("parsed envelope").workspace_report;
+        assert_eq!(
+            workspace_report
+                .as_ref()
+                .and_then(|report| report.head_commit.as_deref()),
+            Some("head-456")
         );
     }
     #[test]
