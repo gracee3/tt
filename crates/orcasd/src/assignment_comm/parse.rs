@@ -867,7 +867,7 @@ mod tests {
         assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
         assert!(parsed.envelope.is_some());
         assert_eq!(parsed.disposition, ReportDisposition::Completed);
-        assert_eq!(parsed.summary, "Completed the bounded change.");
+        assert_eq!(parsed.summary, "Worker completed the bounded change.");
         assert_eq!(
             parsed.envelope.as_ref().expect("envelope").assignment_id,
             assignment.id
@@ -888,7 +888,7 @@ mod tests {
         assert!(parsed.validation.needs_supervisor_review);
         assert!(parsed.envelope.is_some());
         assert_eq!(parsed.disposition, ReportDisposition::Completed);
-        assert_eq!(parsed.summary, "Completed the bounded change.");
+        assert_eq!(parsed.summary, "Worker completed the bounded change.");
         assert_eq!(
             parsed.envelope.as_ref().expect("envelope").assignment_id,
             assignment.id

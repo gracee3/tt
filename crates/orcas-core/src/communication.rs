@@ -670,7 +670,8 @@ fn strip_line_suffix(path: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadLandingExecutionResult {
-    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub tracked_thread_id: Option<authority::TrackedThreadId>,
     pub landing_authorization_id: String,
     pub attempted_head_commit: String,
     pub landing_target: String,
@@ -687,7 +688,8 @@ pub struct TrackedThreadLandingExecutionResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackedThreadPruneWorkspaceResult {
-    pub tracked_thread_id: authority::TrackedThreadId,
+    #[serde(default)]
+    pub tracked_thread_id: Option<authority::TrackedThreadId>,
     pub worktree_path: String,
     #[serde(default)]
     pub branch_name: Option<String>,
@@ -871,6 +873,7 @@ mod tests {
             expected_report_fields: vec!["summary".to_string()],
             boundedness_note: Some("Stay within the boundary.".to_string()),
             workspace_operation: None,
+            prune_workspace: None,
             landing_execution: None,
             mode_spec: AssignmentModeSpec::Implement(ImplementModeSpec {
                 expected_verification_commands: vec!["cargo test -p orcas-core".to_string()],

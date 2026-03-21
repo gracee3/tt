@@ -81,7 +81,7 @@ assignment_start_pid=$!
 report_id=""
 for _ in $(seq 1 120); do
   reports_output="$("$e2e_bin_dir/orcas.sh" reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
-  report_id="$(printf '%s\n' "$reports_output" | awk -F'\t' '/^[0-9a-f]/ {print $1; exit}')"
+  report_id="$(printf '%s\n' "$reports_output" | awk -F'\t' '/^report-/ {print $1; exit}')"
   [[ -n "$report_id" ]] && break
   sleep 5
 done
@@ -119,7 +119,7 @@ test -n "$report_parse_result"
 test "$assignment_status" = "AwaitingDecision"
 test "$report_parse_result" != "Invalid"
 
-grep -q 'Hello, Orcas!' "$make_test_stdout"
+grep -q '^PASS$' "$make_test_stdout"
 grep -q "assignment_id: $assignment_id" "$assignment_get_stdout"
 grep -q "report_id: $report_id" "$report_get_stdout"
 grep -q "assignment_id: $assignment_id" "$report_get_stdout"

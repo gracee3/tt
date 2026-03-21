@@ -268,10 +268,17 @@ pub fn validate_worker_report_envelope(
 
     if let Some(landing_execution) = envelope.landing_execution_result.as_ref() {
         if let Some(landing_execution_contract) = record.packet.landing_execution.as_ref() {
-            if landing_execution.tracked_thread_id != landing_execution_contract.tracked_thread_id {
+            if landing_execution.tracked_thread_id
+                != Some(landing_execution_contract.tracked_thread_id.clone())
+            {
                 structural_issues.push(format!(
                     "landing_execution_result tracked_thread_id `{}` does not match landing contract `{}`",
-                    landing_execution.tracked_thread_id, landing_execution_contract.tracked_thread_id
+                    landing_execution
+                        .tracked_thread_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "missing".to_string()),
+                    landing_execution_contract.tracked_thread_id
                 ));
                 parse_result = ReportParseResult::Invalid;
             }
@@ -325,11 +332,16 @@ pub fn validate_worker_report_envelope(
     if let Some(prune_workspace_result) = envelope.prune_workspace_result.as_ref() {
         if let Some(prune_workspace_contract) = record.packet.prune_workspace.as_ref() {
             if prune_workspace_result.tracked_thread_id
-                != prune_workspace_contract.tracked_thread_id
+                != Some(prune_workspace_contract.tracked_thread_id.clone())
             {
                 structural_issues.push(format!(
                     "prune_workspace_result tracked_thread_id `{}` does not match prune contract `{}`",
-                    prune_workspace_result.tracked_thread_id, prune_workspace_contract.tracked_thread_id
+                    prune_workspace_result
+                        .tracked_thread_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "missing".to_string()),
+                    prune_workspace_contract.tracked_thread_id
                 ));
                 parse_result = ReportParseResult::Invalid;
             }
@@ -770,8 +782,9 @@ mod tests {
         });
         let mut envelope = sample_envelope(&assignment, &record.packet.packet_id);
         envelope.landing_execution_result = Some(orcas_core::TrackedThreadLandingExecutionResult {
-            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-1")
-                .expect("tracked thread id"),
+            tracked_thread_id: Some(
+                orcas_core::authority::TrackedThreadId::parse("tt-1").expect("tracked thread id"),
+            ),
             landing_authorization_id: "landing-auth-1".to_string(),
             attempted_head_commit: "head-123".to_string(),
             landing_target: "origin/main".to_string(),

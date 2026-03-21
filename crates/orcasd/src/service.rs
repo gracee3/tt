@@ -4936,7 +4936,7 @@ impl OrcasDaemonService {
     ) -> Option<orcas_core::TrackedThreadPruneWorkspaceResult> {
         let status = operation.prune_result_status?;
         Some(orcas_core::TrackedThreadPruneWorkspaceResult {
-            tracked_thread_id: operation.tracked_thread_id.clone(),
+            tracked_thread_id: Some(operation.tracked_thread_id.clone()),
             worktree_path: operation.target_worktree_path.clone()?,
             branch_name: operation.target_branch_name.clone(),
             status,
@@ -13384,25 +13384,55 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         thread_id: &str,
         turn_id: &str,
     ) -> OrcasResult<Option<ipc::TurnStateView>> {
-        if let Some(turn) = self.turn_from_registry(thread_id, turn_id).await {
-            return Ok(Some(turn));
+        let registry_turn = self.turn_from_registry(thread_id, turn_id).await;
+        let needs_remote_reconciliation = registry_turn
+            .as_ref()
+            .is_some_and(Self::turn_needs_remote_reconciliation);
+
+        if needs_remote_reconciliation {
+            info!(
+                thread_id = %thread_id,
+                turn_id = %turn_id,
+                "reconciling detached turn against upstream snapshot"
+            );
         }
 
-        if let Some(thread) = self.thread_from_state(thread_id).await
+        if let Some(turn) = registry_turn.as_ref()
+            && !needs_remote_reconciliation
+        {
+            return Ok(Some(turn.clone()));
+        }
+
+        let remote_turn = if let Some(thread) = self.thread_from_state(thread_id).await
             && let Some(turn) = Self::turn_state_from_thread_view(&thread, turn_id)
         {
+            Some(turn)
+        } else {
+            match self
+                .thread_get(ipc::ThreadGetRequest {
+                    thread_id: thread_id.to_string(),
+                })
+                .await
+            {
+                Ok(response) => Self::turn_state_from_thread_view(&response.thread, turn_id),
+                Err(_) => None,
+            }
+        };
+
+        if let Some(turn) = remote_turn {
+            if turn.terminal {
+                if needs_remote_reconciliation {
+                    let _ = self.persist_turn_state_view(&turn).await;
+                }
+                return Ok(Some(turn));
+            }
+            if needs_remote_reconciliation {
+                return Ok(registry_turn);
+            }
             return Ok(Some(turn));
         }
 
-        match self
-            .thread_get(ipc::ThreadGetRequest {
-                thread_id: thread_id.to_string(),
-            })
-            .await
-        {
-            Ok(response) => Ok(Self::turn_state_from_thread_view(&response.thread, turn_id)),
-            Err(_) => Ok(None),
-        }
+        Ok(registry_turn)
     }
 
     async fn known_thread_summaries(&self) -> Vec<ipc::ThreadSummary> {
@@ -13499,6 +13529,11 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             let mut state = self.state.write().await;
             state.upstream = upstream.clone();
             if upstream.status != "connected" {
+                info!(
+                    endpoint = %upstream.endpoint,
+                    status = %upstream.status,
+                    "codex transport disconnected; detaching active turns without overwriting execution outcome"
+                );
                 Self::mark_turns_lost(&mut state);
             }
             Self::refresh_session_from_turns(&mut state);
@@ -14555,36 +14590,29 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
     }
 
     fn mark_turns_lost(state: &mut DaemonState) {
-        let lost_message = "daemon lost turn continuity".to_string();
+        let lost_message =
+            "daemon transport disconnected; preserving execution outcome for reconciliation"
+                .to_string();
         for turn in state.turns.values_mut() {
             if turn.attachable && matches!(turn.lifecycle, ipc::TurnLifecycleState::Active) {
-                turn.lifecycle = ipc::TurnLifecycleState::Lost;
-                turn.status = "lost".to_string();
                 turn.attachable = false;
                 turn.live_stream = false;
-                turn.terminal = true;
                 turn.recent_event = Some(lost_message.clone());
                 turn.updated_at = Utc::now();
             }
         }
 
         for thread in state.threads.values_mut() {
-            for turn in &mut thread.turns {
-                if turn.status == "submitted"
-                    || turn.status == "started"
-                    || turn.status == "in_progress"
-                {
-                    turn.status = "lost".to_string();
-                    if turn.error_message.is_none() {
-                        turn.error_message = Some(lost_message.clone());
-                    }
-                }
-            }
             if thread.summary.turn_in_flight {
                 thread.summary.recent_event = Some(lost_message.clone());
                 Self::refresh_thread_summary(thread);
             }
         }
+    }
+
+    fn turn_needs_remote_reconciliation(turn: &ipc::TurnStateView) -> bool {
+        matches!(turn.lifecycle, ipc::TurnLifecycleState::Active)
+            && (!turn.attachable || !turn.live_stream)
     }
 
     fn turn_state_from_thread_view(
@@ -20562,7 +20590,7 @@ ORCAS_REPORT_END"#
     }
 
     #[test]
-    fn mark_turns_lost_clears_attachment_and_session() {
+    fn mark_turns_lost_detaches_without_terminalizing() {
         let mut state = DaemonState::default();
         let mut thread = sample_thread("thread-1", "orcas_managed", 200);
         thread.summary.turn_in_flight = true;
@@ -20613,11 +20641,106 @@ ORCAS_REPORT_END"#
             .turns
             .get(&TurnKey::new("thread-1", "turn-1"))
             .expect("turn exists");
-        assert_eq!(turn.lifecycle, ipc::TurnLifecycleState::Lost);
+        assert_eq!(turn.lifecycle, ipc::TurnLifecycleState::Active);
         assert!(!turn.attachable);
-        assert_eq!(turn.status, "lost");
         assert!(state.session.active_turns.is_empty());
-        assert_eq!(state.threads["thread-1"].turns[0].status, "lost");
+        assert_eq!(state.threads["thread-1"].turns[0].status, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_state_reconciles_detached_turn_from_upstream_snapshot() {
+        let config = auto_proposal_config(false);
+        let (service, fake_runtime_state) = test_service_with_fake_codex_runtime_capture(
+            config,
+            Arc::new(StaticSupervisorReasoner::default()),
+            "irrelevant",
+            FakeCodexTerminalOutcome::Completed,
+        )
+        .await;
+
+        let thread_id = "thread-reconcile".to_string();
+        let turn_id = "turn-reconcile".to_string();
+        {
+            let mut state = service.state.write().await;
+            state.threads.insert(
+                thread_id.clone(),
+                sample_thread(&thread_id, "live_observed", 200),
+            );
+            state.turns.insert(
+                TurnKey::new(&thread_id, &turn_id),
+                ipc::TurnStateView {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    lifecycle: ipc::TurnLifecycleState::Active,
+                    status: "in_progress".to_string(),
+                    attachable: false,
+                    live_stream: false,
+                    terminal: false,
+                    recent_output: Some("partial output".to_string()),
+                    recent_event: Some("transport disconnected".to_string()),
+                    updated_at: Utc::now(),
+                    error_message: None,
+                },
+            );
+        }
+
+        {
+            let mut runtime = fake_runtime_state.lock().await;
+            runtime.threads.insert(
+                thread_id.clone(),
+                types::Thread {
+                    id: thread_id.clone(),
+                    preview: "preview".to_string(),
+                    ephemeral: false,
+                    model_provider: "openai".to_string(),
+                    created_at: Utc::now().timestamp(),
+                    updated_at: Utc::now().timestamp(),
+                    status: types::ThreadStatus::Idle,
+                    path: None,
+                    cwd: "/tmp/orcas".to_string(),
+                    cli_version: "test".to_string(),
+                    source: None,
+                    name: None,
+                    turns: vec![types::Turn {
+                        id: turn_id.clone(),
+                        items: vec![{
+                            let mut extra = Map::new();
+                            extra.insert("text".to_string(), Value::String("hello world".into()));
+                            types::ThreadItem {
+                                id: "item-1".to_string(),
+                                item_type: "agent_message".to_string(),
+                                extra,
+                            }
+                        }],
+                        status: types::TurnStatus::Completed,
+                        error: None,
+                    }],
+                    extra: Map::new(),
+                },
+            );
+        }
+
+        let resolved = service
+            .resolve_turn_state(&thread_id, &turn_id)
+            .await
+            .expect("resolve turn")
+            .expect("turn");
+
+        assert_eq!(resolved.lifecycle, ipc::TurnLifecycleState::Completed);
+        assert!(resolved.terminal);
+        assert_eq!(resolved.status, "completed");
+
+        let persisted = service
+            .turn_get(ipc::TurnGetRequest {
+                thread_id: thread_id.clone(),
+                turn_id: turn_id.clone(),
+            })
+            .await
+            .expect("turn get")
+            .turn
+            .expect("persisted turn");
+        assert_eq!(persisted.lifecycle, ipc::TurnLifecycleState::Completed);
+        assert!(persisted.terminal);
     }
 
     #[test]

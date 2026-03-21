@@ -1137,7 +1137,7 @@ fn example_landing_execution_result(
 ) -> Option<TrackedThreadLandingExecutionResult> {
     let landing_execution = packet.landing_execution.as_ref()?;
     Some(TrackedThreadLandingExecutionResult {
-        tracked_thread_id: landing_execution.tracked_thread_id.clone(),
+        tracked_thread_id: Some(landing_execution.tracked_thread_id.clone()),
         landing_authorization_id: landing_execution.landing_authorization_id.clone(),
         attempted_head_commit: landing_execution.authorized_head_commit.clone(),
         landing_target: landing_execution.landing_target.clone(),
@@ -1154,7 +1154,7 @@ fn example_prune_workspace_result(
 ) -> Option<TrackedThreadPruneWorkspaceResult> {
     let prune_workspace = packet.prune_workspace.as_ref()?;
     Some(TrackedThreadPruneWorkspaceResult {
-        tracked_thread_id: prune_workspace.tracked_thread_id.clone(),
+        tracked_thread_id: Some(prune_workspace.tracked_thread_id.clone()),
         worktree_path: prune_workspace.worktree_path.clone(),
         branch_name: Some(prune_workspace.branch_name.clone()),
         status: TrackedThreadPruneWorkspaceResultStatus::Succeeded,
