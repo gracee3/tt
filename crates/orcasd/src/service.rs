@@ -85,12 +85,12 @@ use crate::operator_inbox::{
     update_operator_inbox_ack_checkpoint, update_operator_inbox_export_checkpoint,
     wait_for_operator_inbox_checkpoint,
 };
-use crate::remote_action::RemoteActionHttpClient;
 use crate::planning_session::{
     build_planning_revision_proposal, build_research_work_unit,
     planning_session_status_is_terminal, planning_session_thread_prompt,
 };
 use crate::process::{OrcasDaemonProcessManager, OrcasRuntimeOverrides, apply_runtime_overrides};
+use crate::remote_action::RemoteActionHttpClient;
 use crate::supervisor::{
     ResponsesApiReasoner, SupervisorReasoner, apply_edits, build_context_pack,
     compile_assignment_instructions, proposal_freshness_error, state_anchor_freshness_error,
@@ -705,7 +705,12 @@ impl OrcasDaemonService {
         };
         let service = Arc::clone(&self);
         tokio::spawn(async move {
-            let client = OperatorInboxMirrorHttpClient::new(server_url);
+            let client = match service.config.inbox_mirror.operator_api_token.clone() {
+                Some(token) => {
+                    OperatorInboxMirrorHttpClient::with_operator_api_token(server_url, token)
+                }
+                None => OperatorInboxMirrorHttpClient::new(server_url),
+            };
             if let Err(error) = service.run_operator_inbox_mirror_loop(client).await {
                 warn!(%error, "operator inbox mirror loop stopped");
             }
@@ -718,7 +723,10 @@ impl OrcasDaemonService {
         };
         let service = Arc::clone(&self);
         tokio::spawn(async move {
-            let client = RemoteActionHttpClient::new(server_url);
+            let client = match service.config.inbox_mirror.operator_api_token.clone() {
+                Some(token) => RemoteActionHttpClient::with_operator_api_token(server_url, token),
+                None => RemoteActionHttpClient::new(server_url),
+            };
             if let Err(error) = service.run_remote_action_loop(client).await {
                 warn!(%error, "remote action loop stopped");
             }
@@ -864,7 +872,11 @@ impl OrcasDaemonService {
         let route = resolve_operator_inbox_action_route(&item, request.action_kind)
             .map_err(OrcasError::Protocol)?;
         match route {
-            ipc::OperatorInboxActionRoute::Proposal { proposal_id, method, .. }
+            ipc::OperatorInboxActionRoute::Proposal {
+                proposal_id,
+                method,
+                ..
+            }
             | ipc::OperatorInboxActionRoute::PlanRevisionProposal {
                 proposal_id,
                 method,
@@ -932,11 +944,10 @@ impl OrcasDaemonService {
                     )
                     .await?,
                 )?),
-                ipc::methods::SUPERVISOR_DECISION_MANUAL_REFRESH => Ok(serde_json::to_value(
-                    {
-                        let assignment_id = {
-                            let state = self.state.read().await;
-                            state
+                ipc::methods::SUPERVISOR_DECISION_MANUAL_REFRESH => Ok(serde_json::to_value({
+                    let assignment_id = {
+                        let state = self.state.read().await;
+                        state
                                 .collaboration
                                 .supervisor_turn_decisions
                                 .get(&decision_id)
@@ -947,25 +958,22 @@ impl OrcasDaemonService {
                                         request.request_id
                                     ))
                                 })?
-                        };
-                        self.supervisor_decision_manual_refresh(
-                            ipc::SupervisorDecisionManualRefreshRequest {
-                                assignment_id,
-                                requested_by: request.requested_by.clone(),
-                                rationale_note: request.request_note.clone(),
-                            },
-                        )
-                        .await?
-                    },
-                )?),
+                    };
+                    self.supervisor_decision_manual_refresh(
+                        ipc::SupervisorDecisionManualRefreshRequest {
+                            assignment_id,
+                            requested_by: request.requested_by.clone(),
+                            rationale_note: request.request_note.clone(),
+                        },
+                    )
+                    .await?
+                })?),
                 other => Err(OrcasError::Protocol(format!(
                     "supervisor decision remote action method `{other}` is not supported"
                 ))),
             },
             ipc::OperatorInboxActionRoute::PlanningSession {
-                session_id,
-                method,
-                ..
+                session_id, method, ..
             } => match method.as_str() {
                 ipc::methods::PLANNING_SESSION_APPROVE => Ok(serde_json::to_value(
                     self.planning_session_approve(ipc::PlanningSessionApproveRequest {
@@ -27247,12 +27255,14 @@ Boundedness note: Stay within the legacy compatibility boundary."#
         );
     }
 
-    async fn start_inbox_mirror_server() -> (String, PathBuf, tokio::task::JoinHandle<()>) {
+    async fn start_inbox_mirror_server() -> (String, String, PathBuf, tokio::task::JoinHandle<()>) {
         let base = std::env::temp_dir().join(format!("orcas-server-test-{}", Uuid::new_v4()));
         let db_path = base.join("server.db");
+        let operator_api_token = format!("test-token-{}", Uuid::new_v4());
         std::fs::create_dir_all(&base).expect("server base");
         let store = InboxMirrorStore::open(&db_path).expect("mirror store");
-        let server = InboxMirrorServer::new(store);
+        let server =
+            InboxMirrorServer::with_operator_api_token(store, Some(operator_api_token.clone()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind server");
@@ -27263,15 +27273,17 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                 .await
                 .expect("mirror server");
         });
-        (server_url, db_path, handle)
+        (server_url, operator_api_token, db_path, handle)
     }
 
     async fn inbox_mirror_test_service(
         base: PathBuf,
         server_url: Option<String>,
+        operator_api_token: Option<String>,
     ) -> Arc<OrcasDaemonService> {
         let mut config = AppConfig::default();
         config.inbox_mirror.server_url = server_url;
+        config.inbox_mirror.operator_api_token = operator_api_token;
         test_service_at_with_reasoner_and_config(
             base,
             Arc::new(StaticSupervisorReasoner::default()),
@@ -27326,15 +27338,24 @@ Boundedness note: Stay within the legacy compatibility boundary."#
     #[tokio::test]
     async fn operator_inbox_mirror_bootstrap_and_incremental_catch_up_match_server_view() {
         let base = std::env::temp_dir().join(format!("orcas-mirror-test-{}", Uuid::new_v4()));
-        let (server_url, server_db_path, server_handle) = start_inbox_mirror_server().await;
-        let service = inbox_mirror_test_service(base.clone(), Some(server_url.clone())).await;
+        let (server_url, server_token, server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let service = inbox_mirror_test_service(
+            base.clone(),
+            Some(server_url.clone()),
+            Some(server_token.clone()),
+        )
+        .await;
         let origin_node_id = service
             .authority_store
             .origin_node_id()
             .expect("origin node id")
             .to_string();
         let peer_id = format!("orcas-server::{origin_node_id}");
-        let client = OperatorInboxMirrorHttpClient::new(server_url.clone());
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
 
         let (_workstream_id, session_id) = seed_open_planning_session_fixture(&service).await;
 
@@ -27480,15 +27501,24 @@ Boundedness note: Stay within the legacy compatibility boundary."#
     #[tokio::test]
     async fn operator_inbox_mirror_checkpoint_survives_restart() {
         let base = std::env::temp_dir().join(format!("orcas-mirror-restart-{}", Uuid::new_v4()));
-        let (server_url, _server_db_path, server_handle) = start_inbox_mirror_server().await;
-        let service = inbox_mirror_test_service(base.clone(), Some(server_url.clone())).await;
+        let (server_url, server_token, _server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let service = inbox_mirror_test_service(
+            base.clone(),
+            Some(server_url.clone()),
+            Some(server_token.clone()),
+        )
+        .await;
         let origin_node_id = service
             .authority_store
             .origin_node_id()
             .expect("origin node id")
             .to_string();
         let peer_id = format!("orcas-server::{origin_node_id}");
-        let client = OperatorInboxMirrorHttpClient::new(server_url.clone());
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
         let (_workstream_id, _session_id) = seed_open_planning_session_fixture(&service).await;
 
         let _ = service
@@ -27504,7 +27534,9 @@ Boundedness note: Stay within the legacy compatibility boundary."#
             .mirror_checkpoint;
 
         drop(service);
-        let restarted = inbox_mirror_test_service(base, Some(server_url.clone())).await;
+        let restarted =
+            inbox_mirror_test_service(base, Some(server_url.clone()), Some(server_token.clone()))
+                .await;
         let after_restart = restarted
             .operator_inbox_mirror_checkpoint(ipc::OperatorInboxMirrorCheckpointRequest {
                 peer_id: peer_id.clone(),
@@ -27529,16 +27561,28 @@ Boundedness note: Stay within the legacy compatibility boundary."#
     #[tokio::test]
     async fn remote_action_request_executes_through_local_source_domain_apis() {
         let base = std::env::temp_dir().join(format!("orcas-remote-action-{}", Uuid::new_v4()));
-        let (server_url, server_db_path, server_handle) = start_inbox_mirror_server().await;
-        let service = inbox_mirror_test_service(base.clone(), Some(server_url.clone())).await;
+        let (server_url, server_token, server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let service = inbox_mirror_test_service(
+            base.clone(),
+            Some(server_url.clone()),
+            Some(server_token.clone()),
+        )
+        .await;
         let origin_node_id = service
             .authority_store
             .origin_node_id()
             .expect("origin node id")
             .to_string();
         let authority_peer_id = format!("orcas-server::{origin_node_id}");
-        let client = OperatorInboxMirrorHttpClient::new(server_url.clone());
-        let remote_client = RemoteActionHttpClient::new(server_url.clone());
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
+        let remote_client = RemoteActionHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
 
         let authority_before = service
             .authority_store
@@ -27575,12 +27619,16 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                 origin_node_id: origin_node_id.clone(),
                 item_id: item.id.clone(),
                 action_kind: orcas_core::ipc::OperatorInboxActionKind::Approve,
+                idempotency_key: Some("mirror-action-session".to_string()),
                 requested_by: Some("remote-client".to_string()),
                 request_note: Some("approve session".to_string()),
             })
             .await
             .expect("create remote action request");
-        assert_eq!(created.request.status, orcas_core::ipc::OperatorRemoteActionRequestStatus::Pending);
+        assert_eq!(
+            created.request.status,
+            orcas_core::ipc::OperatorRemoteActionRequestStatus::Pending
+        );
 
         let worker_progress = service
             .remote_action_once(&remote_client, &origin_node_id, "remote-worker")
@@ -27615,10 +27663,13 @@ Boundedness note: Stay within the legacy compatibility boundary."#
         }
 
         let server_list = client.list(&origin_node_id).await.expect("server list");
-        assert!(server_list
-            .items
-            .iter()
-            .any(|item| item.id == created.request.item_id && item.status == ipc::OperatorInboxItemStatus::Resolved));
+        assert!(
+            server_list
+                .items
+                .iter()
+                .any(|item| item.id == created.request.item_id
+                    && item.status == ipc::OperatorInboxItemStatus::Resolved)
+        );
 
         let authority_after = service
             .authority_store
@@ -27633,11 +27684,13 @@ Boundedness note: Stay within the legacy compatibility boundary."#
 
     #[tokio::test]
     async fn remote_action_request_executes_proposal_approval_through_local_source_domain_apis() {
-        let (server_url, server_db_path, server_handle) = start_inbox_mirror_server().await;
+        let (server_url, server_token, server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
         let reasoner = Arc::new(StaticSupervisorReasoner::default());
         let service = test_service_with_reasoner_and_config(reasoner.clone(), {
             let mut config = AppConfig::default();
             config.inbox_mirror.server_url = Some(server_url.clone());
+            config.inbox_mirror.operator_api_token = Some(server_token.clone());
             config
         })
         .await;
@@ -27647,14 +27700,21 @@ Boundedness note: Stay within the legacy compatibility boundary."#
             .expect("origin node id")
             .to_string();
         let authority_peer_id = format!("orcas-server::{origin_node_id}");
-        let client = OperatorInboxMirrorHttpClient::new(server_url.clone());
-        let remote_client = RemoteActionHttpClient::new(server_url.clone());
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
+        let remote_client = RemoteActionHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
 
         let (_workstream, work_unit, assignment, report) =
             seed_awaiting_decision_fixture(&service, "remote-proposal").await;
-        let proposal = create_default_proposal(&service, &reasoner, &work_unit, &assignment, &report)
-            .await
-            .proposal;
+        let proposal =
+            create_default_proposal(&service, &reasoner, &work_unit, &assignment, &report)
+                .await
+                .proposal;
 
         let _ = service
             .mirror_operator_inbox_once(&client, &origin_node_id, &authority_peer_id)
@@ -27678,6 +27738,7 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                 origin_node_id: origin_node_id.clone(),
                 item_id: item.id.clone(),
                 action_kind: orcas_core::ipc::OperatorInboxActionKind::Approve,
+                idempotency_key: Some("mirror-action-proposal".to_string()),
                 requested_by: Some("remote-client".to_string()),
                 request_note: Some("approve proposal".to_string()),
             })
@@ -27722,21 +27783,33 @@ Boundedness note: Stay within the legacy compatibility boundary."#
     }
 
     #[tokio::test]
-    async fn remote_action_request_executes_supervisor_decision_through_local_source_domain_apis()
-    {
+    async fn remote_action_request_executes_supervisor_decision_through_local_source_domain_apis() {
         let base = std::env::temp_dir().join(format!("orcas-remote-decision-{}", Uuid::new_v4()));
-        let (server_url, server_db_path, server_handle) = start_inbox_mirror_server().await;
-        let service = inbox_mirror_test_service(base.clone(), Some(server_url.clone())).await;
+        let (server_url, server_token, server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let service = inbox_mirror_test_service(
+            base.clone(),
+            Some(server_url.clone()),
+            Some(server_token.clone()),
+        )
+        .await;
         let origin_node_id = service
             .authority_store
             .origin_node_id()
             .expect("origin node id")
             .to_string();
         let authority_peer_id = format!("orcas-server::{origin_node_id}");
-        let client = OperatorInboxMirrorHttpClient::new(server_url.clone());
-        let remote_client = RemoteActionHttpClient::new(server_url.clone());
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
+        let remote_client = RemoteActionHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
 
-        let thread = sample_active_thread("remote-decision-thread", "live_observed", 200, "turn-live");
+        let thread =
+            sample_active_thread("remote-decision-thread", "live_observed", 200, "turn-live");
         let (workstream, work_unit) =
             seed_codex_thread_assignment_fixture(&service, thread.clone()).await;
         let assignment = service
@@ -27785,6 +27858,7 @@ Boundedness note: Stay within the legacy compatibility boundary."#
                 origin_node_id: origin_node_id.clone(),
                 item_id: item.id.clone(),
                 action_kind: orcas_core::ipc::OperatorInboxActionKind::Reject,
+                idempotency_key: Some("mirror-action-decision".to_string()),
                 requested_by: Some("remote-client".to_string()),
                 request_note: Some("reject decision".to_string()),
             })
@@ -27825,6 +27899,162 @@ Boundedness note: Stay within the legacy compatibility boundary."#
         }));
 
         std::fs::remove_file(server_db_path).ok();
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn operator_server_routes_reject_missing_or_invalid_tokens() {
+        let (server_url, server_token, _server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let client = reqwest::Client::new();
+        let request = orcas_core::ipc::OperatorRemoteActionListRequest {
+            origin_node_id: "origin-a".to_string(),
+            candidate_id: None,
+            item_id: None,
+            action_kind: None,
+            status: None,
+            pending_only: false,
+            actionable_only: false,
+            limit: None,
+        };
+
+        let missing = client
+            .post(format!("{server_url}/operator-actions/list"))
+            .json(&request)
+            .send()
+            .await
+            .expect("missing-token request");
+        assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let invalid = client
+            .post(format!("{server_url}/operator-actions/list"))
+            .bearer_auth("definitely-wrong")
+            .json(&request)
+            .send()
+            .await
+            .expect("invalid-token request");
+        assert_eq!(invalid.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let authorized = client
+            .post(format!("{server_url}/operator-actions/list"))
+            .bearer_auth(server_token)
+            .json(&request)
+            .send()
+            .await
+            .expect("authorized request");
+        assert_eq!(authorized.status(), reqwest::StatusCode::OK);
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn remote_action_wait_resolves_when_request_updates() {
+        let (server_url, server_token, _server_db_path, server_handle) =
+            start_inbox_mirror_server().await;
+        let reasoner = Arc::new(StaticSupervisorReasoner::default());
+        let service = test_service_with_reasoner_and_config(reasoner.clone(), {
+            let mut config = AppConfig::default();
+            config.inbox_mirror.server_url = Some(server_url.clone());
+            config.inbox_mirror.operator_api_token = Some(server_token.clone());
+            config
+        })
+        .await;
+        let origin_node_id = service
+            .authority_store
+            .origin_node_id()
+            .expect("origin node id")
+            .to_string();
+        let authority_peer_id = format!("orcas-server::{origin_node_id}");
+        let client = OperatorInboxMirrorHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
+        let remote_client = RemoteActionHttpClient::with_operator_api_token(
+            server_url.clone(),
+            server_token.clone(),
+        );
+
+        let (_workstream, work_unit, assignment, report) =
+            seed_awaiting_decision_fixture(&service, "remote-wait").await;
+        let proposal =
+            create_default_proposal(&service, &reasoner, &work_unit, &assignment, &report)
+                .await
+                .proposal;
+
+        let _ = service
+            .mirror_operator_inbox_once(&client, &origin_node_id, &authority_peer_id)
+            .await
+            .expect("bootstrap mirror");
+        let item = service
+            .operator_inbox_list(ipc::OperatorInboxListRequest {
+                source_kind: Some(orcas_core::ipc::OperatorInboxSourceKind::SupervisorProposal),
+                actionable_only: true,
+                ..Default::default()
+            })
+            .await
+            .expect("operator inbox list")
+            .items
+            .into_iter()
+            .find(|item| item.actionable_object_id == proposal.id)
+            .expect("proposal inbox item");
+
+        let created = remote_client
+            .create(&orcas_core::ipc::OperatorRemoteActionCreateRequest {
+                origin_node_id: origin_node_id.clone(),
+                item_id: item.id.clone(),
+                action_kind: orcas_core::ipc::OperatorInboxActionKind::Approve,
+                idempotency_key: Some("wait-candidate".to_string()),
+                requested_by: Some("remote-client".to_string()),
+                request_note: Some("wait for update".to_string()),
+            })
+            .await
+            .expect("create request");
+        let original = remote_client
+            .get(&orcas_core::ipc::OperatorRemoteActionGetRequest {
+                origin_node_id: origin_node_id.clone(),
+                request_id: created.request.request_id.clone(),
+            })
+            .await
+            .expect("get original")
+            .request
+            .expect("request present");
+
+        let waiter = {
+            let remote_client = remote_client.clone();
+            let origin_node_id = origin_node_id.clone();
+            let request_id = created.request.request_id.clone();
+            tokio::spawn(async move {
+                remote_client
+                    .wait(&orcas_core::ipc::OperatorRemoteActionWaitRequest {
+                        origin_node_id,
+                        request_id,
+                        after_updated_at: Some(original.updated_at),
+                        timeout_ms: Some(10_000),
+                    })
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let claimed = remote_client
+            .claim(&orcas_core::ipc::OperatorRemoteActionClaimRequest {
+                origin_node_id: origin_node_id.clone(),
+                worker_id: "remote-worker".to_string(),
+                limit: Some(1),
+                lease_ms: Some(60_000),
+            })
+            .await
+            .expect("claim request");
+        assert_eq!(claimed.requests.len(), 1);
+
+        let waited = waiter.await.expect("wait task").expect("wait response");
+        assert!(!waited.timed_out);
+        assert_eq!(waited.origin_node_id, origin_node_id);
+        assert_eq!(
+            waited.request.as_ref().expect("waited request").status,
+            orcas_core::ipc::OperatorRemoteActionRequestStatus::Claimed
+        );
+
         server_handle.abort();
     }
 }

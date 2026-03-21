@@ -1,4 +1,5 @@
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use tracing::debug;
 
 use orcas_core::ipc::{
@@ -15,6 +16,7 @@ use orcas_core::{OrcasError, OrcasResult};
 pub struct RemoteActionHttpClient {
     client: Client,
     base_url: String,
+    operator_api_token: Option<String>,
 }
 
 impl RemoteActionHttpClient {
@@ -22,6 +24,18 @@ impl RemoteActionHttpClient {
         Self {
             client: Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            operator_api_token: None,
+        }
+    }
+
+    pub fn with_operator_api_token(
+        base_url: impl Into<String>,
+        operator_api_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            operator_api_token: Some(operator_api_token.into()),
         }
     }
 
@@ -29,13 +43,22 @@ impl RemoteActionHttpClient {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
 
+    fn authorized_request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.operator_api_token {
+            let value = format!("Bearer {token}");
+            if let Ok(header_value) = HeaderValue::from_str(&value) {
+                return builder.header(AUTHORIZATION, header_value);
+            }
+        }
+        builder
+    }
+
     pub async fn create(
         &self,
         request: &OperatorRemoteActionCreateRequest,
     ) -> OrcasResult<OperatorRemoteActionCreateResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/request"))
+            .authorized_request(self.client.post(self.url("operator-actions/request")))
             .json(request)
             .send()
             .await
@@ -53,8 +76,7 @@ impl RemoteActionHttpClient {
         request: &OperatorRemoteActionListRequest,
     ) -> OrcasResult<OperatorRemoteActionListResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/list"))
+            .authorized_request(self.client.post(self.url("operator-actions/list")))
             .json(request)
             .send()
             .await
@@ -72,8 +94,7 @@ impl RemoteActionHttpClient {
         request: &OperatorRemoteActionGetRequest,
     ) -> OrcasResult<OperatorRemoteActionGetResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/get"))
+            .authorized_request(self.client.post(self.url("operator-actions/get")))
             .json(request)
             .send()
             .await
@@ -91,8 +112,7 @@ impl RemoteActionHttpClient {
         request: &OperatorRemoteActionClaimRequest,
     ) -> OrcasResult<OperatorRemoteActionClaimResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/claim"))
+            .authorized_request(self.client.post(self.url("operator-actions/claim")))
             .json(request)
             .send()
             .await
@@ -115,8 +135,7 @@ impl RemoteActionHttpClient {
         request: &OperatorRemoteActionCompleteRequest,
     ) -> OrcasResult<OperatorRemoteActionCompleteResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/complete"))
+            .authorized_request(self.client.post(self.url("operator-actions/complete")))
             .json(request)
             .send()
             .await
@@ -134,8 +153,7 @@ impl RemoteActionHttpClient {
         request: &OperatorRemoteActionFailRequest,
     ) -> OrcasResult<OperatorRemoteActionFailResponse> {
         let response = self
-            .client
-            .post(self.url("operator-actions/fail"))
+            .authorized_request(self.client.post(self.url("operator-actions/fail")))
             .json(request)
             .send()
             .await
@@ -143,6 +161,24 @@ impl RemoteActionHttpClient {
             .error_for_status()
             .map_err(|error| OrcasError::Transport(error.to_string()))?
             .json::<OperatorRemoteActionFailResponse>()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?;
+        Ok(response)
+    }
+
+    pub async fn wait(
+        &self,
+        request: &orcas_core::ipc::OperatorRemoteActionWaitRequest,
+    ) -> OrcasResult<orcas_core::ipc::OperatorRemoteActionWaitResponse> {
+        let response = self
+            .authorized_request(self.client.post(self.url("operator-actions/wait")))
+            .json(request)
+            .send()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| OrcasError::Transport(error.to_string()))?
+            .json::<orcas_core::ipc::OperatorRemoteActionWaitResponse>()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?;
         Ok(response)

@@ -134,6 +134,7 @@ create table if not exists remote_action_requests (
   item_id text not null,
   trigger_sequence integer not null,
   action_kind text not null,
+  idempotency_key text,
   item_json text not null,
   requested_by text,
   request_note text,
@@ -720,7 +721,9 @@ impl InboxMirrorStore {
         Ok(())
     }
 
-    fn remote_action_request_status_to_str(status: OperatorRemoteActionRequestStatus) -> &'static str {
+    fn remote_action_request_status_to_str(
+        status: OperatorRemoteActionRequestStatus,
+    ) -> &'static str {
         match status {
             OperatorRemoteActionRequestStatus::Pending => "pending",
             OperatorRemoteActionRequestStatus::Claimed => "claimed",
@@ -746,11 +749,18 @@ impl InboxMirrorStore {
         origin_node_id: &str,
         candidate_id: &str,
         action_kind: orcas_core::ipc::OperatorInboxActionKind,
+        idempotency_key: Option<&str>,
     ) -> String {
-        format!(
-            "{origin_node_id}::{candidate_id}::{}",
-            Self::operator_inbox_action_kind_to_str(action_kind)
-        )
+        match idempotency_key {
+            Some(key) if !key.is_empty() => format!(
+                "{origin_node_id}::{candidate_id}::{}::{key}",
+                Self::operator_inbox_action_kind_to_str(action_kind)
+            ),
+            _ => format!(
+                "{origin_node_id}::{candidate_id}::{}",
+                Self::operator_inbox_action_kind_to_str(action_kind)
+            ),
+        }
     }
 
     fn operator_inbox_action_kind_to_str(
@@ -765,9 +775,7 @@ impl InboxMirrorStore {
             orcas_core::ipc::OperatorInboxActionKind::Reconcile => "reconcile",
             orcas_core::ipc::OperatorInboxActionKind::Retry => "retry",
             orcas_core::ipc::OperatorInboxActionKind::Supersede => "supersede",
-            orcas_core::ipc::OperatorInboxActionKind::MarkReadyForReview => {
-                "mark_ready_for_review"
-            }
+            orcas_core::ipc::OperatorInboxActionKind::MarkReadyForReview => "mark_ready_for_review",
         }
     }
 
@@ -817,21 +825,51 @@ impl InboxMirrorStore {
                 })
                 .transpose()
         };
-        let (claim_token, completed_at_index, failed_at_index, canceled_at_index, stale_at_index, attempt_count_index, result_index, error_index) =
-            if column_count == 22 {
-                (None, 15, 16, 17, 18, 19, 20, 21)
-            } else {
-                (
-                    row.get::<_, Option<String>>(15)?,
-                    16,
-                    17,
-                    18,
-                    19,
-                    20,
-                    21,
-                    22,
-                )
-            };
+        let (
+            claim_token,
+            completed_at_index,
+            failed_at_index,
+            canceled_at_index,
+            stale_at_index,
+            attempt_count_index,
+            result_index,
+            error_index,
+        ) = if column_count >= 24 {
+            (
+                row.get::<_, Option<String>>(16)?,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+            )
+        } else if column_count == 23 {
+            (
+                row.get::<_, Option<String>>(15)?,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+            )
+        } else if column_count == 22 {
+            (None, 15, 16, 17, 18, 19, 20, 21)
+        } else {
+            (
+                row.get::<_, Option<String>>(15)?,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+            )
+        };
         Ok(OperatorRemoteActionRequest {
             request_id: row.get::<_, String>(0)?,
             origin_node_id: row.get::<_, String>(1)?,
@@ -839,21 +877,22 @@ impl InboxMirrorStore {
             item_id: row.get::<_, String>(3)?,
             trigger_sequence: row.get::<_, i64>(4)? as u64,
             action_kind: Self::operator_inbox_action_kind_from_str(&row.get::<_, String>(5)?),
-            item: serde_json::from_str(&row.get::<_, String>(6)?).map_err(|error| {
+            idempotency_key: row.get::<_, Option<String>>(6)?,
+            item: serde_json::from_str(&row.get::<_, String>(7)?).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    6,
+                    7,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
             })?,
-            requested_by: row.get::<_, Option<String>>(7)?,
-            request_note: row.get::<_, Option<String>>(8)?,
-            status: Self::remote_action_request_status_from_str(&row.get::<_, String>(9)?),
-            created_at: parse_ts(10)?,
-            updated_at: parse_ts(11)?,
-            claimed_by: row.get::<_, Option<String>>(12)?,
-            claimed_at: parse_opt_ts(13)?,
-            claimed_until: parse_opt_ts(14)?,
+            requested_by: row.get::<_, Option<String>>(8)?,
+            request_note: row.get::<_, Option<String>>(9)?,
+            status: Self::remote_action_request_status_from_str(&row.get::<_, String>(10)?),
+            created_at: parse_ts(11)?,
+            updated_at: parse_ts(12)?,
+            claimed_by: row.get::<_, Option<String>>(13)?,
+            claimed_at: parse_opt_ts(14)?,
+            claimed_until: parse_opt_ts(15)?,
             claim_token,
             completed_at: parse_opt_ts(completed_at_index)?,
             failed_at: parse_opt_ts(failed_at_index)?,
@@ -886,12 +925,14 @@ impl InboxMirrorStore {
     ) -> OrcasResult<Option<OperatorRemoteActionRequest>> {
         let mut statement = transaction
             .prepare(
-                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
+                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, idempotency_key, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
                  from remote_action_requests where request_id = ?1",
             )
             .map_err(db_error)?;
         let request = statement
-            .query_row(params![request_id], |row| Self::remote_action_request_from_row(row))
+            .query_row(params![request_id], |row| {
+                Self::remote_action_request_from_row(row)
+            })
             .optional()
             .map_err(db_error)?;
         Ok(request)
@@ -1594,7 +1635,11 @@ impl InboxMirrorStore {
                 "notification candidate does not match the requested item".to_string(),
             ));
         }
-        if !candidate.item.available_actions.contains(&request.action_kind) {
+        if !candidate
+            .item
+            .available_actions
+            .contains(&request.action_kind)
+        {
             return Err(OrcasError::Store(format!(
                 "action `{:?}` is not available for mirrored inbox item `{}`",
                 request.action_kind, request.item_id
@@ -1611,6 +1656,7 @@ impl InboxMirrorStore {
             request.origin_node_id.as_str(),
             candidate.candidate_id.as_str(),
             request.action_kind,
+            request.idempotency_key.as_deref(),
         );
         if let Some(existing) =
             Self::load_remote_action_request_tx(&transaction, request_id.as_str())?
@@ -1623,8 +1669,8 @@ impl InboxMirrorStore {
         let item_json = serde_json::to_string(&candidate.item)?;
         transaction
             .execute(
-                "insert into remote_action_requests(request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text)
-                 values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, null, null, null, null, null, null, null, null, 0, null, null)",
+                "insert into remote_action_requests(request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, idempotency_key, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text)
+                 values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, null, null, null, null, null, null, null, null, 0, null, null)",
                 params![
                     request_id,
                     request.origin_node_id.as_str(),
@@ -1632,6 +1678,7 @@ impl InboxMirrorStore {
                     request.item_id.as_str(),
                     candidate.trigger_sequence as i64,
                     Self::operator_inbox_action_kind_to_str(request.action_kind),
+                    request.idempotency_key.as_deref(),
                     item_json,
                     request.requested_by.as_deref(),
                     request.request_note.as_deref(),
@@ -1644,7 +1691,9 @@ impl InboxMirrorStore {
             )
             .map_err(db_error)?;
         let request = Self::load_remote_action_request_tx(&transaction, request_id.as_str())?
-            .ok_or_else(|| OrcasError::Store("remote action request disappeared after insert".to_string()))?;
+            .ok_or_else(|| {
+                OrcasError::Store("remote action request disappeared after insert".to_string())
+            })?;
         transaction.commit().map_err(db_error)?;
         Ok(OperatorRemoteActionCreateResponse { request })
     }
@@ -1659,11 +1708,13 @@ impl InboxMirrorStore {
             .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
         let mut statement = connection
             .prepare(
-                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
+                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, idempotency_key, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
                  from remote_action_requests where origin_node_id = ?1 order by created_at asc, request_id asc",
             )
             .map_err(db_error)?;
-        let mut rows = statement.query(params![request.origin_node_id.as_str()]).map_err(db_error)?;
+        let mut rows = statement
+            .query(params![request.origin_node_id.as_str()])
+            .map_err(db_error)?;
         let mut requests = Vec::new();
         while let Some(row) = rows.next().map_err(db_error)? {
             let remote_request = Self::remote_action_request_from_row(row).map_err(db_error)?;
@@ -1672,7 +1723,9 @@ impl InboxMirrorStore {
             {
                 continue;
             }
-            if let Some(item_id) = request.item_id.as_ref() && &remote_request.item_id != item_id {
+            if let Some(item_id) = request.item_id.as_ref()
+                && &remote_request.item_id != item_id
+            {
                 continue;
             }
             if let Some(action_kind) = request.action_kind
@@ -1685,16 +1738,20 @@ impl InboxMirrorStore {
             {
                 continue;
             }
-            if request.pending_only && remote_request.status != OperatorRemoteActionRequestStatus::Pending
+            if request.pending_only
+                && remote_request.status != OperatorRemoteActionRequestStatus::Pending
             {
                 continue;
             }
-            if request.actionable_only && !Self::remote_action_item_is_actionable(&remote_request.item)
+            if request.actionable_only
+                && !Self::remote_action_item_is_actionable(&remote_request.item)
             {
                 continue;
             }
             requests.push(remote_request);
-            if let Some(limit) = request.limit && requests.len() >= limit {
+            if let Some(limit) = request.limit
+                && requests.len() >= limit
+            {
                 break;
             }
         }
@@ -1714,7 +1771,7 @@ impl InboxMirrorStore {
             .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
         let mut statement = connection
             .prepare(
-                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
+                "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, idempotency_key, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
                  from remote_action_requests where request_id = ?1",
             )
             .map_err(db_error)?;
@@ -1742,16 +1799,14 @@ impl InboxMirrorStore {
             .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
         let transaction = connection.transaction().map_err(db_error)?;
         let now = Utc::now();
-        let lease_until = now
-            + chrono::Duration::milliseconds(
-                request.lease_ms.unwrap_or(30_000).max(1) as i64,
-            );
+        let lease_until =
+            now + chrono::Duration::milliseconds(request.lease_ms.unwrap_or(30_000).max(1) as i64);
         let limit = request.limit.unwrap_or(1).max(1);
         let mut requests = Vec::new();
         {
             let mut statement = transaction
                 .prepare(
-                    "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
+                    "select request_id, origin_node_id, candidate_id, item_id, trigger_sequence, action_kind, idempotency_key, item_json, requested_by, request_note, request_status, created_at, updated_at, claimed_by, claimed_at, claimed_until, claim_token, completed_at, failed_at, canceled_at, stale_at, attempt_count, result_json, error_text
                  from remote_action_requests where origin_node_id = ?1 order by created_at asc, request_id asc",
                 )
                 .map_err(db_error)?;
@@ -1762,7 +1817,8 @@ impl InboxMirrorStore {
                 if requests.len() >= limit {
                     break;
                 }
-                let candidate_request = Self::remote_action_request_from_row(row).map_err(db_error)?;
+                let candidate_request =
+                    Self::remote_action_request_from_row(row).map_err(db_error)?;
                 let claimable = match candidate_request.status {
                     OperatorRemoteActionRequestStatus::Pending => true,
                     OperatorRemoteActionRequestStatus::Claimed => candidate_request
@@ -1778,10 +1834,9 @@ impl InboxMirrorStore {
                     request.origin_node_id.as_str(),
                     candidate_request.candidate_id.as_str(),
                 )?;
-                if candidate
-                    .as_ref()
-                    .is_none_or(|candidate| !Self::remote_action_item_is_actionable(&candidate.item))
-                {
+                if candidate.as_ref().is_none_or(|candidate| {
+                    !Self::remote_action_item_is_actionable(&candidate.item)
+                }) {
                     Self::update_remote_action_request_status_tx(
                         &transaction,
                         candidate_request.request_id.as_str(),
@@ -1849,8 +1904,9 @@ impl InboxMirrorStore {
             .lock()
             .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
         let transaction = connection.transaction().map_err(db_error)?;
-        let existing = Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
-            .ok_or_else(|| OrcasError::Store("remote action request not found".to_string()))?;
+        let existing =
+            Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
+                .ok_or_else(|| OrcasError::Store("remote action request not found".to_string()))?;
         if existing.origin_node_id != request.origin_node_id {
             return Err(OrcasError::Store(
                 "remote action request origin mismatch".to_string(),
@@ -1896,8 +1952,13 @@ impl InboxMirrorStore {
             Some(request.result.clone()),
             None,
         )?;
-        let updated = Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
-            .ok_or_else(|| OrcasError::Store("remote action request disappeared during completion".to_string()))?;
+        let updated =
+            Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
+                .ok_or_else(|| {
+                    OrcasError::Store(
+                        "remote action request disappeared during completion".to_string(),
+                    )
+                })?;
         transaction.commit().map_err(db_error)?;
         Ok(OperatorRemoteActionCompleteResponse {
             origin_node_id: request.origin_node_id.clone(),
@@ -1914,8 +1975,9 @@ impl InboxMirrorStore {
             .lock()
             .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
         let transaction = connection.transaction().map_err(db_error)?;
-        let existing = Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
-            .ok_or_else(|| OrcasError::Store("remote action request not found".to_string()))?;
+        let existing =
+            Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
+                .ok_or_else(|| OrcasError::Store("remote action request not found".to_string()))?;
         if existing.origin_node_id != request.origin_node_id {
             return Err(OrcasError::Store(
                 "remote action request origin mismatch".to_string(),
@@ -1961,8 +2023,13 @@ impl InboxMirrorStore {
             None,
             Some(request.error.clone()),
         )?;
-        let updated = Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
-            .ok_or_else(|| OrcasError::Store("remote action request disappeared during failure".to_string()))?;
+        let updated =
+            Self::load_remote_action_request_tx(&transaction, request.request_id.as_str())?
+                .ok_or_else(|| {
+                    OrcasError::Store(
+                        "remote action request disappeared during failure".to_string(),
+                    )
+                })?;
         transaction.commit().map_err(db_error)?;
         Ok(OperatorRemoteActionFailResponse {
             origin_node_id: request.origin_node_id.clone(),
@@ -2908,6 +2975,23 @@ mod tests {
             origin_node_id: origin_node_id.to_string(),
             item_id: item_id.to_string(),
             action_kind,
+            idempotency_key: None,
+            requested_by: Some("remote-operator".to_string()),
+            request_note: Some("please execute".to_string()),
+        }
+    }
+
+    fn remote_action_create_request_with_idempotency_key(
+        origin_node_id: &str,
+        item_id: &str,
+        action_kind: OperatorInboxActionKind,
+        idempotency_key: Option<&str>,
+    ) -> OperatorRemoteActionCreateRequest {
+        OperatorRemoteActionCreateRequest {
+            origin_node_id: origin_node_id.to_string(),
+            item_id: item_id.to_string(),
+            action_kind,
+            idempotency_key: idempotency_key.map(|value| value.to_string()),
             requested_by: Some("remote-operator".to_string()),
             request_note: Some("please execute".to_string()),
         }
@@ -2945,6 +3029,19 @@ mod tests {
             worker_id: worker_id.to_string(),
             limit: Some(8),
             lease_ms: Some(60_000),
+        }
+    }
+
+    fn remote_action_claim_request_with_lease(
+        origin_node_id: &str,
+        worker_id: &str,
+        lease_ms: u64,
+    ) -> OperatorRemoteActionClaimRequest {
+        OperatorRemoteActionClaimRequest {
+            origin_node_id: origin_node_id.to_string(),
+            worker_id: worker_id.to_string(),
+            limit: Some(8),
+            lease_ms: Some(lease_ms),
         }
     }
 
@@ -3333,8 +3430,119 @@ mod tests {
             .expect("create duplicate");
 
         assert_eq!(first.request.request_id, second.request.request_id);
-        assert_eq!(first.request.status, OperatorRemoteActionRequestStatus::Pending);
-        assert_eq!(store.list_remote_action_requests(&remote_action_list_request(origin)).expect("list").requests.len(), 1);
+        assert_eq!(
+            first.request.status,
+            OperatorRemoteActionRequestStatus::Pending
+        );
+        assert_eq!(
+            store
+                .list_remote_action_requests(&remote_action_list_request(origin))
+                .expect("list")
+                .requests
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn remote_action_request_creation_is_idempotent_with_an_idempotency_key() {
+        let dir = tempdir().expect("tempdir");
+        let store = InboxMirrorStore::open(dir.path().join("server.db")).expect("store");
+        let origin = "origin-a";
+        store
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+
+        let first = store
+            .create_remote_action_request(&remote_action_create_request_with_idempotency_key(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+                Some("client-retry-key"),
+            ))
+            .expect("create");
+        let second = store
+            .create_remote_action_request(&remote_action_create_request_with_idempotency_key(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+                Some("client-retry-key"),
+            ))
+            .expect("create duplicate");
+
+        assert_eq!(first.request.request_id, second.request.request_id);
+        assert_eq!(
+            first.request.idempotency_key.as_deref(),
+            Some("client-retry-key")
+        );
+        assert_eq!(
+            second.request.idempotency_key.as_deref(),
+            Some("client-retry-key")
+        );
+        assert_eq!(
+            store
+                .list_remote_action_requests(&remote_action_list_request(origin))
+                .expect("list")
+                .requests
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn remote_action_request_creation_without_an_idempotency_key_is_predictable() {
+        let dir = tempdir().expect("tempdir");
+        let store = InboxMirrorStore::open(dir.path().join("server.db")).expect("store");
+        let origin = "origin-a";
+        store
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+
+        let first = store
+            .create_remote_action_request(&remote_action_create_request(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+            ))
+            .expect("create");
+        let second = store
+            .create_remote_action_request(&OperatorRemoteActionCreateRequest {
+                origin_node_id: origin.to_string(),
+                item_id: "proposal-1".to_string(),
+                action_kind: OperatorInboxActionKind::Approve,
+                idempotency_key: None,
+                requested_by: Some("different-operator".to_string()),
+                request_note: Some("retry without idempotency".to_string()),
+            })
+            .expect("create duplicate");
+
+        assert_eq!(first.request.request_id, second.request.request_id);
+        assert_eq!(first.request.idempotency_key, None);
+        assert_eq!(second.request.idempotency_key, None);
+        assert_eq!(
+            store
+                .list_remote_action_requests(&remote_action_list_request(origin))
+                .expect("list")
+                .requests
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -3367,7 +3575,10 @@ mod tests {
         assert_eq!(claimed.requests.len(), 1);
         let claim = &claimed.requests[0];
         assert_eq!(claim.request.request_id, created.request.request_id);
-        assert_eq!(claim.request.status, OperatorRemoteActionRequestStatus::Claimed);
+        assert_eq!(
+            claim.request.status,
+            OperatorRemoteActionRequestStatus::Claimed
+        );
 
         store
             .complete_remote_action_request(&remote_action_complete_request(
@@ -3389,6 +3600,73 @@ mod tests {
             .expect("request");
         assert_eq!(request.status, OperatorRemoteActionRequestStatus::Completed);
         assert_eq!(request.result, Some(json!({"status": "ok"})));
+    }
+
+    #[test]
+    fn remote_action_claim_lease_expiry_allows_reclaim_and_preserves_claim_ownership() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("server.db");
+        let origin = "origin-a";
+        let store = InboxMirrorStore::open(&path).expect("store");
+        store
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+        let created = store
+            .create_remote_action_request(&remote_action_create_request(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+            ))
+            .expect("create");
+        let first_claim = store
+            .claim_remote_action_requests(&remote_action_claim_request_with_lease(
+                origin, "worker-1", 1,
+            ))
+            .expect("claim");
+        assert_eq!(first_claim.requests.len(), 1);
+        let first = &first_claim.requests[0];
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        drop(store);
+
+        let reopened = InboxMirrorStore::open(&path).expect("reopen");
+        let second_claim = reopened
+            .claim_remote_action_requests(&remote_action_claim_request_with_lease(
+                origin, "worker-2", 60_000,
+            ))
+            .expect("reclaim");
+        assert_eq!(second_claim.requests.len(), 1);
+        let second = &second_claim.requests[0];
+        assert_eq!(second.request.request_id, created.request.request_id);
+        assert_ne!(first.claim_token, second.claim_token);
+        assert_eq!(second.request.claimed_by.as_deref(), Some("worker-2"));
+        assert_eq!(
+            second.request.status,
+            OperatorRemoteActionRequestStatus::Claimed
+        );
+
+        let stale_complete =
+            reopened.complete_remote_action_request(&remote_action_complete_request(
+                origin,
+                second.request.request_id.as_str(),
+                first.claim_token.as_str(),
+            ));
+        assert!(stale_complete.is_err());
+
+        reopened
+            .complete_remote_action_request(&remote_action_complete_request(
+                origin,
+                second.request.request_id.as_str(),
+                second.claim_token.as_str(),
+            ))
+            .expect("complete reclaimed request");
     }
 
     #[test]
@@ -3435,11 +3713,13 @@ mod tests {
             .request
             .expect("request");
         assert_eq!(request.status, OperatorRemoteActionRequestStatus::Stale);
-        assert!(store
-            .claim_remote_action_requests(&remote_action_claim_request(origin, "worker-1"))
-            .expect("claim")
-            .requests
-            .is_empty());
+        assert!(
+            store
+                .claim_remote_action_requests(&remote_action_claim_request(origin, "worker-1"))
+                .expect("claim")
+                .requests
+                .is_empty()
+        );
     }
 
     #[test]

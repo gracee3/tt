@@ -1,4 +1,5 @@
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use tracing::debug;
 
 use orcas_core::ipc::{
@@ -12,6 +13,7 @@ use orcas_core::{OrcasError, OrcasResult};
 pub struct OperatorInboxMirrorHttpClient {
     client: Client,
     base_url: String,
+    operator_api_token: Option<String>,
 }
 
 impl OperatorInboxMirrorHttpClient {
@@ -19,11 +21,33 @@ impl OperatorInboxMirrorHttpClient {
         Self {
             client: Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            operator_api_token: None,
+        }
+    }
+
+    pub fn with_operator_api_token(
+        base_url: impl Into<String>,
+        operator_api_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            operator_api_token: Some(operator_api_token.into()),
         }
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    fn authorized_request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.operator_api_token {
+            let value = format!("Bearer {token}");
+            if let Ok(header_value) = HeaderValue::from_str(&value) {
+                return builder.header(AUTHORIZATION, header_value);
+            }
+        }
+        builder
     }
 
     pub async fn checkpoint(
@@ -34,11 +58,10 @@ impl OperatorInboxMirrorHttpClient {
             origin_node_id: origin_node_id.to_string(),
         };
         let response = self
-            .client
-            .get(self.url(&format!(
+            .authorized_request(self.client.get(self.url(&format!(
                 "operator-inbox/{}/checkpoint",
                 request.origin_node_id
-            )))
+            ))))
             .send()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?
@@ -60,8 +83,7 @@ impl OperatorInboxMirrorHttpClient {
         request: &OperatorInboxMirrorApplyRequest,
     ) -> OrcasResult<OperatorInboxMirrorApplyResponse> {
         let response = self
-            .client
-            .post(self.url("operator-inbox/mirror/apply"))
+            .authorized_request(self.client.post(self.url("operator-inbox/mirror/apply")))
             .json(request)
             .send()
             .await
@@ -76,8 +98,10 @@ impl OperatorInboxMirrorHttpClient {
 
     pub async fn list(&self, origin_node_id: &str) -> OrcasResult<OperatorInboxMirrorListResponse> {
         let response = self
-            .client
-            .get(self.url(&format!("operator-inbox/{origin_node_id}/items")))
+            .authorized_request(
+                self.client
+                    .get(self.url(&format!("operator-inbox/{origin_node_id}/items"))),
+            )
             .send()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?
@@ -95,8 +119,10 @@ impl OperatorInboxMirrorHttpClient {
         item_id: &str,
     ) -> OrcasResult<OperatorInboxMirrorGetResponse> {
         let response = self
-            .client
-            .get(self.url(&format!("operator-inbox/{origin_node_id}/items/{item_id}")))
+            .authorized_request(
+                self.client
+                    .get(self.url(&format!("operator-inbox/{origin_node_id}/items/{item_id}"))),
+            )
             .send()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?

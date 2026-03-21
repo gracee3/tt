@@ -17,6 +17,12 @@ struct ServerCli {
         help = "Bind address for the mirrored inbox server"
     )]
     bind: SocketAddr,
+    #[arg(
+        long,
+        env = "ORCAS_OPERATOR_API_TOKEN",
+        help = "Optional bearer token required for operator-facing server APIs"
+    )]
+    operator_api_token: Option<String>,
 }
 
 #[tokio::main]
@@ -28,6 +34,8 @@ async fn main() -> Result<()> {
     info!("starting orcas mirrored inbox server");
 
     let store = InboxMirrorStore::open(paths.data_dir.join("server_inbox.db"))?;
-    InboxMirrorServer::new(store).serve(cli.bind).await?;
+    InboxMirrorServer::with_operator_api_token(store, cli.operator_api_token)
+        .serve(cli.bind)
+        .await?;
     Ok(())
 }

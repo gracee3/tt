@@ -755,6 +755,8 @@ pub struct OperatorRemoteActionRequest {
     pub item_id: String,
     pub trigger_sequence: u64,
     pub action_kind: OperatorInboxActionKind,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     pub item: OperatorInboxItem,
     #[serde(default)]
     pub requested_by: Option<String>,
@@ -793,6 +795,8 @@ pub struct OperatorRemoteActionCreateRequest {
     pub item_id: String,
     pub action_kind: OperatorInboxActionKind,
     #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
     pub requested_by: Option<String>,
     #[serde(default)]
     pub request_note: Option<String>,
@@ -820,6 +824,23 @@ pub struct OperatorRemoteActionListRequest {
     pub actionable_only: bool,
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorRemoteActionWaitRequest {
+    pub origin_node_id: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub after_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorRemoteActionWaitResponse {
+    pub origin_node_id: String,
+    pub request: Option<OperatorRemoteActionRequest>,
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

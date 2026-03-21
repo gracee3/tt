@@ -123,11 +123,16 @@ impl Default for DefaultsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxMirrorConfig {
     pub server_url: Option<String>,
+    #[serde(default)]
+    pub operator_api_token: Option<String>,
 }
 
 impl Default for InboxMirrorConfig {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            operator_api_token: None,
+        }
     }
 }
 
