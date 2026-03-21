@@ -560,6 +560,30 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn authority_events_export(
+        &self,
+        params: &ipc::AuthorityEventsExportRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsExportResponse> {
+        self.request(ipc::methods::AUTHORITY_EVENTS_EXPORT, params)
+            .await
+    }
+
+    pub async fn authority_events_ack(
+        &self,
+        params: &ipc::AuthorityEventsAckRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsAckResponse> {
+        self.request(ipc::methods::AUTHORITY_EVENTS_ACK, params)
+            .await
+    }
+
+    pub async fn authority_events_replay(
+        &self,
+        params: &ipc::AuthorityEventsReplayRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsReplayResponse> {
+        self.request(ipc::methods::AUTHORITY_EVENTS_REPLAY, params)
+            .await
+    }
+
     pub async fn authority_tracked_thread_prepare_workspace(
         &self,
         params: &ipc::AuthorityTrackedThreadPrepareWorkspaceRequest,

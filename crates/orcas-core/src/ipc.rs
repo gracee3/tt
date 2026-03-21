@@ -86,6 +86,9 @@ pub mod methods {
     pub const AUTHORITY_TRACKED_THREAD_DELETE: &str = "authority/tracked_thread/delete";
     pub const AUTHORITY_TRACKED_THREAD_LIST: &str = "authority/tracked_thread/list";
     pub const AUTHORITY_TRACKED_THREAD_GET: &str = "authority/tracked_thread/get";
+    pub const AUTHORITY_EVENTS_EXPORT: &str = "authority/events/export";
+    pub const AUTHORITY_EVENTS_ACK: &str = "authority/events/ack";
+    pub const AUTHORITY_EVENTS_REPLAY: &str = "authority/events/replay";
     pub const WORKSTREAM_PLAN_GET: &str = "workstream_plan/get";
     pub const WORKSTREAM_PLAN_LIST: &str = "workstream_plan/list";
     pub const PLAN_ASSESSMENT_LIST: &str = "plan_assessment/list";
@@ -207,7 +210,9 @@ pub struct StateGetRequest {}
 /// Returns a merged daemon snapshot with collaboration-first state.
 ///
 /// This is useful for reconnect and operator inspection, but it is not the
-/// canonical authority planning hierarchy view.
+/// canonical authority planning hierarchy view. A future operator inbox should
+/// remain a derived server-side read model in the same spirit, not a new
+/// authority truth surface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateGetResponse {
     pub snapshot: StateSnapshot,
@@ -1248,6 +1253,49 @@ pub struct AuthorityHierarchyGetRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorityHierarchyGetResponse {
     pub hierarchy: authority::HierarchySnapshot,
+}
+
+/// Stored authority events exported in sequence order for replication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsExportRequest {
+    pub peer_id: String,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsExportResponse {
+    pub events: Vec<authority::StoredAuthorityEvent>,
+    pub checkpoint: authority::AuthorityReplicationCheckpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsAckRequest {
+    pub peer_id: String,
+    pub through_sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsAckResponse {
+    pub checkpoint: authority::AuthorityReplicationCheckpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsReplayRequest {
+    /// Stored authority events to apply into an authority store/projection path.
+    ///
+    /// The current daemon uses its local authority store. A future server can
+    /// reuse the same shape against its own authority storage without turning
+    /// collaboration/runtime state into canonical truth.
+    pub events: Vec<authority::StoredAuthorityEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorityEventsReplayResponse {
+    pub replayed_events: Vec<authority::StoredAuthorityEvent>,
+    pub projection_checkpoint: Option<authority::ProjectionCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1000,6 +1000,19 @@ pub struct StoredAuthorityEvent {
     pub envelope: AuthorityEventEnvelope,
 }
 
+/// Durable checkpoint for peer-scoped authority replication.
+///
+/// This tracks the last ordered event sequence exported to a peer and the last
+/// sequence the peer acknowledged. It is replication metadata, not canonical
+/// planning state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityReplicationCheckpoint {
+    pub peer_id: String,
+    pub last_exported_sequence: u64,
+    pub last_acked_sequence: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Projection checkpoint for an authority-derived read model.
 ///
 /// This is a projection maintenance detail, not a canonical planning record.
@@ -1029,6 +1042,20 @@ pub trait AuthorityEventStore: Send + Sync {
         after_sequence: Option<u64>,
         limit: usize,
     ) -> OrcasResult<Vec<StoredAuthorityEvent>>;
+}
+
+/// Durable checkpoint boundary for peer-scoped authority replication.
+#[async_trait]
+pub trait AuthorityReplicationStore: Send + Sync {
+    async fn load_replication_checkpoint(
+        &self,
+        peer_id: &str,
+    ) -> OrcasResult<Option<AuthorityReplicationCheckpoint>>;
+
+    async fn save_replication_checkpoint(
+        &self,
+        checkpoint: &AuthorityReplicationCheckpoint,
+    ) -> OrcasResult<()>;
 }
 
 /// Checkpoint store boundary for authority-derived projections.

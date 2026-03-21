@@ -12,15 +12,17 @@ use tracing::{debug, info, warn};
 use orcas_core::authority::{
     self, AggregateKey, AggregateType, AuthorityCommand, AuthorityCommandStore, AuthorityEvent,
     AuthorityEventEnvelope, AuthorityEventStore, AuthorityProjectionStore, AuthorityProjector,
-    AuthorityQueryStore, CausationId, CommandId, CommandReceipt, CorrelationId, DeletePlan,
-    DeletePlanTarget, DeleteTarget, EventMetadata, HierarchySnapshot, OriginNodeId,
-    ProjectionCheckpoint, Revision, StoredAuthorityEvent, TrackedThreadBindingState,
-    TrackedThreadRecord, TrackedThreadSummary, WorkUnitNode, WorkUnitRecord, WorkUnitSummary,
-    WorkstreamNode, WorkstreamRecord, WorkstreamSummary,
+    AuthorityQueryStore, AuthorityReplicationCheckpoint, AuthorityReplicationStore, CausationId,
+    CommandId, CommandReceipt, CorrelationId, DeletePlan, DeletePlanTarget, DeleteTarget,
+    EventMetadata, HierarchySnapshot, OriginNodeId, ProjectionCheckpoint, Revision,
+    StoredAuthorityEvent, TrackedThreadBindingState, TrackedThreadRecord, TrackedThreadSummary,
+    WorkUnitNode, WorkUnitRecord, WorkUnitSummary, WorkstreamNode, WorkstreamRecord,
+    WorkstreamSummary,
 };
 use orcas_core::{AppPaths, OrcasError, OrcasResult, StoredState};
 
 const AUTHORITY_PROJECTION: &str = "authority_current";
+const AUTHORITY_REPLICATION_CHECKPOINT_TABLE: &str = "authority_replication_checkpoint";
 const META_ORIGIN_NODE_ID: &str = "origin_node_id";
 const META_JSON_IMPORT_STATUS: &str = "json_import_status";
 const META_JSON_IMPORT_COMPLETED_AT: &str = "json_import_completed_at";
@@ -65,6 +67,13 @@ create index if not exists idx_event_log_command
 create table if not exists projection_checkpoint (
   projection_name text primary key,
   last_applied_sequence integer not null
+);
+
+create table if not exists authority_replication_checkpoint (
+  peer_id text primary key,
+  last_exported_sequence integer not null,
+  last_acked_sequence integer not null,
+  updated_at text not null
 );
 
 create table if not exists workstreams (
@@ -847,7 +856,7 @@ impl AuthoritySqliteStore {
     fn append_event_envelope_tx(
         transaction: &Transaction<'_>,
         envelope: &AuthorityEventEnvelope,
-    ) -> OrcasResult<()> {
+    ) -> OrcasResult<StoredAuthorityEvent> {
         let event_kind = enum_to_storage(envelope.event.kind())?;
         let aggregate_type = enum_to_storage(envelope.metadata.aggregate_type)?;
         let body_json = serde_json::to_string(&envelope.event)
@@ -892,13 +901,19 @@ impl AuthoritySqliteStore {
                 ],
             )
             .map_err(map_sql_error)?;
-        Self::apply_event_projection_tx(transaction, envelope)?;
-        Ok(())
+        let sequence = u64::try_from(transaction.last_insert_rowid())
+            .map_err(|error| store_error(format!("event sequence overflow: {error}")))?;
+        Self::apply_event_projection_tx(transaction, envelope, sequence)?;
+        Ok(StoredAuthorityEvent {
+            sequence,
+            envelope: envelope.clone(),
+        })
     }
 
     fn apply_event_projection_tx(
         transaction: &Transaction<'_>,
         envelope: &AuthorityEventEnvelope,
+        sequence: u64,
     ) -> OrcasResult<()> {
         match &envelope.event {
             AuthorityEvent::WorkstreamCreated(event) => {
@@ -1030,7 +1045,6 @@ impl AuthoritySqliteStore {
             }
         }
 
-        let sequence = transaction.last_insert_rowid();
         transaction
             .execute(
                 "insert into projection_checkpoint (projection_name, last_applied_sequence)
@@ -1043,6 +1057,94 @@ impl AuthoritySqliteStore {
         Ok(())
     }
 
+    fn append_stored_event_tx(
+        transaction: &Transaction<'_>,
+        stored: &StoredAuthorityEvent,
+    ) -> OrcasResult<Option<StoredAuthorityEvent>> {
+        if let Some(existing) = Self::load_stored_event_by_id_tx(
+            transaction,
+            stored.envelope.metadata.event_id.as_str(),
+        )? {
+            if existing.sequence != stored.sequence || existing.envelope != stored.envelope {
+                return Err(store_error(format!(
+                    "stored authority replay event `{}` conflicts with existing event",
+                    stored.envelope.metadata.event_id
+                )));
+            }
+            return Ok(None);
+        }
+
+        let event_kind = enum_to_storage(stored.envelope.event.kind())?;
+        let aggregate_type = enum_to_storage(stored.envelope.metadata.aggregate_type)?;
+        let body_json = serde_json::to_string(&stored.envelope.event)
+            .map_err(|error| store_error(format!("serialize authority event: {error}")))?;
+        transaction
+            .execute(
+                "insert into event_log (
+                    seq,
+                    event_id,
+                    command_id,
+                    aggregate_type,
+                    aggregate_id,
+                    aggregate_version,
+                    event_kind,
+                    occurred_at,
+                    origin_node_id,
+                    causation_id,
+                    correlation_id,
+                    body_json
+                 ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    i64::try_from(stored.sequence).map_err(|error| {
+                        store_error(format!("event sequence overflow: {error}"))
+                    })?,
+                    stored.envelope.metadata.event_id.as_str(),
+                    stored.envelope.metadata.command_id.as_str(),
+                    aggregate_type,
+                    stored.envelope.metadata.aggregate_id,
+                    i64::try_from(stored.envelope.metadata.aggregate_version.get()).map_err(
+                        |error| store_error(format!("store revision overflow: {error}"))
+                    )?,
+                    event_kind,
+                    encode_datetime(stored.envelope.metadata.occurred_at),
+                    stored.envelope.metadata.origin_node_id.as_str(),
+                    stored
+                        .envelope
+                        .metadata
+                        .causation_id
+                        .as_ref()
+                        .map(CausationId::as_str),
+                    stored
+                        .envelope
+                        .metadata
+                        .correlation_id
+                        .as_ref()
+                        .map(CorrelationId::as_str),
+                    body_json
+                ],
+            )
+            .map_err(map_sql_error)?;
+        Self::apply_event_projection_tx(transaction, &stored.envelope, stored.sequence)?;
+        Ok(Some(stored.clone()))
+    }
+
+    fn load_stored_event_by_id_tx(
+        transaction: &Transaction<'_>,
+        event_id: &str,
+    ) -> OrcasResult<Option<StoredAuthorityEvent>> {
+        transaction
+            .query_row(
+                "select seq, event_id, command_id, aggregate_type, aggregate_id, aggregate_version,
+                        event_kind, occurred_at, origin_node_id, causation_id, correlation_id, body_json
+                 from event_log
+                 where event_id = ?1",
+                params![event_id],
+                read_stored_event_row,
+            )
+            .optional()
+            .map_err(map_sql_error)
+    }
+
     fn migrate(connection: &mut Connection) -> OrcasResult<MigrationOutcome> {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1053,13 +1155,13 @@ impl AuthoritySqliteStore {
                     store_error(format!("initialize authority schema: {error}"))
                 })?;
                 connection
-                    .pragma_update(None, "user_version", 2_i64)
+                    .pragma_update(None, "user_version", 3_i64)
                     .map_err(|error| {
                         store_error(format!("set authority schema version: {error}"))
                     })?;
-                debug!(schema_version = 2_i64, "initialized authority schema");
+                debug!(schema_version = 3_i64, "initialized authority schema");
                 Ok(MigrationOutcome {
-                    schema_version: 2,
+                    schema_version: 3,
                     applied: true,
                 })
             }
@@ -1094,8 +1196,33 @@ impl AuthoritySqliteStore {
                     applied: true,
                 })
             }
-            2 => Ok(MigrationOutcome {
-                schema_version: 2,
+            2 => {
+                connection
+                    .execute_batch(&format!(
+                        "create table if not exists {} (
+                                peer_id text primary key,
+                                last_exported_sequence integer not null,
+                                last_acked_sequence integer not null,
+                                updated_at text not null
+                             );",
+                        AUTHORITY_REPLICATION_CHECKPOINT_TABLE
+                    ))
+                    .map_err(|error| {
+                        store_error(format!("migrate authority schema to version 3: {error}"))
+                    })?;
+                connection
+                    .pragma_update(None, "user_version", 3_i64)
+                    .map_err(|error| {
+                        store_error(format!("set authority schema version: {error}"))
+                    })?;
+                debug!(schema_version = 3_i64, "migrated authority schema");
+                Ok(MigrationOutcome {
+                    schema_version: 3,
+                    applied: true,
+                })
+            }
+            3 => Ok(MigrationOutcome {
+                schema_version: 3,
                 applied: false,
             }),
             other => {
@@ -1310,6 +1437,94 @@ impl AuthoritySqliteStore {
                 |row| row.get(0),
             )
             .optional()
+            .map_err(map_sql_error)
+    }
+
+    fn load_replication_checkpoint_tx(
+        transaction: &Transaction<'_>,
+        peer_id: &str,
+    ) -> OrcasResult<Option<AuthorityReplicationCheckpoint>> {
+        transaction
+            .query_row(
+                &format!(
+                    "select peer_id, last_exported_sequence, last_acked_sequence, updated_at
+                     from {} where peer_id = ?1",
+                    AUTHORITY_REPLICATION_CHECKPOINT_TABLE
+                ),
+                params![peer_id],
+                |row| {
+                    Ok(AuthorityReplicationCheckpoint {
+                        peer_id: row.get(0)?,
+                        last_exported_sequence: u64::try_from(row.get::<_, i64>(1)?).map_err(
+                            |error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    1,
+                                    rusqlite::types::Type::Integer,
+                                    Box::new(error),
+                                )
+                            },
+                        )?,
+                        last_acked_sequence: u64::try_from(row.get::<_, i64>(2)?).map_err(
+                            |error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    2,
+                                    rusqlite::types::Type::Integer,
+                                    Box::new(error),
+                                )
+                            },
+                        )?,
+                        updated_at: decode_datetime(&row.get::<_, String>(3)?)
+                            .map_err(protocol_to_sql_error(3))?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(map_sql_error)
+    }
+
+    fn save_replication_checkpoint_tx(
+        transaction: &Transaction<'_>,
+        checkpoint: &AuthorityReplicationCheckpoint,
+    ) -> OrcasResult<()> {
+        transaction
+            .execute(
+                &format!(
+                    "insert into {} (
+                        peer_id, last_exported_sequence, last_acked_sequence, updated_at
+                     ) values (?1, ?2, ?3, ?4)
+                     on conflict(peer_id)
+                     do update set
+                        last_exported_sequence = excluded.last_exported_sequence,
+                        last_acked_sequence = excluded.last_acked_sequence,
+                        updated_at = excluded.updated_at",
+                    AUTHORITY_REPLICATION_CHECKPOINT_TABLE
+                ),
+                params![
+                    checkpoint.peer_id.as_str(),
+                    i64::try_from(checkpoint.last_exported_sequence).map_err(|error| {
+                        store_error(format!("replication export checkpoint overflow: {error}"))
+                    })?,
+                    i64::try_from(checkpoint.last_acked_sequence).map_err(|error| {
+                        store_error(format!("replication ack checkpoint overflow: {error}"))
+                    })?,
+                    encode_datetime(checkpoint.updated_at),
+                ],
+        )
+        .map_err(map_sql_error)?;
+        Ok(())
+    }
+
+    fn latest_event_sequence_tx(transaction: &Transaction<'_>) -> OrcasResult<u64> {
+        transaction
+            .query_row("select coalesce(max(seq), 0) from event_log", [], |row| {
+                u64::try_from(row.get::<_, i64>(0)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })
+            })
             .map_err(map_sql_error)
     }
 
@@ -1801,14 +2016,14 @@ impl AuthorityEventStore for AuthoritySqliteStore {
             let transaction = connection.transaction().map_err(|error| {
                 store_error(format!("start append events transaction: {error}"))
             })?;
+            let mut stored = Vec::with_capacity(events.len());
             for event in events {
-                Self::append_event_envelope_tx(&transaction, event)?;
+                stored.push(Self::append_event_envelope_tx(&transaction, event)?);
             }
-            let stored = Self::list_events_tx(&transaction, None, events.len())?;
             transaction.commit().map_err(|error| {
                 store_error(format!("commit append events transaction: {error}"))
             })?;
-            Ok(stored.into_iter().rev().take(events.len()).collect())
+            Ok(stored)
         })
     }
 
@@ -1826,6 +2041,152 @@ impl AuthorityEventStore for AuthoritySqliteStore {
                 .commit()
                 .map_err(|error| store_error(format!("commit list events transaction: {error}")))?;
             Ok(events)
+        })
+    }
+}
+
+impl AuthoritySqliteStore {
+    pub async fn replay_stored_events(
+        &self,
+        events: &[StoredAuthorityEvent],
+    ) -> OrcasResult<Vec<StoredAuthorityEvent>> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction()
+                .map_err(|error| store_error(format!("start replay transaction: {error}")))?;
+            let mut replayed = Vec::new();
+            let mut previous_sequence = None;
+            let mut latest_sequence = Self::latest_event_sequence_tx(&transaction)?;
+            for stored in events {
+                if let Some(previous) = previous_sequence
+                    && stored.sequence <= previous
+                {
+                    return Err(store_error(format!(
+                        "authority replay events must be in strictly increasing sequence order (got {} after {})",
+                        stored.sequence, previous
+                    )));
+                }
+                previous_sequence = Some(stored.sequence);
+                if let Some(existing) = Self::load_stored_event_by_id_tx(
+                    &transaction,
+                    stored.envelope.metadata.event_id.as_str(),
+                )? {
+                    if existing.sequence != stored.sequence || existing.envelope != stored.envelope {
+                        return Err(store_error(format!(
+                            "stored authority replay event `{}` conflicts with existing event",
+                            stored.envelope.metadata.event_id
+                        )));
+                    }
+                    continue;
+                }
+                if stored.sequence <= latest_sequence {
+                    return Err(store_error(format!(
+                        "authority replay sequence {} is not newer than existing latest sequence {}",
+                        stored.sequence, latest_sequence
+                    )));
+                }
+                if let Some(applied) = Self::append_stored_event_tx(&transaction, stored)? {
+                    replayed.push(applied);
+                    latest_sequence = stored.sequence;
+                }
+            }
+            transaction
+                .commit()
+                .map_err(|error| store_error(format!("commit replay transaction: {error}")))?;
+            Ok(replayed)
+        })
+    }
+
+    pub async fn load_replication_checkpoint(
+        &self,
+        peer_id: &str,
+    ) -> OrcasResult<Option<AuthorityReplicationCheckpoint>> {
+        self.with_connection(|connection| {
+            let transaction = connection.transaction().map_err(|error| {
+                store_error(format!(
+                    "start load replication checkpoint transaction: {error}"
+                ))
+            })?;
+            let checkpoint = Self::load_replication_checkpoint_tx(&transaction, peer_id)?;
+            transaction.commit().map_err(|error| {
+                store_error(format!(
+                    "commit load replication checkpoint transaction: {error}"
+                ))
+            })?;
+            Ok(checkpoint)
+        })
+    }
+
+    pub async fn mark_replication_exported(
+        &self,
+        peer_id: &str,
+        through_sequence: u64,
+    ) -> OrcasResult<AuthorityReplicationCheckpoint> {
+        self.with_connection(|connection| {
+            let transaction = connection.transaction().map_err(|error| {
+                store_error(format!(
+                    "start mark replication exported transaction: {error}"
+                ))
+            })?;
+            let current = Self::load_replication_checkpoint_tx(&transaction, peer_id)?;
+            let next = match current {
+                Some(checkpoint) => AuthorityReplicationCheckpoint {
+                    peer_id: checkpoint.peer_id,
+                    last_exported_sequence: checkpoint.last_exported_sequence.max(through_sequence),
+                    last_acked_sequence: checkpoint.last_acked_sequence,
+                    updated_at: Utc::now(),
+                },
+                None => AuthorityReplicationCheckpoint {
+                    peer_id: peer_id.to_string(),
+                    last_exported_sequence: through_sequence,
+                    last_acked_sequence: 0,
+                    updated_at: Utc::now(),
+                },
+            };
+            Self::save_replication_checkpoint_tx(&transaction, &next)?;
+            transaction.commit().map_err(|error| {
+                store_error(format!(
+                    "commit mark replication exported transaction: {error}"
+                ))
+            })?;
+            Ok(next)
+        })
+    }
+
+    pub async fn mark_replication_acked(
+        &self,
+        peer_id: &str,
+        through_sequence: u64,
+    ) -> OrcasResult<AuthorityReplicationCheckpoint> {
+        self.with_connection(|connection| {
+            let transaction = connection.transaction().map_err(|error| {
+                store_error(format!("start mark replication acked transaction: {error}"))
+            })?;
+            let current =
+                Self::load_replication_checkpoint_tx(&transaction, peer_id)?.ok_or_else(|| {
+                    store_error(format!(
+                        "replication checkpoint for peer `{peer_id}` does not exist"
+                    ))
+                })?;
+            if through_sequence > current.last_exported_sequence {
+                return Err(store_error(format!(
+                    "replication ack sequence {} exceeds exported sequence {}",
+                    through_sequence, current.last_exported_sequence
+                )));
+            }
+            let next = AuthorityReplicationCheckpoint {
+                peer_id: current.peer_id,
+                last_exported_sequence: current.last_exported_sequence,
+                last_acked_sequence: current.last_acked_sequence.max(through_sequence),
+                updated_at: Utc::now(),
+            };
+            Self::save_replication_checkpoint_tx(&transaction, &next)?;
+            transaction.commit().map_err(|error| {
+                store_error(format!(
+                    "commit mark replication acked transaction: {error}"
+                ))
+            })?;
+            Ok(next)
         })
     }
 }
@@ -1925,6 +2286,36 @@ impl AuthorityProjectionStore for AuthoritySqliteStore {
                     ],
                 )
                 .map_err(map_sql_error)?;
+            Ok(())
+        })
+    }
+}
+
+#[async_trait]
+impl AuthorityReplicationStore for AuthoritySqliteStore {
+    async fn load_replication_checkpoint(
+        &self,
+        peer_id: &str,
+    ) -> OrcasResult<Option<AuthorityReplicationCheckpoint>> {
+        AuthoritySqliteStore::load_replication_checkpoint(self, peer_id).await
+    }
+
+    async fn save_replication_checkpoint(
+        &self,
+        checkpoint: &AuthorityReplicationCheckpoint,
+    ) -> OrcasResult<()> {
+        self.with_connection(|connection| {
+            let transaction = connection.transaction().map_err(|error| {
+                store_error(format!(
+                    "start save replication checkpoint transaction: {error}"
+                ))
+            })?;
+            Self::save_replication_checkpoint_tx(&transaction, checkpoint)?;
+            transaction.commit().map_err(|error| {
+                store_error(format!(
+                    "commit save replication checkpoint transaction: {error}"
+                ))
+            })?;
             Ok(())
         })
     }
@@ -2643,10 +3034,10 @@ mod tests {
 
     use super::*;
     use orcas_core::authority::{
-        CommandActor, CommandMetadata, CreateTrackedThread, CreateWorkUnit, CreateWorkstream,
-        DeleteTrackedThread, DeleteWorkUnit, DeleteWorkstream, EditTrackedThread, EditWorkUnit,
-        EditWorkstream, TrackedThreadBackendKind, TrackedThreadPatch, WorkUnitPatch,
-        WorkstreamPatch,
+        AuthorityEventStore, AuthorityProjectionStore, CommandActor, CommandMetadata,
+        CreateTrackedThread, CreateWorkUnit, CreateWorkstream, DeleteTrackedThread, DeleteWorkUnit,
+        DeleteWorkstream, EditTrackedThread, EditWorkUnit, EditWorkstream,
+        TrackedThreadBackendKind, TrackedThreadPatch, WorkUnitPatch, WorkstreamPatch,
     };
     use orcas_core::collaboration::{CollaborationState, WorkUnit, Workstream};
     use orcas_core::{WorkUnitStatus, WorkstreamStatus};
@@ -3046,6 +3437,226 @@ mod tests {
         assert_eq!(workstreams[0].id.as_str(), "ws-restart");
     }
 
+    #[tokio::test]
+    async fn authority_event_export_after_sequence_is_ordered_and_cursor_aware() {
+        let store = fresh_store("export-order");
+        let origin_node_id = store.origin_node_id().expect("origin");
+
+        let first = match store
+            .execute_command(AuthorityCommand::CreateWorkstream(CreateWorkstream {
+                metadata: metadata(&origin_node_id, "export-1"),
+                workstream_id: authority::WorkstreamId::parse("ws-export-1")
+                    .expect("workstream id"),
+                title: "Export 1".to_string(),
+                objective: "First".to_string(),
+                status: WorkstreamStatus::Active,
+                priority: "normal".to_string(),
+            }))
+            .await
+            .expect("create first")
+        {
+            AuthorityMutationResult::Workstream(record) => record,
+            _ => panic!("unexpected mutation result"),
+        };
+
+        let second = match store
+            .execute_command(AuthorityCommand::CreateWorkstream(CreateWorkstream {
+                metadata: metadata(&origin_node_id, "export-2"),
+                workstream_id: authority::WorkstreamId::parse("ws-export-2")
+                    .expect("workstream id"),
+                title: "Export 2".to_string(),
+                objective: "Second".to_string(),
+                status: WorkstreamStatus::Active,
+                priority: "normal".to_string(),
+            }))
+            .await
+            .expect("create second")
+        {
+            AuthorityMutationResult::Workstream(record) => record,
+            _ => panic!("unexpected mutation result"),
+        };
+
+        let all_events = store.list_events(None, 10).await.expect("events");
+        assert_eq!(all_events.len(), 2);
+        assert_eq!(all_events[0].sequence, 1);
+        assert_eq!(all_events[1].sequence, 2);
+        assert_eq!(
+            all_events[0].envelope.metadata.aggregate_id,
+            first.id.to_string()
+        );
+        assert_eq!(
+            all_events[1].envelope.metadata.aggregate_id,
+            second.id.to_string()
+        );
+
+        let exported = store
+            .list_events(Some(all_events[0].sequence), 10)
+            .await
+            .expect("export after first");
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0], all_events[1]);
+
+        let checkpoint_before =
+            AuthorityProjectionStore::load_projection_checkpoint(&store, "authority_current")
+                .await
+                .expect("projection checkpoint")
+                .expect("projection checkpoint exists");
+        let _checkpoint = store
+            .mark_replication_exported("peer-export", exported[0].sequence)
+            .await
+            .expect("mark exported");
+        let checkpoint = store
+            .mark_replication_acked("peer-export", exported[0].sequence)
+            .await
+            .expect("mark acked");
+
+        assert_eq!(checkpoint.last_exported_sequence, exported[0].sequence);
+        assert_eq!(checkpoint.last_acked_sequence, exported[0].sequence);
+        assert_eq!(checkpoint_before.last_applied_sequence, 2);
+        let projection_checkpoint =
+            AuthorityProjectionStore::load_projection_checkpoint(&store, "authority_current")
+                .await
+                .expect("projection checkpoint")
+                .expect("projection checkpoint exists");
+        assert_eq!(projection_checkpoint, checkpoint_before);
+    }
+
+    #[tokio::test]
+    async fn replication_checkpoint_persists_across_restart() {
+        let paths = temp_paths("replication-checkpoint");
+        std::fs::create_dir_all(&paths.data_dir).expect("data dir");
+        let store = AuthoritySqliteStore::open(paths.clone()).expect("store");
+        let origin_node_id = store.origin_node_id().expect("origin");
+
+        let _ = store
+            .execute_command(AuthorityCommand::CreateWorkstream(CreateWorkstream {
+                metadata: metadata(&origin_node_id, "checkpoint-create"),
+                workstream_id: authority::WorkstreamId::parse("ws-checkpoint")
+                    .expect("workstream id"),
+                title: "Checkpoint".to_string(),
+                objective: "Persist replication cursor".to_string(),
+                status: WorkstreamStatus::Active,
+                priority: "normal".to_string(),
+            }))
+            .await
+            .expect("create workstream");
+        let _checkpoint = store
+            .mark_replication_exported("peer-checkpoint", 1)
+            .await
+            .expect("mark exported");
+        let checkpoint = store
+            .mark_replication_acked("peer-checkpoint", 1)
+            .await
+            .expect("mark acked");
+        drop(store);
+
+        let reopened = AuthoritySqliteStore::open(paths).expect("reopen store");
+        let loaded = reopened
+            .load_replication_checkpoint("peer-checkpoint")
+            .await
+            .expect("load checkpoint")
+            .expect("checkpoint exists");
+
+        assert_eq!(loaded, checkpoint);
+        assert_eq!(loaded.last_exported_sequence, 1);
+        assert_eq!(loaded.last_acked_sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn replaying_stored_authority_events_is_append_only_and_idempotent() {
+        let source = fresh_store("replay-source");
+        let origin_node_id = source.origin_node_id().expect("origin");
+
+        let _ = source
+            .execute_command(AuthorityCommand::CreateWorkstream(CreateWorkstream {
+                metadata: metadata(&origin_node_id, "replay-1"),
+                workstream_id: authority::WorkstreamId::parse("ws-replay-1")
+                    .expect("workstream id"),
+                title: "Replay 1".to_string(),
+                objective: "First".to_string(),
+                status: WorkstreamStatus::Active,
+                priority: "normal".to_string(),
+            }))
+            .await
+            .expect("create first");
+        let _ = source
+            .execute_command(AuthorityCommand::CreateWorkUnit(CreateWorkUnit {
+                metadata: metadata(&origin_node_id, "replay-2"),
+                work_unit_id: authority::WorkUnitId::parse("wu-replay-1").expect("work unit id"),
+                workstream_id: authority::WorkstreamId::parse("ws-replay-1")
+                    .expect("workstream id"),
+                title: "Replay unit".to_string(),
+                task_statement: "Second event".to_string(),
+                status: WorkUnitStatus::Ready,
+            }))
+            .await
+            .expect("create second");
+
+        let source_events = source.list_events(None, 10).await.expect("source events");
+        assert_eq!(source_events.len(), 2);
+
+        let target = fresh_store("replay-target");
+        let replayed = target
+            .replay_stored_events(&source_events)
+            .await
+            .expect("replay events");
+        assert_eq!(replayed, source_events);
+
+        let target_events = target.list_events(None, 10).await.expect("target events");
+        assert_eq!(target_events, source_events);
+
+        let checkpoint =
+            AuthorityProjectionStore::load_projection_checkpoint(&target, "authority_current")
+                .await
+                .expect("projection checkpoint")
+                .expect("projection checkpoint exists");
+        assert_eq!(checkpoint.last_applied_sequence, 2);
+
+        let replayed_again = target
+            .replay_stored_events(&source_events)
+            .await
+            .expect("replay events again");
+        assert!(replayed_again.is_empty());
+
+        let target_events_after = target.list_events(None, 10).await.expect("target events");
+        assert_eq!(target_events_after, source_events);
+        let checkpoint_after =
+            AuthorityProjectionStore::load_projection_checkpoint(&target, "authority_current")
+                .await
+                .expect("projection checkpoint")
+                .expect("projection checkpoint exists");
+        assert_eq!(checkpoint_after, checkpoint);
+    }
+
+    #[tokio::test]
+    async fn command_idempotency_survives_replication_metadata_updates() {
+        let store = fresh_store("command-idempotency");
+        let origin_node_id = store.origin_node_id().expect("origin");
+        let command = AuthorityCommand::CreateWorkstream(CreateWorkstream {
+            metadata: metadata(&origin_node_id, "idem"),
+            workstream_id: authority::WorkstreamId::parse("ws-idem").expect("workstream id"),
+            title: "Idempotent".to_string(),
+            objective: "Receipt should replay".to_string(),
+            status: WorkstreamStatus::Active,
+            priority: "normal".to_string(),
+        });
+
+        let first = store.execute_command(command.clone()).await.expect("first");
+        let exported = store
+            .mark_replication_exported("peer-idem", 1)
+            .await
+            .expect("mark exported");
+        let _ = store
+            .mark_replication_acked("peer-idem", exported.last_exported_sequence)
+            .await
+            .expect("mark acked");
+        let second = store.execute_command(command).await.expect("second");
+
+        assert_eq!(first, second);
+        let events = store.list_events(None, 10).await.expect("events");
+        assert_eq!(events.len(), 1);
+    }
+
     #[test]
     fn one_time_import_bootstraps_workstreams_and_work_units_from_state_json() {
         let paths = temp_paths("import");
@@ -3109,12 +3720,20 @@ mod tests {
         let hierarchy = runtime
             .block_on(store.hierarchy_snapshot(false))
             .expect("hierarchy");
+        let projection_checkpoint = runtime
+            .block_on(AuthorityProjectionStore::load_projection_checkpoint(
+                &store,
+                "authority_current",
+            ))
+            .expect("projection checkpoint")
+            .expect("projection checkpoint exists");
         drop(store);
 
         assert_eq!(workstreams.len(), 1);
         assert_eq!(workstreams[0].id.as_str(), "ws-import");
         assert_eq!(hierarchy.workstreams.len(), 1);
         assert_eq!(hierarchy.workstreams[0].work_units.len(), 1);
+        assert_eq!(projection_checkpoint.last_applied_sequence, 2);
 
         let reopened = AuthoritySqliteStore::open(paths).expect("reopen store");
         let workstreams = runtime

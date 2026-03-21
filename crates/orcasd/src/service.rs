@@ -34,7 +34,9 @@ use orcas_codex::{
     RejectingApprovalRouter, WebSocketTransport,
 };
 use orcas_core::authority;
-use orcas_core::authority::{AuthorityCommand, AuthorityQueryStore};
+use orcas_core::authority::{
+    AuthorityCommand, AuthorityEventStore, AuthorityProjectionStore, AuthorityQueryStore,
+};
 use orcas_core::collaboration::{
     PlanningSession, PlanningSessionResearchStatus, PlanningSessionStatus,
     PlanningSessionStructuredSummary,
@@ -946,6 +948,21 @@ impl OrcasDaemonService {
                 let params: ipc::AuthorityTrackedThreadGetRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.authority_tracked_thread_get(params).await?)?
+            }
+            ipc::methods::AUTHORITY_EVENTS_EXPORT => {
+                let params: ipc::AuthorityEventsExportRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_events_export(params).await?)?
+            }
+            ipc::methods::AUTHORITY_EVENTS_ACK => {
+                let params: ipc::AuthorityEventsAckRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_events_ack(params).await?)?
+            }
+            ipc::methods::AUTHORITY_EVENTS_REPLAY => {
+                let params: ipc::AuthorityEventsReplayRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.authority_events_replay(params).await?)?
             }
             ipc::methods::WORKSTREAM_PLAN_GET => {
                 let params: ipc::WorkstreamPlanGetRequest =
@@ -2511,6 +2528,74 @@ impl OrcasDaemonService {
             landing_execution,
             landing_execution_matches_authorization_basis:
                 landing_execution_matches_authorization_basis_value,
+        })
+    }
+
+    async fn authority_events_export(
+        &self,
+        params: ipc::AuthorityEventsExportRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsExportResponse> {
+        if params.peer_id.trim().is_empty() {
+            return Err(OrcasError::Protocol(
+                "authority events export requires a non-empty peer_id".to_string(),
+            ));
+        }
+        let checkpoint = self
+            .authority_store
+            .load_replication_checkpoint(&params.peer_id)
+            .await?;
+        let cursor = params
+            .after_sequence
+            .or_else(|| {
+                checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.last_exported_sequence)
+            })
+            .unwrap_or(0);
+        let limit = params.limit.unwrap_or(256).max(1);
+        let events = self
+            .authority_store
+            .list_events(Some(cursor), limit)
+            .await?;
+        let export_through_sequence = events.last().map(|event| event.sequence).unwrap_or(cursor);
+        let checkpoint = self
+            .authority_store
+            .mark_replication_exported(&params.peer_id, export_through_sequence)
+            .await?;
+        Ok(ipc::AuthorityEventsExportResponse { events, checkpoint })
+    }
+
+    async fn authority_events_ack(
+        &self,
+        params: ipc::AuthorityEventsAckRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsAckResponse> {
+        if params.peer_id.trim().is_empty() {
+            return Err(OrcasError::Protocol(
+                "authority events ack requires a non-empty peer_id".to_string(),
+            ));
+        }
+        let checkpoint = self
+            .authority_store
+            .mark_replication_acked(&params.peer_id, params.through_sequence)
+            .await?;
+        Ok(ipc::AuthorityEventsAckResponse { checkpoint })
+    }
+
+    async fn authority_events_replay(
+        &self,
+        params: ipc::AuthorityEventsReplayRequest,
+    ) -> OrcasResult<ipc::AuthorityEventsReplayResponse> {
+        let replayed_events = self
+            .authority_store
+            .replay_stored_events(&params.events)
+            .await?;
+        let projection_checkpoint = self
+            .authority_store
+            .load_projection_checkpoint("authority_current")
+            .await?;
+        Ok(ipc::AuthorityEventsReplayResponse {
+            replayed_events,
+            projection_checkpoint,
         })
     }
 
@@ -4527,8 +4612,8 @@ impl OrcasDaemonService {
         turn_state: ipc::TurnStateView,
         raw_output: String,
     ) -> OrcasResult<Report> {
-        let (report, _assignment_after_report, _work_unit_after_report) =
-            self.ingest_assignment_turn_outcome(
+        let (report, _assignment_after_report, _work_unit_after_report) = self
+            .ingest_assignment_turn_outcome(
                 assignment_id,
                 worker_id,
                 worker_session_id,
@@ -5374,18 +5459,360 @@ impl OrcasDaemonService {
         raw_output: String,
     ) -> OrcasResult<(Report, Assignment, WorkUnit, Vec<SupervisorProposalRecord>)> {
         Box::pin(async move {
-        let started_at = Instant::now();
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            "recording assignment turn outcome"
-        );
-        self.ensure_assignment_communication_record(assignment_id, None, None)
-            .await?;
-        let (assignment_for_parse, communication_record) = {
-            let state = self.state.read().await;
+            let started_at = Instant::now();
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                "recording assignment turn outcome"
+            );
+            self.ensure_assignment_communication_record(assignment_id, None, None)
+                .await?;
+            let (assignment_for_parse, communication_record) = {
+                let state = self.state.read().await;
+                let assignment = state
+                    .collaboration
+                    .assignments
+                    .get(assignment_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                    })?;
+                let record = state
+                    .collaboration
+                    .assignment_communications
+                    .get(assignment_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!(
+                            "missing assignment communication record for `{assignment_id}`"
+                        ))
+                    })?;
+                (assignment, record)
+            };
+            let parsed_report = parse_worker_report_for_turn(
+                &raw_output,
+                turn_state.lifecycle,
+                &assignment_for_parse,
+                &communication_record,
+            );
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                parse_result = ?parsed_report.validation.parse_result,
+                disposition = ?parsed_report.disposition,
+                "assignment turn outcome parsed"
+            );
+            let workspace_report = parsed_report
+                .envelope
+                .as_ref()
+                .and_then(|envelope| envelope.workspace_report.clone());
+            let raw_output_hash = stable_fingerprint(&raw_output);
+            let now = Utc::now();
+            let mut state = self.state.write().await;
             let assignment = state
+                .collaboration
+                .assignments
+                .get_mut(assignment_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
+                })?;
+            let work_unit_id = assignment.work_unit_id.clone();
+            assignment.status = match turn_state.lifecycle {
+                ipc::TurnLifecycleState::Interrupted => AssignmentStatus::Interrupted,
+                ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
+                    AssignmentStatus::Lost
+                }
+                _ => AssignmentStatus::AwaitingDecision,
+            };
+            assignment.updated_at = now;
+
+            let report_id = Self::new_object_id("report");
+            let summary = parsed_report.summary.clone();
+            let report = Report {
+                id: report_id.clone(),
+                work_unit_id: work_unit_id.clone(),
+                assignment_id: assignment_id.to_string(),
+                worker_id: worker_id.to_string(),
+                disposition: parsed_report.disposition,
+                summary,
+                findings: parsed_report.findings,
+                blockers: parsed_report.blockers,
+                questions: parsed_report.questions,
+                recommended_next_actions: parsed_report.recommended_next_actions,
+                confidence: parsed_report.confidence,
+                raw_output,
+                parse_result: parsed_report.validation.parse_result,
+                needs_supervisor_review: parsed_report.validation.needs_supervisor_review,
+                created_at: now,
+            };
+            state
+                .collaboration
+                .reports
+                .insert(report.id.clone(), report.clone());
+            if let Some(record) = state
+                .collaboration
+                .assignment_communications
+                .get_mut(assignment_id)
+            {
+                record.response_envelope = parsed_report.envelope.clone();
+                record.validation = Some(parsed_report.validation.clone());
+                record.raw_output_hash = Some(raw_output_hash);
+            }
+            if let Some(work_unit) = state.collaboration.work_units.get_mut(&work_unit_id) {
+                work_unit.status = WorkUnitStatus::AwaitingDecision;
+                work_unit.latest_report_id = Some(report.id.clone());
+                work_unit.current_assignment_id = Some(assignment_id.to_string());
+                work_unit.updated_at = now;
+            }
+            if let Some(worker) = state.collaboration.workers.get_mut(worker_id) {
+                worker.status = WorkerStatus::Idle;
+                worker.current_assignment_id = None;
+            }
+            if let Some(session) = state
+                .collaboration
+                .worker_sessions
+                .get_mut(worker_session_id)
+            {
+                session.active_turn_id = None;
+                session.runtime_status = match turn_state.lifecycle {
+                    ipc::TurnLifecycleState::Interrupted => WorkerSessionRuntimeStatus::Interrupted,
+                    ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
+                        WorkerSessionRuntimeStatus::Lost
+                    }
+                    _ => WorkerSessionRuntimeStatus::Completed,
+                };
+                session.attachability = if turn_state.attachable {
+                    WorkerSessionAttachability::Attachable
+                } else {
+                    WorkerSessionAttachability::NotAttachable
+                };
+                session.updated_at = now;
+            }
+            drop(state);
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                report_id = %report.id,
+                "assignment turn outcome state updated"
+            );
+
+            if parsed_report.validation.parse_result != ReportParseResult::Invalid
+                && let Some(workspace_report) = workspace_report.as_ref()
+                && let Err(error) = self
+                    .record_worker_workspace_report(assignment_id, workspace_report)
+                    .await
+            {
+                warn!(
+                    assignment_id,
+                    worker_id,
+                    worker_session_id,
+                    error = %error,
+                    "worker workspace report persistence failed"
+                );
+            }
+
+            if let Some(workspace_operation_contract) = assignment_for_parse
+                .communication_seed
+                .as_ref()
+                .and_then(|seed| seed.workspace_operation.as_ref())
+            {
+                match workspace_operation_contract.kind {
+                    TrackedThreadWorkspaceOperationKind::PruneWorkspace => {
+                        let prune_workspace_result = parsed_report
+                            .envelope
+                            .as_ref()
+                            .and_then(|envelope| envelope.prune_workspace_result.as_ref());
+                        let prune_workspace_result_status =
+                            prune_workspace_result.map(|result| result.status);
+                        let target_worktree_path = prune_workspace_result
+                            .map(|result| result.worktree_path.clone())
+                            .or_else(|| {
+                                Some(workspace_operation_contract.workspace.worktree_path.clone())
+                            });
+                        let target_branch_name = prune_workspace_result
+                            .and_then(|result| result.branch_name.clone())
+                            .or_else(|| {
+                                Some(workspace_operation_contract.workspace.branch_name.clone())
+                            });
+                        let worktree_removed =
+                            prune_workspace_result.and_then(|result| result.worktree_removed);
+                        let branch_removed =
+                            prune_workspace_result.and_then(|result| result.branch_removed);
+                        let refusal_reason =
+                            prune_workspace_result.and_then(|result| result.refusal_reason.clone());
+                        let failure_reason =
+                            prune_workspace_result.and_then(|result| result.failure_reason.clone());
+                        let prune_notes =
+                            prune_workspace_result.and_then(|result| result.notes.clone());
+                        let successful_prune = parsed_report.validation.parse_result
+                            != ReportParseResult::Invalid
+                            && workspace_report.is_some()
+                            && prune_workspace_result.is_some()
+                            && matches!(
+                                prune_workspace_result_status,
+                                Some(TrackedThreadPruneWorkspaceResultStatus::Succeeded)
+                            )
+                            && parsed_report.disposition == ReportDisposition::Completed;
+                        if successful_prune {
+                            self.mark_workspace_operation_completed(
+                                assignment_id,
+                                Some(report_id.clone()),
+                                Some(parsed_report.disposition),
+                                Some(parsed_report.summary.clone()),
+                                prune_workspace_result_status,
+                                target_worktree_path,
+                                target_branch_name,
+                                worktree_removed,
+                                branch_removed,
+                                refusal_reason,
+                                failure_reason,
+                                prune_notes,
+                            )
+                            .await?;
+                        } else {
+                            self.mark_workspace_operation_failed(
+                                assignment_id,
+                                Some(report_id.clone()),
+                                Some(parsed_report.summary.clone()),
+                                prune_workspace_result_status,
+                                target_worktree_path,
+                                target_branch_name,
+                                worktree_removed,
+                                branch_removed,
+                                refusal_reason,
+                                failure_reason,
+                                prune_notes,
+                            )
+                            .await?;
+                        }
+                    }
+                    _ => {
+                        if parsed_report.validation.parse_result != ReportParseResult::Invalid
+                            && workspace_report.is_some()
+                            && parsed_report.disposition == ReportDisposition::Completed
+                        {
+                            self.mark_workspace_operation_completed(
+                                assignment_id,
+                                Some(report_id.clone()),
+                                Some(parsed_report.disposition),
+                                Some(parsed_report.summary.clone()),
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await?;
+                        } else {
+                            self.mark_workspace_operation_failed(
+                                assignment_id,
+                                Some(report_id.clone()),
+                                Some(parsed_report.summary.clone()),
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            } else if assignment_for_parse
+                .communication_seed
+                .as_ref()
+                .and_then(|seed| seed.landing_execution.as_ref())
+                .is_some()
+            {
+                let landing_execution_result = parsed_report
+                    .envelope
+                    .as_ref()
+                    .and_then(|envelope| envelope.landing_execution_result.as_ref());
+                let execution_result_status = landing_execution_result.map(|result| result.status);
+                let attempted_head_commit =
+                    landing_execution_result.map(|result| result.attempted_head_commit.clone());
+                let landed_commit =
+                    landing_execution_result.and_then(|result| result.landed_commit.clone());
+                let landing_ref_updated =
+                    landing_execution_result.and_then(|result| result.landing_ref_updated);
+                let failure_reason =
+                    landing_execution_result.and_then(|result| result.failure_reason.clone());
+                let notes = landing_execution_result.and_then(|result| result.notes.clone());
+                let authorization_id = assignment_for_parse
+                    .communication_seed
+                    .as_ref()
+                    .and_then(|seed| seed.landing_execution.as_ref())
+                    .map(|contract| contract.landing_authorization_id.clone());
+                let authorized = matches!(
+                    execution_result_status,
+                    Some(TrackedThreadLandingExecutionResultStatus::Succeeded)
+                );
+                if parsed_report.validation.parse_result == ReportParseResult::Parsed
+                    && workspace_report.is_some()
+                    && landing_execution_result.is_some()
+                    && authorized
+                    && parsed_report.disposition == ReportDisposition::Completed
+                {
+                    self.mark_landing_execution_completed(
+                        assignment_id,
+                        Some(report_id.clone()),
+                        Some(parsed_report.disposition),
+                        Some(parsed_report.summary.clone()),
+                        execution_result_status,
+                        attempted_head_commit,
+                        landed_commit,
+                        landing_ref_updated,
+                        failure_reason,
+                        notes,
+                    )
+                    .await?;
+                    if let Some(authorization_id) = authorization_id {
+                        self.mark_landing_authorization_completed(
+                            &authorization_id,
+                            Some(parsed_report.summary.clone()),
+                        )
+                        .await?;
+                    }
+                } else {
+                    self.mark_landing_execution_failed(
+                        assignment_id,
+                        Some(report_id.clone()),
+                        Some(parsed_report.disposition),
+                        Some(parsed_report.summary.clone()),
+                        execution_result_status,
+                        attempted_head_commit,
+                        landed_commit,
+                        landing_ref_updated,
+                        failure_reason,
+                        notes,
+                    )
+                    .await?;
+                    if let Some(authorization_id) = authorization_id {
+                        self.mark_landing_authorization_failed(
+                            &authorization_id,
+                            Some(parsed_report.summary.clone()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            let mut state = self.state.write().await;
+            let stale_proposals = Self::refresh_stale_proposals_for_work_unit(
+                &mut state.collaboration,
+                &work_unit_id,
+            );
+            Self::refresh_workstream_statuses(&mut state.collaboration);
+            let assignment_after_report = state
                 .collaboration
                 .assignments
                 .get(assignment_id)
@@ -5393,369 +5820,35 @@ impl OrcasDaemonService {
                 .ok_or_else(|| {
                     OrcasError::Protocol(format!("unknown assignment `{assignment_id}`"))
                 })?;
-            let record = state
+            let work_unit_after_report = state
                 .collaboration
-                .assignment_communications
-                .get(assignment_id)
+                .work_units
+                .get(&work_unit_id)
                 .cloned()
                 .ok_or_else(|| {
-                    OrcasError::Protocol(format!(
-                        "missing assignment communication record for `{assignment_id}`"
-                    ))
+                    OrcasError::Protocol(format!("unknown work unit `{work_unit_id}`"))
                 })?;
-            (assignment, record)
-        };
-        let parsed_report = parse_worker_report_for_turn(
-            &raw_output,
-            turn_state.lifecycle,
-            &assignment_for_parse,
-            &communication_record,
-        );
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            parse_result = ?parsed_report.validation.parse_result,
-            disposition = ?parsed_report.disposition,
-            "assignment turn outcome parsed"
-        );
-        let workspace_report = parsed_report
-            .envelope
-            .as_ref()
-            .and_then(|envelope| envelope.workspace_report.clone());
-        let raw_output_hash = stable_fingerprint(&raw_output);
-        let now = Utc::now();
-        let mut state = self.state.write().await;
-        let assignment = state
-            .collaboration
-            .assignments
-            .get_mut(assignment_id)
-            .ok_or_else(|| OrcasError::Protocol(format!("unknown assignment `{assignment_id}`")))?;
-        let work_unit_id = assignment.work_unit_id.clone();
-        assignment.status = match turn_state.lifecycle {
-            ipc::TurnLifecycleState::Interrupted => AssignmentStatus::Interrupted,
-            ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
-                AssignmentStatus::Lost
-            }
-            _ => AssignmentStatus::AwaitingDecision,
-        };
-        assignment.updated_at = now;
-
-        let report_id = Self::new_object_id("report");
-        let summary = parsed_report.summary.clone();
-        let report = Report {
-            id: report_id.clone(),
-            work_unit_id: work_unit_id.clone(),
-            assignment_id: assignment_id.to_string(),
-            worker_id: worker_id.to_string(),
-            disposition: parsed_report.disposition,
-            summary,
-            findings: parsed_report.findings,
-            blockers: parsed_report.blockers,
-            questions: parsed_report.questions,
-            recommended_next_actions: parsed_report.recommended_next_actions,
-            confidence: parsed_report.confidence,
-            raw_output,
-            parse_result: parsed_report.validation.parse_result,
-            needs_supervisor_review: parsed_report.validation.needs_supervisor_review,
-            created_at: now,
-        };
-        state
-            .collaboration
-            .reports
-            .insert(report.id.clone(), report.clone());
-        if let Some(record) = state
-            .collaboration
-            .assignment_communications
-            .get_mut(assignment_id)
-        {
-            record.response_envelope = parsed_report.envelope.clone();
-            record.validation = Some(parsed_report.validation.clone());
-            record.raw_output_hash = Some(raw_output_hash);
-        }
-        if let Some(work_unit) = state.collaboration.work_units.get_mut(&work_unit_id) {
-            work_unit.status = WorkUnitStatus::AwaitingDecision;
-            work_unit.latest_report_id = Some(report.id.clone());
-            work_unit.current_assignment_id = Some(assignment_id.to_string());
-            work_unit.updated_at = now;
-        }
-        if let Some(worker) = state.collaboration.workers.get_mut(worker_id) {
-            worker.status = WorkerStatus::Idle;
-            worker.current_assignment_id = None;
-        }
-        if let Some(session) = state
-            .collaboration
-            .worker_sessions
-            .get_mut(worker_session_id)
-        {
-            session.active_turn_id = None;
-            session.runtime_status = match turn_state.lifecycle {
-                ipc::TurnLifecycleState::Interrupted => WorkerSessionRuntimeStatus::Interrupted,
-                ipc::TurnLifecycleState::Lost | ipc::TurnLifecycleState::Unknown => {
-                    WorkerSessionRuntimeStatus::Lost
-                }
-                _ => WorkerSessionRuntimeStatus::Completed,
-            };
-            session.attachability = if turn_state.attachable {
-                WorkerSessionAttachability::Attachable
-            } else {
-                WorkerSessionAttachability::NotAttachable
-            };
-            session.updated_at = now;
-        }
-        drop(state);
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            report_id = %report.id,
-            "assignment turn outcome state updated"
-        );
-
-        if parsed_report.validation.parse_result != ReportParseResult::Invalid
-            && let Some(workspace_report) = workspace_report.as_ref()
-            && let Err(error) = self
-                .record_worker_workspace_report(assignment_id, workspace_report)
-                .await
-        {
-            warn!(
+            drop(state);
+            self.persist_collaboration_state().await?;
+            info!(
                 assignment_id,
                 worker_id,
                 worker_session_id,
-                error = %error,
-                "worker workspace report persistence failed"
+                work_unit_id = %work_unit_after_report.id,
+                report_id = %report.id,
+                parse_result = ?report.parse_result,
+                needs_supervisor_review = report.needs_supervisor_review,
+                disposition = ?report.disposition,
+                stale_proposal_count = stale_proposals.len(),
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "recorded assignment turn outcome"
             );
-        }
-
-        if let Some(workspace_operation_contract) = assignment_for_parse
-            .communication_seed
-            .as_ref()
-            .and_then(|seed| seed.workspace_operation.as_ref())
-        {
-            match workspace_operation_contract.kind {
-                TrackedThreadWorkspaceOperationKind::PruneWorkspace => {
-                    let prune_workspace_result = parsed_report
-                        .envelope
-                        .as_ref()
-                        .and_then(|envelope| envelope.prune_workspace_result.as_ref());
-                    let prune_workspace_result_status =
-                        prune_workspace_result.map(|result| result.status);
-                    let target_worktree_path = prune_workspace_result
-                        .map(|result| result.worktree_path.clone())
-                        .or_else(|| {
-                            Some(workspace_operation_contract.workspace.worktree_path.clone())
-                        });
-                    let target_branch_name = prune_workspace_result
-                        .and_then(|result| result.branch_name.clone())
-                        .or_else(|| {
-                            Some(workspace_operation_contract.workspace.branch_name.clone())
-                        });
-                    let worktree_removed =
-                        prune_workspace_result.and_then(|result| result.worktree_removed);
-                    let branch_removed =
-                        prune_workspace_result.and_then(|result| result.branch_removed);
-                    let refusal_reason =
-                        prune_workspace_result.and_then(|result| result.refusal_reason.clone());
-                    let failure_reason =
-                        prune_workspace_result.and_then(|result| result.failure_reason.clone());
-                    let prune_notes =
-                        prune_workspace_result.and_then(|result| result.notes.clone());
-                    let successful_prune = parsed_report.validation.parse_result
-                        != ReportParseResult::Invalid
-                        && workspace_report.is_some()
-                        && prune_workspace_result.is_some()
-                        && matches!(
-                            prune_workspace_result_status,
-                            Some(TrackedThreadPruneWorkspaceResultStatus::Succeeded)
-                        )
-                        && parsed_report.disposition == ReportDisposition::Completed;
-                    if successful_prune {
-                        self.mark_workspace_operation_completed(
-                            assignment_id,
-                            Some(report_id.clone()),
-                            Some(parsed_report.disposition),
-                            Some(parsed_report.summary.clone()),
-                            prune_workspace_result_status,
-                            target_worktree_path,
-                            target_branch_name,
-                            worktree_removed,
-                            branch_removed,
-                            refusal_reason,
-                            failure_reason,
-                            prune_notes,
-                        )
-                        .await?;
-                    } else {
-                        self.mark_workspace_operation_failed(
-                            assignment_id,
-                            Some(report_id.clone()),
-                            Some(parsed_report.summary.clone()),
-                            prune_workspace_result_status,
-                            target_worktree_path,
-                            target_branch_name,
-                            worktree_removed,
-                            branch_removed,
-                            refusal_reason,
-                            failure_reason,
-                            prune_notes,
-                        )
-                        .await?;
-                    }
-                }
-                _ => {
-                    if parsed_report.validation.parse_result != ReportParseResult::Invalid
-                        && workspace_report.is_some()
-                        && parsed_report.disposition == ReportDisposition::Completed
-                    {
-                        self.mark_workspace_operation_completed(
-                            assignment_id,
-                            Some(report_id.clone()),
-                            Some(parsed_report.disposition),
-                            Some(parsed_report.summary.clone()),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await?;
-                    } else {
-                        self.mark_workspace_operation_failed(
-                            assignment_id,
-                            Some(report_id.clone()),
-                            Some(parsed_report.summary.clone()),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await?;
-                    }
-                }
-            }
-        } else if assignment_for_parse
-            .communication_seed
-            .as_ref()
-            .and_then(|seed| seed.landing_execution.as_ref())
-            .is_some()
-        {
-            let landing_execution_result = parsed_report
-                .envelope
-                .as_ref()
-                .and_then(|envelope| envelope.landing_execution_result.as_ref());
-            let execution_result_status = landing_execution_result.map(|result| result.status);
-            let attempted_head_commit =
-                landing_execution_result.map(|result| result.attempted_head_commit.clone());
-            let landed_commit =
-                landing_execution_result.and_then(|result| result.landed_commit.clone());
-            let landing_ref_updated =
-                landing_execution_result.and_then(|result| result.landing_ref_updated);
-            let failure_reason =
-                landing_execution_result.and_then(|result| result.failure_reason.clone());
-            let notes = landing_execution_result.and_then(|result| result.notes.clone());
-            let authorization_id = assignment_for_parse
-                .communication_seed
-                .as_ref()
-                .and_then(|seed| seed.landing_execution.as_ref())
-                .map(|contract| contract.landing_authorization_id.clone());
-            let authorized = matches!(
-                execution_result_status,
-                Some(TrackedThreadLandingExecutionResultStatus::Succeeded)
-            );
-            if parsed_report.validation.parse_result == ReportParseResult::Parsed
-                && workspace_report.is_some()
-                && landing_execution_result.is_some()
-                && authorized
-                && parsed_report.disposition == ReportDisposition::Completed
-            {
-                self.mark_landing_execution_completed(
-                    assignment_id,
-                    Some(report_id.clone()),
-                    Some(parsed_report.disposition),
-                    Some(parsed_report.summary.clone()),
-                    execution_result_status,
-                    attempted_head_commit,
-                    landed_commit,
-                    landing_ref_updated,
-                    failure_reason,
-                    notes,
-                )
-                .await?;
-                if let Some(authorization_id) = authorization_id {
-                    self.mark_landing_authorization_completed(
-                        &authorization_id,
-                        Some(parsed_report.summary.clone()),
-                    )
-                    .await?;
-                }
-            } else {
-                self.mark_landing_execution_failed(
-                    assignment_id,
-                    Some(report_id.clone()),
-                    Some(parsed_report.disposition),
-                    Some(parsed_report.summary.clone()),
-                    execution_result_status,
-                    attempted_head_commit,
-                    landed_commit,
-                    landing_ref_updated,
-                    failure_reason,
-                    notes,
-                )
-                .await?;
-                if let Some(authorization_id) = authorization_id {
-                    self.mark_landing_authorization_failed(
-                        &authorization_id,
-                        Some(parsed_report.summary.clone()),
-                    )
-                    .await?;
-                }
-            }
-        }
-
-        let mut state = self.state.write().await;
-        let stale_proposals =
-            Self::refresh_stale_proposals_for_work_unit(&mut state.collaboration, &work_unit_id);
-        Self::refresh_workstream_statuses(&mut state.collaboration);
-        let assignment_after_report = state
-            .collaboration
-            .assignments
-            .get(assignment_id)
-            .cloned()
-            .ok_or_else(|| OrcasError::Protocol(format!("unknown assignment `{assignment_id}`")))?;
-        let work_unit_after_report = state
-            .collaboration
-            .work_units
-            .get(&work_unit_id)
-            .cloned()
-            .ok_or_else(|| OrcasError::Protocol(format!("unknown work unit `{work_unit_id}`")))?;
-        drop(state);
-        self.persist_collaboration_state().await?;
-        info!(
-            assignment_id,
-            worker_id,
-            worker_session_id,
-            work_unit_id = %work_unit_after_report.id,
-            report_id = %report.id,
-            parse_result = ?report.parse_result,
-            needs_supervisor_review = report.needs_supervisor_review,
-            disposition = ?report.disposition,
-            stale_proposal_count = stale_proposals.len(),
-            duration_ms = started_at.elapsed().as_millis() as u64,
-            "recorded assignment turn outcome"
-        );
-        Ok((
-            report,
-            assignment_after_report,
-            work_unit_after_report,
-            stale_proposals,
-        ))
+            Ok((
+                report,
+                assignment_after_report,
+                work_unit_after_report,
+                stale_proposals,
+            ))
         })
         .await
     }
@@ -5882,58 +5975,58 @@ impl OrcasDaemonService {
         raw_output: String,
     ) -> OrcasResult<(Report, Assignment, WorkUnit)> {
         Box::pin(async move {
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            "ingesting assignment turn outcome"
-        );
-        let (report, assignment_after_report, work_unit_after_report, stale_proposals) =
-            Box::pin(self.record_assignment_turn_outcome(
-                assignment_id,
-                worker_id,
-                worker_session_id,
-                turn_state,
-                raw_output,
-            ))
-            .await?;
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            report_id = %report.id,
-            "assignment turn outcome recorded"
-        );
-        self.persist_collaboration_state().await?;
-        self.emit_report_recorded(&report).await;
-        let assignment_event_action = match assignment_after_report.status {
-            AssignmentStatus::Interrupted => ipc::AssignmentLifecycleAction::Interrupted,
-            AssignmentStatus::Failed | AssignmentStatus::Lost => {
-                ipc::AssignmentLifecycleAction::Failed
-            }
-            AssignmentStatus::AwaitingDecision => ipc::AssignmentLifecycleAction::Reported,
-            _ => ipc::AssignmentLifecycleAction::Reported,
-        };
-        self.emit_assignment_lifecycle(assignment_event_action, &assignment_after_report)
-            .await;
-        self.emit_work_unit_lifecycle(
-            ipc::CollaborationLifecycleAction::Updated,
-            &work_unit_after_report,
-        )
-        .await;
-        for proposal in &stale_proposals {
-            self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Stale, proposal)
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                "ingesting assignment turn outcome"
+            );
+            let (report, assignment_after_report, work_unit_after_report, stale_proposals) =
+                Box::pin(self.record_assignment_turn_outcome(
+                    assignment_id,
+                    worker_id,
+                    worker_session_id,
+                    turn_state,
+                    raw_output,
+                ))
+                .await?;
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                report_id = %report.id,
+                "assignment turn outcome recorded"
+            );
+            self.persist_collaboration_state().await?;
+            self.emit_report_recorded(&report).await;
+            let assignment_event_action = match assignment_after_report.status {
+                AssignmentStatus::Interrupted => ipc::AssignmentLifecycleAction::Interrupted,
+                AssignmentStatus::Failed | AssignmentStatus::Lost => {
+                    ipc::AssignmentLifecycleAction::Failed
+                }
+                AssignmentStatus::AwaitingDecision => ipc::AssignmentLifecycleAction::Reported,
+                _ => ipc::AssignmentLifecycleAction::Reported,
+            };
+            self.emit_assignment_lifecycle(assignment_event_action, &assignment_after_report)
                 .await;
-        }
-        self.maybe_auto_create_proposal_for_report(&report).await;
-        info!(
-            assignment_id = %assignment_id,
-            worker_id = %worker_id,
-            worker_session_id = %worker_session_id,
-            report_id = %report.id,
-            "assignment turn outcome ingestion complete"
-        );
-        Ok((report, assignment_after_report, work_unit_after_report))
+            self.emit_work_unit_lifecycle(
+                ipc::CollaborationLifecycleAction::Updated,
+                &work_unit_after_report,
+            )
+            .await;
+            for proposal in &stale_proposals {
+                self.emit_proposal_lifecycle(ipc::ProposalLifecycleAction::Stale, proposal)
+                    .await;
+            }
+            self.maybe_auto_create_proposal_for_report(&report).await;
+            info!(
+                assignment_id = %assignment_id,
+                worker_id = %worker_id,
+                worker_session_id = %worker_session_id,
+                report_id = %report.id,
+                "assignment turn outcome ingestion complete"
+            );
+            Ok((report, assignment_after_report, work_unit_after_report))
         })
         .await
     }
