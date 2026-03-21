@@ -2,6 +2,7 @@
 
 mod api;
 mod pwa;
+mod push;
 mod storage;
 
 use std::sync::Arc;
@@ -481,6 +482,7 @@ fn ActionRoute() -> impl IntoView {
         .expect("settings context should be provided");
     let params = use_params_map();
     let request_id = move || params.with(|params| params.get("request_id").unwrap_or_default());
+    let push_context = push::current_push_open_context();
     let refresh_epoch = RwSignal::new(0u64);
     let watching = RwSignal::new(false);
     let watch_error = RwSignal::new(None::<String>);
@@ -565,7 +567,12 @@ fn ActionRoute() -> impl IntoView {
             {move || match action_request.get() {
                 None => view! { <p class="muted">"Loading request…"</p> }.into_any(),
                 Some(Err(error)) => view! { <ErrorPanel error=error /> }.into_any(),
-                Some(Ok(None)) => view! { <EmptyState title="Request not found" body="This remote action request does not exist or is no longer visible." /> }.into_any(),
+                Some(Ok(None)) => view! {
+                    <div class="stack">
+                        {render_push_banner(push_context.clone())}
+                        <EmptyState title="Request not found" body="This remote action request does not exist or is no longer visible." />
+                    </div>
+                }.into_any(),
                 Some(Ok(Some(request))) => render_remote_action_page(request, move || watching.get()),
             }}
         </PageFrame>
@@ -606,6 +613,19 @@ fn EmptyState(title: &'static str, body: &'static str) -> impl IntoView {
             <h3>{title}</h3>
             <p>{body}</p>
         </div>
+    }
+}
+
+fn render_push_banner(context: Option<push::PushOpenContext>) -> AnyView {
+    match context {
+        Some(context) => view! {
+            <div class="info-panel">
+                <strong>"Opened from browser notification"</strong>
+                <p>{push::push_context_summary(&context)}</p>
+            </div>
+        }
+        .into_any(),
+        None => view! {}.into_any(),
     }
 }
 
@@ -708,16 +728,24 @@ fn render_inbox_detail_page(
     let submitting = RwSignal::new(false);
     let settings = use_context::<RwSignal<OperatorServerSettings>>()
         .expect("settings context should be provided");
+    let push_context = push::current_push_open_context();
+    let missing_item_message = if push_context.is_some() {
+        "The mirrored inbox item for this notification is missing or no longer actionable on the server."
+            .to_string()
+    } else {
+        "No mirrored item payload available.".to_string()
+    };
 
     view! {
         <div class="stack">
+            {render_push_banner(push_context)}
             <article class="card">
                 <p class="eyebrow">{item_id.unwrap_or_else(|| "unknown item".to_string())}</p>
                 <h3>{title}</h3>
                 <p class="item-summary">{summary}</p>
                 {move || match item.as_ref() {
                     Some(item) => render_item_details(item).into_any(),
-                    None => view! { <p class="muted">"No mirrored item payload available."</p> }.into_any(),
+                    None => view! { <p class="muted">{missing_item_message.clone()}</p> }.into_any(),
                 }}
             </article>
 
@@ -807,12 +835,19 @@ fn render_item_details(item: &InboxItemCardView) -> AnyView {
 }
 
 fn render_notification_page(page: NotificationPageView) -> AnyView {
+    let push_context = push::current_push_open_context();
     if page.candidates.is_empty() {
-        return view! { <EmptyState title="No notification candidates" body="No mirrored inbox item is currently ready for operator notification." /> }
-            .into_any();
+        return view! {
+            <div class="stack">
+                {render_push_banner(push_context)}
+                <EmptyState title="No notification candidates" body="No mirrored inbox item is currently ready for operator notification." />
+            </div>
+        }
+        .into_any();
     }
     view! {
         <div class="stack">
+            {render_push_banner(push_context)}
             <p class="muted">{format!("{} candidates from origin `{}`", page.candidates.len(), page.origin_node_id)}</p>
             {render_notification_candidates(page.candidates)}
         </div>
@@ -847,11 +882,23 @@ fn render_notification_candidates(candidates: Vec<NotificationCandidateView>) ->
 }
 
 fn render_delivery_page(page: DeliveryPageView) -> AnyView {
+    let push_context = push::current_push_open_context();
     if page.jobs.is_empty() {
-        return view! { <EmptyState title="No deliveries yet" body="Delivery jobs will appear once notification readiness triggers delivery work." /> }
-            .into_any();
+        return view! {
+            <div class="stack">
+                {render_push_banner(push_context)}
+                <EmptyState title="No deliveries yet" body="Delivery jobs will appear once notification readiness triggers delivery work." />
+            </div>
+        }
+        .into_any();
     }
-    view! { <div class="stack">{render_delivery_jobs(page.jobs)}</div> }.into_any()
+    view! {
+        <div class="stack">
+            {render_push_banner(push_context)}
+            {render_delivery_jobs(page.jobs)}
+        </div>
+    }
+    .into_any()
 }
 
 fn render_delivery_jobs(jobs: Vec<DeliveryJobView>) -> AnyView {
@@ -909,8 +956,10 @@ fn render_remote_action_page(
 ) -> AnyView {
     let status_label = remote_action_status_label(request.status);
     let is_active = watching();
+    let push_context = push::current_push_open_context();
     view! {
         <div class="stack">
+            {render_push_banner(push_context)}
             <article class="card">
                 <div class="item-card-topline">
                     <span class="status-pill">{status_label}</span>

@@ -17,6 +17,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use url::form_urlencoded;
 use std::collections::BTreeMap;
 
 use crate::authority;
@@ -1116,6 +1117,100 @@ pub struct NotificationDeliveryRunPendingResponse {
     pub jobs: Vec<NotificationDeliveryJob>,
 }
 
+/// Read-model payload for a browser push notification.
+///
+/// The payload is derived from mirrored notification readiness and delivery
+/// state. It is delivery/display metadata only and does not change workflow
+/// truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserPushNotificationPayload {
+    pub notification_id: String,
+    pub title: String,
+    pub body: String,
+    pub route: BrowserPushNotificationRoute,
+    #[serde(default)]
+    pub source_kind: Option<OperatorInboxSourceKind>,
+    #[serde(default)]
+    pub candidate_status: Option<OperatorNotificationCandidateStatus>,
+    #[serde(default)]
+    pub item_status: Option<OperatorInboxItemStatus>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub badge: Option<String>,
+}
+
+impl BrowserPushNotificationPayload {
+    pub fn route_path(&self) -> String {
+        self.route.route_path(self.notification_id.as_str())
+    }
+}
+
+/// Click-through target for a browser push notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrowserPushNotificationRoute {
+    InboxItem {
+        origin_node_id: String,
+        item_id: String,
+        candidate_id: String,
+    },
+    RemoteActionRequest {
+        origin_node_id: String,
+        request_id: String,
+    },
+    Notifications {
+        origin_node_id: String,
+    },
+    Deliveries {
+        origin_node_id: String,
+    },
+}
+
+impl BrowserPushNotificationRoute {
+    pub fn route_path(&self, notification_id: &str) -> String {
+        match self {
+            Self::InboxItem {
+                origin_node_id,
+                item_id,
+                candidate_id,
+            } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("candidate_id", candidate_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/inbox/{item_id}?{}", query.finish())
+            }
+            Self::RemoteActionRequest {
+                origin_node_id,
+                request_id,
+            } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("request_id", request_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/actions/{request_id}?{}", query.finish())
+            }
+            Self::Notifications { origin_node_id } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/notifications?{}", query.finish())
+            }
+            Self::Deliveries { origin_node_id } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/deliveries?{}", query.finish())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorInboxActionRouteRequest {
     pub item_id: String,
@@ -1598,7 +1693,10 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
-    use super::{DaemonEvent, DecisionSummary, EventsSubscribeRequest, StateSnapshot};
+    use super::{
+        BrowserPushNotificationPayload, BrowserPushNotificationRoute, DaemonEvent,
+        DecisionSummary, EventsSubscribeRequest, StateSnapshot,
+    };
     use crate::{DecisionType, WorkstreamStatus};
 
     #[test]
@@ -1727,6 +1825,50 @@ mod tests {
         };
         let serialized = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(serialized, json!({ "include_snapshot": false }));
+    }
+
+    #[test]
+    fn browser_push_notification_route_serializes_into_push_deep_link() {
+        let payload = BrowserPushNotificationPayload {
+            notification_id: "notification-1".to_string(),
+            title: "Title".to_string(),
+            body: "Body".to_string(),
+            route: BrowserPushNotificationRoute::InboxItem {
+                origin_node_id: "origin-a".to_string(),
+                item_id: "item-1".to_string(),
+                candidate_id: "candidate-1".to_string(),
+            },
+            source_kind: None,
+            candidate_status: None,
+            item_status: None,
+            icon: None,
+            badge: None,
+        };
+        assert_eq!(
+            payload.route_path(),
+            "/inbox/item-1?origin_node_id=origin-a&candidate_id=candidate-1&notification_id=notification-1&push=1"
+        );
+    }
+
+    #[test]
+    fn browser_push_notification_payload_round_trips_through_serde() {
+        let payload = BrowserPushNotificationPayload {
+            notification_id: "notification-1".to_string(),
+            title: "Title".to_string(),
+            body: "Body".to_string(),
+            route: BrowserPushNotificationRoute::Notifications {
+                origin_node_id: "origin-a".to_string(),
+            },
+            source_kind: Some(crate::OperatorInboxSourceKind::SupervisorProposal),
+            candidate_status: Some(crate::OperatorNotificationCandidateStatus::Pending),
+            item_status: Some(crate::OperatorInboxItemStatus::Open),
+            icon: Some("/icon-192.svg".to_string()),
+            badge: Some("/badge.svg".to_string()),
+        };
+        let json = serde_json::to_value(&payload).expect("serialize payload");
+        let decoded: BrowserPushNotificationPayload =
+            serde_json::from_value(json).expect("deserialize payload");
+        assert_eq!(decoded, payload);
     }
 }
 

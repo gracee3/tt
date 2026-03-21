@@ -12,6 +12,7 @@ use tokio::time::{Duration, Instant, sleep};
 use tracing::info;
 
 use crate::delivery::{LogNotificationDeliveryTransport, MockNotificationDeliveryTransport};
+use crate::delivery::WebPushNotificationDeliveryTransport;
 use orcas_core::ipc::{
     NotificationDeliveryJobGetRequest, NotificationDeliveryJobGetResponse,
     NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
@@ -46,12 +47,15 @@ pub struct InboxMirrorServerConfig {
     pub bind_addr: SocketAddr,
     pub data_dir: PathBuf,
     pub operator_api_token: Option<String>,
+    pub push_vapid_private_key_base64: Option<String>,
+    pub push_vapid_subject: Option<String>,
 }
 
 #[derive(Clone)]
 struct InboxMirrorServerState {
     store: Arc<InboxMirrorStore>,
     operator_api_token: Option<String>,
+    web_push_delivery: Option<WebPushNotificationDeliveryTransport>,
 }
 
 #[derive(Clone)]
@@ -61,17 +65,43 @@ pub struct InboxMirrorServer {
 
 impl InboxMirrorServer {
     pub fn new(store: InboxMirrorStore) -> Self {
-        Self::with_operator_api_token(store, None)
+        Self::with_operator_api_token_and_web_push(store, None, None)
+    }
+
+    pub fn from_config(store: InboxMirrorStore, config: InboxMirrorServerConfig) -> Self {
+        let web_push_delivery = match (
+            config.push_vapid_private_key_base64,
+            config.push_vapid_subject,
+        ) {
+            (Some(private_key), Some(subject)) => {
+                Some(WebPushNotificationDeliveryTransport::new(private_key, subject))
+            }
+            _ => None,
+        };
+        Self::with_operator_api_token_and_web_push(
+            store,
+            config.operator_api_token,
+            web_push_delivery,
+        )
     }
 
     pub fn with_operator_api_token(
         store: InboxMirrorStore,
         operator_api_token: Option<String>,
     ) -> Self {
+        Self::with_operator_api_token_and_web_push(store, operator_api_token, None)
+    }
+
+    pub fn with_operator_api_token_and_web_push(
+        store: InboxMirrorStore,
+        operator_api_token: Option<String>,
+        web_push_delivery: Option<WebPushNotificationDeliveryTransport>,
+    ) -> Self {
         Self {
             state: Arc::new(InboxMirrorServerState {
                 store: Arc::new(store),
                 operator_api_token,
+                web_push_delivery,
             }),
         }
     }
@@ -83,6 +113,37 @@ impl InboxMirrorServer {
 
     pub async fn serve_with_listener(self, listener: tokio::net::TcpListener) -> OrcasResult<()> {
         let state = self.state.clone();
+        if let Some(transport) = state.web_push_delivery.clone() {
+            let store = state.store.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    let store = store.clone();
+                    let transport = transport.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        store.dispatch_pending_notification_delivery_jobs(&transport, Some(32))
+                    })
+                    .await
+                    {
+                        Ok(Ok(result)) => {
+                            if !result.jobs.is_empty() {
+                                info!(
+                                    jobs = result.jobs.len(),
+                                    "browser push delivery loop dispatched pending jobs"
+                                );
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "browser push delivery loop failed");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "browser push delivery loop join failed");
+                        }
+                    }
+                }
+            });
+        }
         let app = Router::new()
             .route("/operator-inbox/mirror/apply", post(apply))
             .route(
@@ -411,6 +472,17 @@ async fn run_pending_notification_delivery_jobs(
                 request.limit,
             )
             .map_err(|error| error.to_string())?,
+        NotificationTransportKind::WebPush => {
+            let Some(transport) = state.web_push_delivery.as_ref() else {
+                return Err(
+                    "browser push delivery is not configured on this server".to_string()
+                );
+            };
+            state
+                .store
+                .dispatch_pending_notification_delivery_jobs(transport, request.limit)
+                .map_err(|error| error.to_string())?
+        }
         other => {
             return Err(format!(
                 "notification delivery transport kind `{other:?}` is not supported by the local server"
@@ -534,6 +606,7 @@ pub fn app_with_operator_api_token(
     let state = Arc::new(InboxMirrorServerState {
         store: Arc::new(store),
         operator_api_token,
+        web_push_delivery: None,
     });
     Router::new()
         .route("/operator-inbox/mirror/apply", post(apply))

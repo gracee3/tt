@@ -23,6 +23,7 @@ orcas-operator-core = { path = "../orcas-operator-core" }
 orcas-server-client = { path = "../orcas-server-client" }
 serde.workspace = true
 serde_json.workspace = true
+url.workspace = true
 wasm-bindgen = "0.2.104"
 wasm-bindgen-futures = "0.4.55"
 uuid.workspace = true

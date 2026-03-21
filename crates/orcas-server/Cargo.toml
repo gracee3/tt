@@ -14,6 +14,7 @@ anyhow.workspace = true
 axum = "0.8.6"
 chrono.workspace = true
 clap.workspace = true
+isahc = "1.7.2"
 orcas-core = { path = "../orcas-core" }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde.workspace = true
@@ -21,6 +22,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+web-push = "0.11.0"
 
 [dev-dependencies]
 tempfile = "3.23.0"

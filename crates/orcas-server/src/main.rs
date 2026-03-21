@@ -23,6 +23,18 @@ struct ServerCli {
         help = "Optional bearer token required for operator-facing server APIs"
     )]
     operator_api_token: Option<String>,
+    #[arg(
+        long,
+        env = "ORCAS_PUSH_VAPID_PRIVATE_KEY_BASE64",
+        help = "Optional base64url VAPID private key used for browser push delivery"
+    )]
+    push_vapid_private_key_base64: Option<String>,
+    #[arg(
+        long,
+        env = "ORCAS_PUSH_VAPID_SUBJECT",
+        help = "Optional VAPID subject URI used for browser push delivery"
+    )]
+    push_vapid_subject: Option<String>,
 }
 
 #[tokio::main]
@@ -34,8 +46,14 @@ async fn main() -> Result<()> {
     info!("starting orcas mirrored inbox server");
 
     let store = InboxMirrorStore::open(paths.data_dir.join("server_inbox.db"))?;
-    InboxMirrorServer::with_operator_api_token(store, cli.operator_api_token)
-        .serve(cli.bind)
-        .await?;
+    let config = orcas_server::InboxMirrorServerConfig {
+        bind_addr: cli.bind,
+        data_dir: paths.data_dir.clone(),
+        operator_api_token: cli.operator_api_token,
+        push_vapid_private_key_base64: cli.push_vapid_private_key_base64,
+        push_vapid_subject: cli.push_vapid_subject,
+    };
+    let bind_addr = config.bind_addr;
+    InboxMirrorServer::from_config(store, config).serve(bind_addr).await?;
     Ok(())
 }

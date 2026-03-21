@@ -83,6 +83,8 @@ a {
 .settings-panel,
 .page,
 .card,
+.push-panel,
+.info-panel,
 .error-panel,
 .empty-state {
   border: 1px solid var(--border);
@@ -95,6 +97,20 @@ a {
   padding: 0.85rem;
   display: grid;
   gap: 0.8rem;
+}
+
+.push-panel {
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.info-panel {
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.35rem;
+  border-color: rgba(125, 211, 252, 0.32);
+  background: linear-gradient(180deg, rgba(17, 24, 47, 0.92), rgba(21, 29, 55, 0.92));
 }
 
 .field {
