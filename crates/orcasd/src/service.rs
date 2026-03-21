@@ -814,6 +814,23 @@ impl OrcasDaemonService {
             return Ok(());
         }
 
+        if request.method == ipc::methods::DAEMON_STATUS {
+            let response = serde_json::to_value(self.daemon_status().await?)?;
+            Self::send_response(&outbound, request.id, response).await?;
+            return Ok(());
+        }
+
+        self.handle_request_dispatch_rest(request, outbound, subscription_task)
+            .await
+    }
+
+    #[inline(never)]
+    async fn handle_request_dispatch_rest(
+        self: &Arc<Self>,
+        request: JsonRpcRequest,
+        outbound: mpsc::Sender<String>,
+        subscription_task: &mut Option<tokio::task::JoinHandle<()>>,
+    ) -> OrcasResult<()> {
         let result = match request.method.as_str() {
             ipc::methods::DAEMON_STATUS => serde_json::to_value(self.daemon_status().await?)?,
             ipc::methods::DAEMON_CONNECT => serde_json::to_value(self.daemon_connect().await?)?,
