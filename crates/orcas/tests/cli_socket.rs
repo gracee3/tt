@@ -7,19 +7,39 @@ mod fake_supervisor;
 #[path = "../../orcasd/tests/harness.rs"]
 mod harness;
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use chrono::Utc;
 use fake_codex::FakeCodexAppServer;
 use fake_supervisor::FakeSupervisorResponsesServer;
 use harness::TestDaemon;
-use orcas_core::{AppConfig, authority, ipc};
+use orcas_core::{AppConfig, StoredState, authority, ipc};
+use orcas_core::{
+    collaboration::{
+        Assignment, AssignmentStatus, PlanningSession, PlanningSessionResearchStatus,
+        PlanningSessionStatus, PlanningSessionStructuredSummary, Report, ReportConfidence,
+        ReportDisposition, ReportParseResult, Worker, WorkerSession, WorkerSessionAttachability,
+        WorkerSessionRuntimeStatus, WorkerStatus,
+    },
+    planning::PlanExecutionKind,
+};
+use uuid::Uuid;
 
 fn run_orcas(daemon: &TestDaemon, args: &[&str]) -> std::process::Output {
+    let envs = daemon.xdg_env();
+    run_orcas_with_env(args, &envs)
+}
+
+fn run_orcas_with_env(args: &[&str], envs: &[(String, String)]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orcas"));
     command.arg("--connect-only");
     command.args(args);
-    for (key, value) in daemon.xdg_env() {
+    for (key, value) in envs {
         command.env(key, value);
     }
     command.output().expect("run orcas CLI")
@@ -36,6 +56,101 @@ fn stderr(output: &std::process::Output) -> String {
 fn field_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     text.lines()
         .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+}
+
+static PLANNING_SESSION_CLI_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn planning_session_cli_test_lock() -> &'static tokio::sync::Mutex<()> {
+    PLANNING_SESSION_CLI_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+struct FakePlanningSessionDaemon {
+    root: PathBuf,
+    paths: orcas_core::AppPaths,
+    task: std::thread::JoinHandle<()>,
+    stop: Arc<AtomicBool>,
+}
+
+impl FakePlanningSessionDaemon {
+    async fn spawn(test_name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("orcas-cli-{test_name}-{}", Uuid::new_v4()));
+        let paths = orcas_core::AppPaths::from_roots(
+            root.join("config/orcas"),
+            root.join("data/orcas"),
+            root.join("runtime/orcas"),
+        );
+        paths.ensure().await.expect("create app paths");
+        let _ = tokio::fs::remove_file(&paths.socket_file).await;
+        let listener = std::os::unix::net::UnixListener::bind(&paths.socket_file)
+            .expect("bind fake daemon socket");
+        listener
+            .set_nonblocking(true)
+            .expect("set fake daemon socket nonblocking");
+        let request_counts = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+        let socket_path = paths.socket_file.clone();
+        let metadata_path = paths.daemon_metadata_file.clone();
+        let root_for_task = root.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_task = Arc::clone(&stop);
+        let task = std::thread::spawn(move || {
+            loop {
+                if stop_for_task.load(Ordering::Acquire) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let request_counts = Arc::clone(&request_counts);
+                        let socket_path = socket_path.clone();
+                        let metadata_path = metadata_path.clone();
+                        std::thread::spawn(move || {
+                            serve_fake_planning_session_connection(
+                                stream,
+                                request_counts,
+                                socket_path,
+                                metadata_path,
+                            )
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = std::fs::remove_file(&socket_path);
+            let _ = std::fs::remove_dir_all(&root_for_task);
+        });
+        Self {
+            root,
+            paths,
+            task,
+            stop,
+        }
+    }
+
+    fn xdg_env(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                self.root.join("config").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".to_string(),
+                self.root.join("data").display().to_string(),
+            ),
+            (
+                "XDG_RUNTIME_DIR".to_string(),
+                self.root.join("runtime").display().to_string(),
+            ),
+        ]
+    }
+
+    async fn stop(self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.task.join();
+        let _ = tokio::fs::remove_file(&self.paths.socket_file).await;
+        let _ = tokio::fs::remove_dir_all(&self.root).await;
+    }
 }
 
 struct AuthorityFixture {
@@ -143,6 +258,402 @@ async fn create_authority_tracked_thread(
         .await
         .expect("create authority tracked thread")
         .tracked_thread
+}
+
+async fn spawn_planning_session_cli_daemon(test_name: &str) -> (FakeCodexAppServer, TestDaemon) {
+    let fake_codex = FakeCodexAppServer::spawn().await;
+    let daemon = TestDaemon::spawn_with_env(
+        test_name,
+        vec![(
+            "ORCAS_CODEX_LISTEN_URL".to_string(),
+            fake_codex.endpoint.clone(),
+        )],
+    )
+    .await;
+    (fake_codex, daemon)
+}
+
+async fn spawn_fake_planning_session_cli_daemon(test_name: &str) -> FakePlanningSessionDaemon {
+    FakePlanningSessionDaemon::spawn(test_name).await
+}
+
+fn create_cli_workstream(daemon: &TestDaemon, label: &str) -> String {
+    let create_output = run_orcas(
+        daemon,
+        &[
+            "workstreams",
+            "create",
+            "--title",
+            &format!("CLI {label} Root"),
+            "--objective",
+            &format!("Objective for {label}"),
+            "--priority",
+            "high",
+        ],
+    );
+    assert!(
+        create_output.status.success(),
+        "stderr: {}",
+        stderr(&create_output)
+    );
+    let create_stdout = stdout(&create_output);
+    assert!(create_stdout.contains("surface: authority"));
+    assert!(create_stdout.contains("status: Active"));
+    field_value(&create_stdout, "workstream_id")
+        .expect("workstream create should print workstream_id")
+        .to_string()
+}
+
+fn serve_fake_planning_session_connection(
+    stream: std::os::unix::net::UnixStream,
+    request_counts: Arc<std::sync::Mutex<HashMap<String, usize>>>,
+    socket_path: PathBuf,
+    metadata_path: PathBuf,
+) {
+    let mut reader = std::io::BufReader::new(
+        stream
+            .try_clone()
+            .expect("clone fake planning daemon socket stream"),
+    );
+    let mut write_half = stream;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = std::io::BufRead::read_line(&mut reader, &mut line)
+            .expect("read fake planning daemon request line");
+        if bytes == 0 {
+            break;
+        }
+        let line = line.trim_end_matches(['\n', '\r']);
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+            break;
+        };
+        let Some(method) = message.get("method").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let id = message
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let params = message.get("params").cloned();
+        match method {
+            ipc::methods::DAEMON_STATUS => {
+                let response = ipc::DaemonStatusResponse {
+                    socket_path: socket_path.display().to_string(),
+                    metadata_path: metadata_path.display().to_string(),
+                    codex_endpoint: "ws://fake-codex".to_string(),
+                    codex_binary_path: "/usr/bin/codex".to_string(),
+                    upstream: orcas_core::ConnectionState {
+                        endpoint: "ws://fake-codex".to_string(),
+                        status: "connected".to_string(),
+                        detail: None,
+                    },
+                    client_count: 1,
+                    known_threads: 1,
+                    runtime: orcas_core::DaemonRuntimeMetadata {
+                        pid: std::process::id(),
+                        started_at: Utc::now(),
+                        version: "test".to_string(),
+                        build_fingerprint: "fake-planning-session-daemon".to_string(),
+                        binary_path: "/usr/bin/orcasd".to_string(),
+                        socket_path: socket_path.display().to_string(),
+                        metadata_path: metadata_path.display().to_string(),
+                        git_commit: Some("deadbeef".to_string()),
+                    },
+                };
+                let _ = send_jsonrpc_response(&mut write_half, id, response);
+            }
+            ipc::methods::PLANNING_SESSION_REQUEST_RESEARCH => {
+                let Some(params) = params else {
+                    let _ = send_jsonrpc_error(
+                        &mut write_half,
+                        id,
+                        -32602,
+                        "invalid planning session research request",
+                    );
+                    continue;
+                };
+                let Ok(params) =
+                    serde_json::from_value::<ipc::PlanningSessionRequestResearchRequest>(params)
+                else {
+                    let _ = send_jsonrpc_error(
+                        &mut write_half,
+                        id,
+                        -32602,
+                        "invalid planning session research request",
+                    );
+                    continue;
+                };
+                let mut counts = request_counts
+                    .lock()
+                    .expect("lock fake planning daemon request counts");
+                let entry = counts.entry(params.session_id.clone()).or_insert(0);
+                *entry += 1;
+                if *entry > 1 {
+                    let _ = send_jsonrpc_error(
+                        &mut write_half,
+                        id,
+                        -32001,
+                        format!(
+                            "planning session {} already used its bounded research turn",
+                            params.session_id
+                        ),
+                    );
+                    continue;
+                }
+                let response = planning_session_research_response(&params, &socket_path);
+                let _ = send_jsonrpc_response(&mut write_half, id, response);
+            }
+            _ => {
+                let _ = send_jsonrpc_error(
+                    &mut write_half,
+                    id,
+                    -32601,
+                    format!("method not found: {method}"),
+                );
+            }
+        }
+    }
+}
+
+fn send_jsonrpc_response<T: serde::Serialize>(
+    write_half: &mut std::os::unix::net::UnixStream,
+    id: serde_json::Value,
+    result: T,
+) -> std::io::Result<()> {
+    let message = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": serde_json::to_value(result).expect("serialize fake daemon response"),
+    });
+    send_jsonrpc_message(write_half, message)
+}
+
+fn send_jsonrpc_error(
+    write_half: &mut std::os::unix::net::UnixStream,
+    id: serde_json::Value,
+    code: i64,
+    message: impl Into<String>,
+) -> std::io::Result<()> {
+    let message = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message.into(),
+        }
+    });
+    send_jsonrpc_message(write_half, message)
+}
+
+fn send_jsonrpc_message(
+    write_half: &mut std::os::unix::net::UnixStream,
+    message: serde_json::Value,
+) -> std::io::Result<()> {
+    let raw = serde_json::to_string(&message).expect("serialize json-rpc message");
+    std::io::Write::write_all(write_half, raw.as_bytes())?;
+    std::io::Write::write_all(write_half, b"\n")?;
+    std::io::Write::flush(write_half)
+}
+
+fn planning_session_research_response(
+    request: &ipc::PlanningSessionRequestResearchRequest,
+    socket_path: &PathBuf,
+) -> ipc::PlanningSessionRequestResearchResponse {
+    let now = Utc::now();
+    let assignment_id = format!("assignment-{}", request.session_id);
+    let worker_session_id = format!("worker-session-{}", request.session_id);
+    let report_id = format!("report-{}", request.session_id);
+    let work_unit_id = format!("work-unit-{}", request.session_id);
+    let worker_kind = request
+        .worker_kind
+        .clone()
+        .unwrap_or_else(|| "codex".to_string());
+    let session = PlanningSession {
+        session_id: request.session_id.clone(),
+        workstream_id: "fake-workstream".to_string(),
+        status: PlanningSessionStatus::ResearchRequested,
+        planning_thread_id: "fake-planning-thread".to_string(),
+        base_plan_id: None,
+        base_plan_version: None,
+        research_assignment_id: Some(assignment_id.clone()),
+        research_report_id: Some(report_id.clone()),
+        draft_revision_proposal_id: None,
+        approved_plan_id: None,
+        approved_plan_version: None,
+        latest_structured_summary: PlanningSessionStructuredSummary {
+            objective: "Plan one bounded change.".to_string(),
+            research_status: PlanningSessionResearchStatus::Requested,
+            requirements: vec![],
+            constraints: vec![],
+            non_goals: vec![],
+            open_questions: vec![],
+            draft_plan_summary: None,
+            ready_for_review: false,
+        },
+        created_at: now,
+        created_by: request
+            .requested_by
+            .clone()
+            .unwrap_or_else(|| "cli_operator".to_string()),
+        updated_at: now,
+        updated_by: request
+            .requested_by
+            .clone()
+            .unwrap_or_else(|| "cli_operator".to_string()),
+        request_note: request.request_note.clone(),
+        reviewed_at: None,
+        reviewed_by: None,
+        review_note: None,
+        superseded_by_session_id: None,
+    };
+    let assignment = Assignment {
+        id: assignment_id.clone(),
+        work_unit_id: work_unit_id.clone(),
+        plan_id: None,
+        plan_version: None,
+        plan_item_id: None,
+        execution_kind: PlanExecutionKind::DirectExecution,
+        alignment_rationale: Some("bounded research turn".to_string()),
+        worker_id: request.worker_id.clone(),
+        worker_session_id: worker_session_id.clone(),
+        instructions: request.request_note.clone().unwrap_or_else(|| {
+            "Perform one bounded research turn for the planning session.".to_string()
+        }),
+        communication_seed: None,
+        status: AssignmentStatus::Running,
+        attempt_number: 1,
+        created_at: now,
+        updated_at: now,
+    };
+    let worker = Worker {
+        id: request.worker_id.clone(),
+        kind: worker_kind.clone(),
+        status: WorkerStatus::Busy,
+        current_assignment_id: Some(assignment_id.clone()),
+    };
+    let worker_session = WorkerSession {
+        id: worker_session_id.clone(),
+        worker_id: request.worker_id.clone(),
+        backend_type: worker_kind,
+        thread_id: Some(socket_path.display().to_string()),
+        tracked_thread_id: None,
+        active_turn_id: None,
+        runtime_status: WorkerSessionRuntimeStatus::Running,
+        attachability: WorkerSessionAttachability::NotAttachable,
+        updated_at: now,
+    };
+    let report = Report {
+        id: report_id,
+        work_unit_id,
+        assignment_id,
+        worker_id: request.worker_id.clone(),
+        disposition: ReportDisposition::Completed,
+        summary: "bounded research completed".to_string(),
+        findings: vec!["fake-daemon synthesized one bounded research turn".to_string()],
+        blockers: vec![],
+        questions: vec![],
+        recommended_next_actions: vec![],
+        confidence: ReportConfidence::High,
+        raw_output: "bounded research completed".to_string(),
+        parse_result: ReportParseResult::Parsed,
+        needs_supervisor_review: false,
+        created_at: now,
+    };
+    ipc::PlanningSessionRequestResearchResponse {
+        session,
+        assignment,
+        worker,
+        worker_session,
+        report,
+    }
+}
+
+fn seed_cli_planning_session(
+    daemon: &TestDaemon,
+    session_id: &str,
+    workstream_id: &str,
+    workstream_label: &str,
+    planning_thread_id: &str,
+    objective: &str,
+    ready_for_review: bool,
+    include_active_plan: bool,
+) {
+    let mut stored: StoredState = std::fs::read_to_string(&daemon.paths.state_file)
+        .map(|raw| serde_json::from_str(&raw).expect("parse stored state"))
+        .unwrap_or_default();
+    let now = Utc::now();
+    let workstream = orcas_core::collaboration::Workstream {
+        id: workstream_id.to_string(),
+        title: format!("CLI {workstream_label} Root"),
+        objective: format!("Objective for {workstream_label}"),
+        status: orcas_core::collaboration::WorkstreamStatus::Active,
+        priority: "high".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    let active_plan = if include_active_plan {
+        let active_plan = orcas_core::planning::WorkstreamPlan::bootstrap_from_workstream(
+            &workstream,
+            &[],
+            "cli_operator",
+            now,
+        );
+        stored
+            .collaboration
+            .planning
+            .workstream_plans
+            .insert(workstream_id.to_string(), vec![active_plan.clone()]);
+        Some(active_plan)
+    } else {
+        None
+    };
+    stored.collaboration.planning_sessions.insert(
+        session_id.to_string(),
+        orcas_core::collaboration::PlanningSession {
+            session_id: session_id.to_string(),
+            workstream_id: workstream_id.to_string(),
+            status: if ready_for_review {
+                orcas_core::collaboration::PlanningSessionStatus::AwaitingApproval
+            } else {
+                orcas_core::collaboration::PlanningSessionStatus::Chatting
+            },
+            planning_thread_id: planning_thread_id.to_string(),
+            base_plan_id: active_plan.as_ref().map(|plan| plan.plan_id.clone()),
+            base_plan_version: active_plan.as_ref().map(|plan| plan.version),
+            research_assignment_id: None,
+            research_report_id: None,
+            draft_revision_proposal_id: None,
+            approved_plan_id: None,
+            approved_plan_version: None,
+            latest_structured_summary:
+                orcas_core::collaboration::PlanningSessionStructuredSummary {
+                    objective: objective.to_string(),
+                    research_status:
+                        orcas_core::collaboration::PlanningSessionResearchStatus::NotRequested,
+                    requirements: Vec::new(),
+                    constraints: Vec::new(),
+                    non_goals: Vec::new(),
+                    open_questions: Vec::new(),
+                    draft_plan_summary: None,
+                    ready_for_review,
+                },
+            created_at: now,
+            created_by: "cli_operator".to_string(),
+            updated_at: now,
+            updated_by: "cli_operator".to_string(),
+            request_note: Some("CLI planning session fixture".to_string()),
+            reviewed_at: None,
+            reviewed_by: None,
+            review_note: None,
+            superseded_by_session_id: None,
+        },
+    );
+    std::fs::write(
+        &daemon.paths.state_file,
+        serde_json::to_string_pretty(&stored).expect("serialize stored state"),
+    )
+    .expect("write state file");
 }
 
 async fn spawn_assignment_ready_daemon(
@@ -980,6 +1491,188 @@ async fn real_cli_can_read_assignment_state_after_real_assignment_setup() {
     assert!(stdout.contains(&format!("report_id: {}", started.report.id)));
     assert!(stdout.contains("report_parse_result:"));
     assert!(stdout.contains("report_needs_supervisor_review:"));
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn real_cli_planning_session_approve_stages_revision_proposal_without_applying_plan() {
+    let _guard = planning_session_cli_test_lock().lock().await;
+    let (_fake_codex, mut daemon) = spawn_planning_session_cli_daemon("cli-planning-approve").await;
+    let workstream_label = "planning approve";
+    let workstream_id = create_cli_workstream(&daemon, workstream_label);
+    daemon.stop().await;
+    let session_id = "planning_session_cli_approve";
+    seed_cli_planning_session(
+        &daemon,
+        session_id,
+        &workstream_id,
+        workstream_label,
+        "planning-thread-cli-approve",
+        "Plan one bounded change.",
+        true,
+        true,
+    );
+    daemon.start().await;
+
+    let approve_output = run_orcas(
+        &daemon,
+        &[
+            "planning-sessions",
+            "approve",
+            "--session",
+            &session_id,
+            "--approved-by",
+            "cli_operator",
+            "--review-note",
+            "Stage the revision proposal only",
+        ],
+    );
+    assert!(
+        approve_output.status.success(),
+        "stderr: {}",
+        stderr(&approve_output)
+    );
+
+    let approve_stdout = stdout(&approve_output);
+    assert!(approve_stdout.contains("surface: planning_session"));
+    assert!(approve_stdout.contains("planning_session_status: Approved"));
+    assert!(approve_stdout.contains("planning_session_draft_revision_proposal_id:"));
+    assert!(approve_stdout.contains("planning_session_approved_plan_id:"));
+    assert!(approve_stdout.contains("planning_revision_proposal_id:"));
+    assert!(approve_stdout.contains("planning_revision_proposal_status: Pending"));
+    assert!(approve_stdout.contains(
+        "planning_session_approval_effect: staged_revision_proposal_only; apply it through the existing plan revision approval path"
+    ));
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn real_cli_planning_session_request_research_succeeds_once_and_rejects_repeat() {
+    let _guard = planning_session_cli_test_lock().lock().await;
+    let daemon = spawn_fake_planning_session_cli_daemon("cli-planning-research").await;
+    let session_id = "planning_session_cli_research";
+    let envs = daemon.xdg_env();
+
+    let first_output = run_orcas_with_env(
+        &[
+            "planning-sessions",
+            "request-research",
+            "--session",
+            &session_id,
+            "--worker",
+            "worker-research",
+            "--worker-kind",
+            "codex",
+            "--requested-by",
+            "cli_operator",
+            "--request-note",
+            "Need one bounded research turn",
+        ],
+        &envs,
+    );
+    assert!(
+        first_output.status.success(),
+        "stderr: {}",
+        stderr(&first_output)
+    );
+    let first_stdout = stdout(&first_output);
+    assert!(first_stdout.contains("surface: planning_session"));
+    assert!(first_stdout.contains("planning_session_research_assignment_id:"));
+    assert!(first_stdout.contains("planning_session_research_report_id:"));
+    assert!(first_stdout.contains("research_assignment_id:"));
+    assert!(first_stdout.contains("research_report_id:"));
+    assert!(first_stdout.contains(
+        "planning_session_research_effect: bounded_research_turn_requested; repeated requests for this session will be rejected"
+    ));
+
+    let second_output = run_orcas_with_env(
+        &[
+            "planning-sessions",
+            "request-research",
+            "--session",
+            &session_id,
+            "--worker",
+            "worker-research-2",
+            "--worker-kind",
+            "codex",
+            "--requested-by",
+            "cli_operator",
+            "--request-note",
+            "Should be rejected",
+        ],
+        &envs,
+    );
+    assert!(!second_output.status.success());
+    assert!(stdout(&second_output).is_empty());
+    assert!(
+        stderr(&second_output).contains("already used its bounded research turn"),
+        "stderr: {}",
+        stderr(&second_output)
+    );
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn real_cli_planning_session_help_mentions_lifecycle_boundaries() {
+    let _guard = planning_session_cli_test_lock().lock().await;
+    let mut daemon = TestDaemon::spawn("cli-planning-help").await;
+
+    let root_help = run_orcas(&daemon, &["planning-sessions", "--help"]);
+    assert!(root_help.status.success(), "stderr: {}", stderr(&root_help));
+    let root_stdout = stdout(&root_help);
+    assert!(root_stdout.contains("Supervisor-owned planning session orchestration"));
+    assert!(root_stdout.contains("approve"));
+    assert!(root_stdout.contains("request-research"));
+    assert!(root_stdout.contains("update-summary"));
+    assert!(root_stdout.contains("mark-ready-for-review"));
+
+    let approve_help = run_orcas(&daemon, &["planning-sessions", "approve", "--help"]);
+    assert!(
+        approve_help.status.success(),
+        "stderr: {}",
+        stderr(&approve_help)
+    );
+    let approve_stdout = stdout(&approve_help);
+    assert!(
+        approve_stdout
+            .contains("Stage a canonical plan revision proposal from the session summary")
+    );
+
+    let research_help = run_orcas(
+        &daemon,
+        &["planning-sessions", "request-research", "--help"],
+    );
+    assert!(
+        research_help.status.success(),
+        "stderr: {}",
+        stderr(&research_help)
+    );
+    let research_stdout = stdout(&research_help);
+    assert!(research_stdout.contains("bounded one-turn research assignment"));
+
+    let update_help = run_orcas(&daemon, &["planning-sessions", "update-summary", "--help"]);
+    assert!(
+        update_help.status.success(),
+        "stderr: {}",
+        stderr(&update_help)
+    );
+    let update_stdout = stdout(&update_help);
+    assert!(update_stdout.contains("descriptive planning summary without changing approval state"));
+
+    let ready_help = run_orcas(
+        &daemon,
+        &["planning-sessions", "mark-ready-for-review", "--help"],
+    );
+    assert!(
+        ready_help.status.success(),
+        "stderr: {}",
+        stderr(&ready_help)
+    );
+    let ready_stdout = stdout(&ready_help);
+    assert!(ready_stdout.contains("chat session into awaiting-approval"));
 
     daemon.stop().await;
 }

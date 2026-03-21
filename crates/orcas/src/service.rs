@@ -1872,6 +1872,9 @@ impl SupervisorService {
             response.report.disposition
         );
         println!("research_report_summary: {}", response.report.summary);
+        println!(
+            "planning_session_research_effect: bounded_research_turn_requested; repeated requests for this session will be rejected"
+        );
         Ok(())
     }
 
