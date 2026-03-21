@@ -24,7 +24,7 @@ supervisor_base_url="${ORCAS_SUPERVISOR_BASE_URL:-http://127.0.0.1:8000/v1}"
 supervisor_model="${ORCAS_SUPERVISOR_MODEL:-gpt-oss-20b}"
 supervisor_api_key_env="${ORCAS_SUPERVISOR_API_KEY_ENV:-}"
 supervisor_reasoning_effort="${ORCAS_SUPERVISOR_REASONING_EFFORT:-}"
-supervisor_max_output_tokens="${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-8192}"
+supervisor_max_output_tokens="${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-16384}"
 
 rm -rf "$short_xdg_root"
 mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
@@ -164,7 +164,7 @@ proposal_create_output="$(
     --workunit "$workunit_id" \
     --report "$report_id" \
     --requested-by live-supervisor-micro-proposal \
-    --note "Generate a proposal with decision_type=Continue, expected_work_unit_status=ready, requires_assignment=true, and one tiny draft next assignment to add a regression test for the greeting fix. Keep every field terse. Use exactly 2 instructions, exactly 2 acceptance criteria, exactly 2 stop conditions, exactly 2 expected report fields, and a concise boundedness note. Set plan_assessment and plan_revision_proposal to null. Keep the scope to one test change and do not escalate or mark the work complete." \
+    --note "Generate a bounded continue proposal for one tiny follow-up test on the greeting fix. Keep every field terse. Use exactly 2 instructions, exactly 2 acceptance criteria, exactly 2 stop conditions, exactly 2 expected report fields, and a concise boundedness note. Set plan_assessment and plan_revision_proposal to null. Do not escalate or mark the work complete." \
   | tee "$proposal_create_stdout"
 )"
 proposal_id="$(printf '%s\n' "$proposal_create_output" | awk -F': ' '/^proposal_id:/ {print $2; exit}')"

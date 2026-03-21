@@ -1666,7 +1666,11 @@ impl SupervisorService {
             println!("surface: prune_workspace_result");
             println!(
                 "prune_workspace_result_tracked_thread_id: {}",
-                prune_result.tracked_thread_id
+                prune_result
+                    .tracked_thread_id
+                    .as_ref()
+                    .map(|tracked_thread_id| tracked_thread_id.to_string())
+                    .unwrap_or_else(|| "unset".to_string())
             );
             println!(
                 "prune_workspace_result_worktree_path: {}",

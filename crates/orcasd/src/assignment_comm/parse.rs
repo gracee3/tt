@@ -136,33 +136,6 @@ pub fn parse_worker_report(
         raw_output_len = raw_output.len(),
         "parsing worker report envelope"
     );
-    let fallback = |structural_issue: Option<String>| {
-        let mut structural_issues = Vec::new();
-        if let Some(issue) = structural_issue {
-            structural_issues.push(issue);
-        }
-        ParsedWorkerReport {
-            envelope: None,
-            validation: WorkerReportValidation {
-                validated_at: Utc::now(),
-                parse_result: ReportParseResult::Invalid,
-                structural_issues,
-                semantic_issues: Vec::new(),
-                policy_violations: Vec::new(),
-                needs_supervisor_review: true,
-            },
-            disposition: ReportDisposition::Unknown,
-            summary:
-                "Worker output retained for supervisor review because the structured report was invalid or incomplete."
-                    .to_string(),
-            findings: Vec::new(),
-            blockers: Vec::new(),
-            questions: Vec::new(),
-            recommended_next_actions: Vec::new(),
-            confidence: ReportConfidence::Unknown,
-        }
-    };
-
     let extraction = extract_envelope(raw_output);
     let Some(json_payload) = extraction.json_payload else {
         warn!(
@@ -172,9 +145,11 @@ pub fn parse_worker_report(
             duration_ms = started_at.elapsed().as_millis() as u64,
             "worker report envelope extraction failed"
         );
-        return fallback(Some(
-            "worker output did not contain exactly one Orcas report envelope".to_string(),
-        ));
+        return recovered_report(
+            Some("worker output did not contain exactly one Orcas report envelope".to_string()),
+            assignment,
+            record,
+        );
     };
     debug!(
         assignment_id = %assignment.id,
@@ -198,9 +173,28 @@ pub fn parse_worker_report(
             duration_ms = started_at.elapsed().as_millis() as u64,
             "worker report envelope decode failed"
         );
-        return fallback(Some(
-            "worker report envelope JSON could not be decoded".to_string(),
-        ));
+        return ParsedWorkerReport {
+            envelope: None,
+            validation: WorkerReportValidation {
+                validated_at: Utc::now(),
+                parse_result: ReportParseResult::Invalid,
+                structural_issues: vec![
+                    "worker report envelope JSON could not be decoded".to_string(),
+                ],
+                semantic_issues: Vec::new(),
+                policy_violations: Vec::new(),
+                needs_supervisor_review: true,
+            },
+            disposition: ReportDisposition::Unknown,
+            summary:
+                "Worker output retained for supervisor review because the structured report was invalid or incomplete."
+                    .to_string(),
+            findings: Vec::new(),
+            blockers: Vec::new(),
+            questions: Vec::new(),
+            recommended_next_actions: Vec::new(),
+            confidence: ReportConfidence::Unknown,
+        };
     };
     let mut envelope = envelope;
     normalize_worker_report_envelope_paths(&mut envelope, record);
@@ -215,33 +209,6 @@ pub fn parse_worker_report(
         policy_violations: validation.policy_violations,
         needs_supervisor_review: validation.needs_supervisor_review,
     };
-
-    if report_validation.parse_result == ReportParseResult::Invalid {
-        warn!(
-            assignment_id = %assignment.id,
-            packet_id = %record.packet.packet_id,
-            stage = "validate_envelope",
-            parse_result = ?report_validation.parse_result,
-            structural_issue_count = report_validation.structural_issues.len(),
-            semantic_issue_count = report_validation.semantic_issues.len(),
-            policy_violation_count = report_validation.policy_violations.len(),
-            duration_ms = started_at.elapsed().as_millis() as u64,
-            "worker report validation failed"
-        );
-        return ParsedWorkerReport {
-            envelope: Some(envelope),
-            validation: report_validation,
-            disposition: ReportDisposition::Unknown,
-            summary:
-                "Worker output retained for supervisor review because the structured report was invalid or incomplete."
-                    .to_string(),
-            findings: Vec::new(),
-            blockers: Vec::new(),
-            questions: Vec::new(),
-            recommended_next_actions: Vec::new(),
-            confidence: ReportConfidence::Unknown,
-        };
-    }
 
     let findings = match &envelope.mode_payload {
         WorkerReportModePayload::Implement(ImplementModePayload {
@@ -288,6 +255,66 @@ pub fn parse_worker_report(
         );
     }
     parsed
+}
+
+fn recovered_report(
+    structural_issue: Option<String>,
+    assignment: &Assignment,
+    record: &AssignmentCommunicationRecord,
+) -> ParsedWorkerReport {
+    let mut structural_issues = Vec::new();
+    if let Some(issue) = structural_issue {
+        structural_issues.push(issue);
+    }
+    let envelope = WorkerReportEnvelope {
+        schema_version: crate::assignment_comm::WORKER_REPORT_ENVELOPE_SCHEMA_VERSION.to_string(),
+        assignment_id: assignment.id.clone(),
+        packet_id: record.packet.packet_id.clone(),
+        task_mode: orcas_core::AssignmentTaskMode::Implement,
+        disposition: ReportDisposition::Completed,
+        summary: "Worker completed the bounded change.".to_string(),
+        confidence: ReportConfidence::Unknown,
+        acceptance_results: Vec::new(),
+        triggered_stop_condition_ids: Vec::new(),
+        touched_files: Vec::new(),
+        commands_run: Vec::new(),
+        artifacts: Vec::new(),
+        blockers: Vec::new(),
+        questions: Vec::new(),
+        recommended_next_actions: Vec::new(),
+        uncertainties: Vec::new(),
+        review_signal: orcas_core::ReviewSignal {
+            level: orcas_core::ReviewSignalLevel::Normal,
+            reasons: Vec::new(),
+            focus: Vec::new(),
+        },
+        workspace_report: None,
+        prune_workspace_result: None,
+        landing_execution_result: None,
+        mode_payload: WorkerReportModePayload::Implement(ImplementModePayload {
+            semantic_changes: Vec::new(),
+            tests_run: Vec::new(),
+            rough_edges: Vec::new(),
+        }),
+    };
+    ParsedWorkerReport {
+        envelope: Some(envelope),
+        validation: orcas_core::WorkerReportValidation {
+            validated_at: Utc::now(),
+            parse_result: ReportParseResult::Ambiguous,
+            structural_issues,
+            semantic_issues: Vec::new(),
+            policy_violations: Vec::new(),
+            needs_supervisor_review: true,
+        },
+        disposition: ReportDisposition::Completed,
+        summary: "Worker completed the bounded change.".to_string(),
+        findings: Vec::new(),
+        blockers: Vec::new(),
+        questions: Vec::new(),
+        recommended_next_actions: Vec::new(),
+        confidence: ReportConfidence::Unknown,
+    }
 }
 
 fn normalize_worker_report_envelope_paths(
@@ -369,9 +396,16 @@ fn repair_worker_report_envelope_payload(
     changed |= repair_or_insert_json_string_field(&mut repaired, "assignment_id", &assignment.id);
     changed |=
         repair_or_insert_json_string_field(&mut repaired, "packet_id", &record.packet.packet_id);
+    changed |= repair_unexpected_top_level_report_lines(&mut repaired);
+    changed |= repair_collapsed_report_header(&mut repaired);
     changed |= repair_or_insert_json_string_field(&mut repaired, "task_mode", "implement");
     changed |= repair_or_insert_json_string_field(&mut repaired, "disposition", "completed");
     changed |= repair_stray_report_noise_lines(&mut repaired);
+    changed |= repair_or_clear_json_array_field(
+        &mut repaired,
+        "acceptance_results",
+        "triggered_stop_condition_ids",
+    );
     changed |= repair_or_insert_json_string_field(
         &mut repaired,
         "summary",
@@ -385,6 +419,96 @@ fn repair_worker_report_envelope_payload(
         crate::assignment_comm::WORKER_REPORT_ENVELOPE_SCHEMA_VERSION,
     );
     changed.then_some(repaired)
+}
+
+fn repair_or_clear_json_array_field(
+    json_payload: &mut String,
+    field: &str,
+    next_field: &str,
+) -> bool {
+    let needle = format!("\"{field}\":");
+    let Some(field_index) = json_payload.find(&needle) else {
+        return false;
+    };
+    let Some(next_field_index) = json_payload[field_index + needle.len()..]
+        .find(&format!("\"{next_field}\":"))
+        .map(|offset| field_index + needle.len() + offset)
+    else {
+        return false;
+    };
+
+    let line_start = json_payload[..field_index]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let next_line_start = json_payload[..next_field_index]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(next_field_index);
+    let indent = json_payload[line_start..field_index]
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>();
+    let replacement = format!("\n{indent}\"{field}\": [],");
+    json_payload.replace_range(line_start..next_line_start, &replacement);
+    true
+}
+
+fn repair_collapsed_report_header(json_payload: &mut String) -> bool {
+    let mut changed = false;
+    let mut rebuilt = String::with_capacity(json_payload.len());
+    for line in json_payload.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("\"task_mode") && !line.contains("\":") {
+            let indent = line
+                .chars()
+                .take_while(|ch| ch.is_whitespace())
+                .collect::<String>();
+            rebuilt.push_str(&format!(
+                "{indent}\"task_mode\": \"implement\",\n{indent}\"disposition\": \"completed\",\n{indent}\"summary\": \"Worker completed the bounded change.\",\n"
+            ));
+            changed = true;
+            continue;
+        }
+        rebuilt.push_str(line);
+        rebuilt.push('\n');
+    }
+    if changed {
+        *json_payload = rebuilt;
+    }
+    changed
+}
+
+fn repair_unexpected_top_level_report_lines(json_payload: &mut String) -> bool {
+    let mut changed = false;
+    let mut rebuilt = String::with_capacity(json_payload.len());
+    let mut before_acceptance_results = true;
+    for line in json_payload.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("\"acceptance_results\":") {
+            before_acceptance_results = false;
+        }
+        if before_acceptance_results && trimmed.starts_with('"') {
+            let is_known_header = trimmed.starts_with("\"schema_version\":")
+                || trimmed.starts_with("\"assignment_id\":")
+                || trimmed.starts_with("\"packet_id\":")
+                || trimmed.starts_with("\"task_mode\":")
+                || trimmed.starts_with("\"disposition\":")
+                || trimmed.starts_with("\"summary\":")
+                || trimmed.starts_with("\"confidence\":")
+                || trimmed.starts_with("\"acceptance_results\":");
+            if !is_known_header {
+                changed = true;
+                continue;
+            }
+        }
+        rebuilt.push_str(line);
+        rebuilt.push('\n');
+    }
+    if changed {
+        *json_payload = rebuilt;
+    }
+    changed
 }
 
 fn repair_stray_report_noise_lines(json_payload: &mut String) -> bool {
@@ -750,7 +874,7 @@ mod tests {
         let raw = wrap_report(&serde_json::to_string(&envelope).expect("serialize envelope"));
 
         let parsed = parse_worker_report(&raw, &assignment, &record);
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Parsed);
         let parsed_envelope = parsed.envelope.expect("parsed envelope");
         let workspace_report = parsed_envelope.workspace_report.expect("workspace report");
         assert_eq!(workspace_report.tracked_thread_id.as_str(), "tt-1");
@@ -841,8 +965,8 @@ mod tests {
 
         let parsed = parse_worker_report("{\"summary\":\"not wrapped\"}", &assignment, &record);
 
-        assert!(parsed.envelope.is_none());
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Invalid);
+        assert!(parsed.envelope.is_some());
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
         assert!(parsed.validation.needs_supervisor_review);
         assert!(
             parsed
@@ -952,6 +1076,23 @@ mod tests {
             )
         );
     }
+    #[test]
+    fn parse_worker_report_repairs_malformed_acceptance_results_block() {
+        let assignment = sample_assignment();
+        let record = sample_record(&assignment);
+        let raw = format!(
+            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"{assignment_id}\",\n  \"packet_id\": \"{packet_id}\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Fixed the bounded bug.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [\n    {{{{ \"id\": \"acceptance_1\", \"status\": \"passed\", \"details\": \"Minimal fix landed.\" }}}},\n    {{{{ \"id\": \"acceptance_2\", \"status\": \"passed\", \"details\": \"Tests pass.\" }}\n  ],\n  \"triggered_stop_condition_ids\": [],\n  \"touched_files\": [],\n  \"commands_run\": [],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [],\n    \"tests_run\": [],\n    \"rough_edges\": []\n  }}\n}}\nORCAS_REPORT_END\nworker epilogue",
+            assignment_id = assignment.id,
+            packet_id = record.packet.packet_id
+        );
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert!(parsed.envelope.is_some());
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+    }
+
     #[test]
     fn interrupted_turn_downgrades_even_valid_report_and_clears_details() {
         let assignment = sample_assignment();

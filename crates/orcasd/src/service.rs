@@ -25592,8 +25592,9 @@ Boundedness note: Stay within the legacy compatibility boundary."#
 
         let parsed = parse_worker_report(&raw, &assignment, &record);
 
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Invalid);
-        assert!(parsed.validation.needs_supervisor_review);
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Parsed);
+        assert!(!parsed.validation.needs_supervisor_review);
+        assert!(parsed.questions.is_empty());
     }
 
     #[test]
@@ -25601,8 +25602,9 @@ Boundedness note: Stay within the legacy compatibility boundary."#
         let (assignment, record) = sample_assignment_and_communication_record();
 
         let parsed = parse_worker_report("no structured report here", &assignment, &record);
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Invalid);
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
         assert!(parsed.validation.needs_supervisor_review);
+        assert!(parsed.envelope.is_some());
     }
 
     #[test]

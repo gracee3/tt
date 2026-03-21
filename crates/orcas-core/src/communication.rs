@@ -460,6 +460,7 @@ pub struct WorkerReportEnvelope {
     pub confidence: ReportConfidence,
     #[serde(default, deserialize_with = "deserialize_acceptance_results")]
     pub acceptance_results: Vec<AcceptanceResult>,
+    #[serde(default)]
     pub triggered_stop_condition_ids: Vec<String>,
     #[serde(deserialize_with = "deserialize_touched_files")]
     pub touched_files: Vec<TouchedFile>,
@@ -467,9 +468,13 @@ pub struct WorkerReportEnvelope {
     pub commands_run: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_stringish_vec")]
     pub artifacts: Vec<String>,
+    #[serde(default)]
     pub blockers: Vec<String>,
+    #[serde(default)]
     pub questions: Vec<String>,
+    #[serde(default)]
     pub recommended_next_actions: Vec<String>,
+    #[serde(default)]
     pub uncertainties: Vec<String>,
     pub review_signal: ReviewSignal,
     #[serde(default)]
@@ -587,25 +592,7 @@ where
     let values = Vec::<Value>::deserialize(deserializer)?;
     Ok(values
         .into_iter()
-        .map(|value| match value {
-            Value::String(value) => {
-                let criterion_id = acceptance_result_criterion_id_from_text(&value)
-                    .unwrap_or_else(|| value.clone());
-                let note = (!value.trim().is_empty()).then_some(value);
-                AcceptanceResult {
-                    criterion_id,
-                    status: AcceptanceCriterionStatus::NotAttempted,
-                    note,
-                }
-            }
-            value => serde_json::from_value::<AcceptanceResult>(value).unwrap_or_else(|_| {
-                AcceptanceResult {
-                    criterion_id: "acceptance_unknown".to_string(),
-                    status: AcceptanceCriterionStatus::NotAttempted,
-                    note: None,
-                }
-            }),
-        })
+        .map(acceptance_result_from_value)
         .collect())
 }
 
@@ -649,20 +636,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let values = Vec::<Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .map(|value| match value {
-            Value::String(path) => {
-                let path = strip_line_suffix(&path);
-                Ok(TouchedFile {
-                    summary: path.clone(),
-                    path,
-                    change_kind: FileChangeKind::Modified,
-                })
-            }
-            value => serde_json::from_value::<TouchedFile>(value).map_err(DeError::custom),
-        })
-        .collect()
+    values.into_iter().map(touched_file_from_value).collect()
 }
 
 fn strip_line_suffix(path: &str) -> String {
@@ -673,6 +647,109 @@ fn strip_line_suffix(path: &str) -> String {
         base.to_string()
     } else {
         path.to_string()
+    }
+}
+
+fn acceptance_result_from_value(value: Value) -> AcceptanceResult {
+    match value {
+        Value::String(value) => {
+            let criterion_id =
+                acceptance_result_criterion_id_from_text(&value).unwrap_or_else(|| value.clone());
+            let note = (!value.trim().is_empty()).then_some(value);
+            AcceptanceResult {
+                criterion_id,
+                status: AcceptanceCriterionStatus::NotAttempted,
+                note,
+            }
+        }
+        Value::Object(map) => {
+            let criterion_id = map
+                .get("criterion_id")
+                .or_else(|| map.get("acceptance_id"))
+                .or_else(|| map.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("acceptance_unknown")
+                .to_string();
+            let status = map
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| match status {
+                    "pass" | "passed" => AcceptanceCriterionStatus::Met,
+                    "partial" | "partially_met" => AcceptanceCriterionStatus::PartiallyMet,
+                    "fail" | "failed" => AcceptanceCriterionStatus::NotMet,
+                    _ => AcceptanceCriterionStatus::NotAttempted,
+                })
+                .unwrap_or(AcceptanceCriterionStatus::NotAttempted);
+            let note = map
+                .get("note")
+                .or_else(|| map.get("details"))
+                .or_else(|| map.get("evidence"))
+                .or_else(|| map.get("summary"))
+                .map(|value| stringish_value_to_string(value.clone()))
+                .filter(|value| !value.trim().is_empty());
+            AcceptanceResult {
+                criterion_id,
+                status,
+                note,
+            }
+        }
+        value => AcceptanceResult {
+            criterion_id: "acceptance_unknown".to_string(),
+            status: AcceptanceCriterionStatus::NotAttempted,
+            note: (!value.is_null()).then_some(value.to_string()),
+        },
+    }
+}
+
+fn touched_file_from_value<E>(value: Value) -> Result<TouchedFile, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        Value::String(path) => {
+            let path = strip_line_suffix(&path);
+            Ok(TouchedFile {
+                summary: path.clone(),
+                path,
+                change_kind: FileChangeKind::Modified,
+            })
+        }
+        Value::Object(map) => {
+            let Some(path) = map.get("path").and_then(Value::as_str) else {
+                return Err(DeError::custom("touched file entry missing path"));
+            };
+            let path = strip_line_suffix(path);
+            let summary = map
+                .get("summary")
+                .or_else(|| map.get("description"))
+                .or_else(|| map.get("name"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| path.clone());
+            let change_kind = map
+                .get("change_kind")
+                .or_else(|| map.get("change_type"))
+                .or_else(|| map.get("kind"))
+                .and_then(|value| match value {
+                    Value::String(value) => match value.as_str() {
+                        "add" | "added" => Some(FileChangeKind::Added),
+                        "modify" | "modified" => Some(FileChangeKind::Modified),
+                        "delete" | "deleted" => Some(FileChangeKind::Deleted),
+                        "rename" | "renamed" => Some(FileChangeKind::Renamed),
+                        _ => None,
+                    },
+                    _ => serde_json::from_value::<FileChangeKind>(value.clone()).ok(),
+                })
+                .unwrap_or(FileChangeKind::Modified);
+            Ok(TouchedFile {
+                path,
+                summary,
+                change_kind,
+            })
+        }
+        _ => Err(DeError::custom(
+            "touched file entry must be string or object",
+        )),
     }
 }
 
@@ -1059,6 +1136,56 @@ mod tests {
                 "{\"content\":\"*** Begin Patch\",\"mime\":\"text/x-diff\",\"name\":\"patch\"}"
                     .to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn worker_report_envelope_derives_touched_file_summary_when_missing() {
+        let value = json!({
+            "schema_version": "worker_report_envelope.v1",
+            "assignment_id": "assignment-1",
+            "packet_id": "packet-1",
+            "task_mode": "implement",
+            "disposition": "completed",
+            "summary": "Fixed the bounded bug.",
+            "confidence": "high",
+            "acceptance_results": [],
+            "triggered_stop_condition_ids": [],
+            "touched_files": [
+                {
+                    "path": "main.c",
+                    "change_type": "modified"
+                }
+            ],
+            "commands_run": [],
+            "artifacts": [],
+            "blockers": [],
+            "questions": [],
+            "recommended_next_actions": [],
+            "uncertainties": [],
+            "review_signal": {
+                "level": "normal",
+                "reasons": [],
+                "focus": []
+            },
+            "workspace_report": null,
+            "prune_workspace_result": null,
+            "landing_execution_result": null,
+            "mode_payload": {
+                "kind": "implement",
+                "semantic_changes": ["Changed one line in main.c."],
+                "tests_run": ["make test"],
+                "rough_edges": []
+            }
+        });
+
+        let envelope =
+            serde_json::from_value::<WorkerReportEnvelope>(value).expect("deserialize envelope");
+        assert_eq!(envelope.touched_files[0].path, "main.c");
+        assert_eq!(envelope.touched_files[0].summary, "main.c");
+        assert_eq!(
+            envelope.touched_files[0].change_kind,
+            FileChangeKind::Modified
         );
     }
 
