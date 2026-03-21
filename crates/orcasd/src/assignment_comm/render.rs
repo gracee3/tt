@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -112,9 +112,13 @@ pub fn build_assignment_communication_record(
     let execution_context = AssignmentExecutionContext {
         runtime_kind: "codex_app_server".to_string(),
         repo_root: requested_cwd
-            .clone()
-            .or_else(|| default_cwd.map(|path| path.display().to_string())),
-        cwd: requested_cwd.or_else(|| default_cwd.map(|path| path.display().to_string())),
+            .as_ref()
+            .map(|path| resolve_execution_path(Path::new(path)))
+            .or_else(|| default_cwd.map(|path| resolve_execution_path(path.as_path()))),
+        cwd: requested_cwd
+            .as_ref()
+            .map(|path| resolve_execution_path(Path::new(path)))
+            .or_else(|| default_cwd.map(|path| resolve_execution_path(path.as_path()))),
         related_repo_roots: Vec::new(),
         requested_model,
         shell: std::env::var("SHELL").ok(),
@@ -444,6 +448,32 @@ pub fn render_prompt(
     );
     prompt.push('\n');
 
+    prompt.push_str("Execution Context:\n");
+    prompt.push_str(&format!(
+        "- Runtime kind: {}\n",
+        packet.execution_context.runtime_kind
+    ));
+    prompt.push_str(&format!(
+        "- Repo root: {}\n",
+        display_or_none(packet.execution_context.repo_root.as_deref())
+    ));
+    prompt.push_str(&format!(
+        "- Cwd: {}\n",
+        display_or_none(packet.execution_context.cwd.as_deref())
+    ));
+    prompt.push_str(&format!(
+        "- Related repo roots: {}\n",
+        join_or_none(&packet.execution_context.related_repo_roots)
+    ));
+    prompt.push_str(&format!(
+        "- Requested model: {}\n",
+        display_or_none(packet.execution_context.requested_model.as_deref())
+    ));
+    prompt.push_str(&format!(
+        "- Shell: {}\n\n",
+        display_or_none(packet.execution_context.shell.as_deref())
+    ));
+
     if let Some(workspace_contract) = packet.workspace_contract.as_ref() {
         let workspace_json = serde_json::to_string_pretty(workspace_contract)?;
         prompt.push_str("Workspace Contract:\n");
@@ -768,6 +798,21 @@ fn derive_structured_allowed_scope(
         allowed_write_paths,
         disallowed_paths: Vec::new(),
     }
+}
+
+fn resolve_execution_path(path: &Path) -> String {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    candidate
+        .canonicalize()
+        .unwrap_or(candidate)
+        .display()
+        .to_string()
 }
 
 fn derive_legacy_allowed_scope(
@@ -1151,6 +1196,10 @@ fn join_or_none(items: &[String]) -> String {
     } else {
         items.join(", ")
     }
+}
+
+fn display_or_none(value: Option<&str>) -> String {
+    value.unwrap_or("none").to_string()
 }
 
 fn task_mode_label(mode: AssignmentTaskMode) -> &'static str {
@@ -1680,6 +1729,44 @@ mod tests {
                 .prompt_text
                 .contains("Summary: Previous bounded attempt found one remaining edge case.")
         );
+    }
+
+    #[test]
+    fn build_assignment_record_normalizes_relative_cwd_and_renders_execution_context() {
+        let collaboration = sample_collaboration();
+        let assignment = sample_assignment(Some(sample_seed()), "legacy instructions unused");
+        let expected_root = std::env::current_dir()
+            .expect("current dir")
+            .canonicalize()
+            .expect("canonical current dir")
+            .display()
+            .to_string();
+
+        let record = build_assignment_communication_record(
+            &collaboration,
+            &assignment,
+            Some("gpt-5".to_string()),
+            Some(".".to_string()),
+            None,
+            None,
+            fixed_now(),
+        )
+        .expect("build communication record");
+
+        assert_eq!(
+            record.packet.execution_context.repo_root.as_deref(),
+            Some(expected_root.as_str())
+        );
+        assert_eq!(
+            record.packet.execution_context.cwd.as_deref(),
+            Some(expected_root.as_str())
+        );
+        assert!(record.prompt_render.prompt_text.contains("Execution Context:"));
+        assert!(record
+            .prompt_render
+            .prompt_text
+            .contains("Runtime kind: codex_app_server"));
+        assert!(record.prompt_render.prompt_text.contains("Cwd:"));
     }
 
     #[test]

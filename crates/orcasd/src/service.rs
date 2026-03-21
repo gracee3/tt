@@ -11968,11 +11968,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             "connecting to upstream codex"
         );
         let _guard = self.connect_gate.lock().await;
-        let launch = match self.config.codex.connection_mode {
-            CodexConnectionMode::ConnectOnly => CodexDaemonLaunch::Never,
-            CodexConnectionMode::SpawnIfNeeded => CodexDaemonLaunch::IfNeeded,
-            CodexConnectionMode::SpawnAlways => CodexDaemonLaunch::Always,
-        };
+        let launch = Self::codex_launch_for_upstream_connect(self.config.codex.connection_mode.clone());
         self.codex_daemon.ensure_running(launch).await?;
         self.codex_client.connect().await?;
         let _ = self
@@ -11999,6 +11995,19 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 .await;
         }
         Ok(())
+    }
+
+    fn codex_launch_for_upstream_connect(mode: CodexConnectionMode) -> CodexDaemonLaunch {
+        // `spawn_always` is appropriate when bringing the daemon up, but
+        // reconnecting on every request would churn the upstream app-server and
+        // race its listener port. Once Orcas is live, keep the upstream alive
+        // if it is reachable and only spawn when a restart is actually needed.
+        match mode {
+            CodexConnectionMode::ConnectOnly => CodexDaemonLaunch::Never,
+            CodexConnectionMode::SpawnIfNeeded | CodexConnectionMode::SpawnAlways => {
+                CodexDaemonLaunch::IfNeeded
+            }
+        }
     }
 
     async fn sync_threads(
@@ -13464,7 +13473,7 @@ mod tests {
     use tokio::time::Duration;
     use uuid::Uuid;
 
-    use super::OrcasDaemonService;
+    use super::{CodexConnectionMode, CodexDaemonLaunch, OrcasDaemonService};
     use super::{DaemonState, TurnKey};
     use crate::assignment_comm::parse::{parse_worker_report, parse_worker_report_for_turn};
     use crate::assignment_comm::render::{build_assignment_communication_record, render_prompt};
@@ -13491,6 +13500,26 @@ mod tests {
         WorkUnit, WorkUnitStatus, WorkerSessionAttachability, WorkerSessionRuntimeStatus,
         WorkerStatus, Workstream, WorkstreamStatus, ipc,
     };
+
+    #[test]
+    fn upstream_connect_never_forces_spawn_always_restarts() {
+        match OrcasDaemonService::codex_launch_for_upstream_connect(CodexConnectionMode::ConnectOnly)
+        {
+            CodexDaemonLaunch::Never => {}
+            other => panic!("expected Never, got {other:?}"),
+        }
+        match OrcasDaemonService::codex_launch_for_upstream_connect(
+            CodexConnectionMode::SpawnIfNeeded,
+        ) {
+            CodexDaemonLaunch::IfNeeded => {}
+            other => panic!("expected IfNeeded, got {other:?}"),
+        }
+        match OrcasDaemonService::codex_launch_for_upstream_connect(CodexConnectionMode::SpawnAlways)
+        {
+            CodexDaemonLaunch::IfNeeded => {}
+            other => panic!("expected IfNeeded, got {other:?}"),
+        }
+    }
 
     #[derive(Debug)]
     struct FakeCodexDaemonManager {
