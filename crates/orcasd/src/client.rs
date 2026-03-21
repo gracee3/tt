@@ -155,6 +155,37 @@ impl OrcasIpcClient {
             .await
     }
 
+    pub async fn operator_inbox_replay(
+        &self,
+        params: &ipc::OperatorInboxReplayRequest,
+    ) -> OrcasResult<ipc::OperatorInboxReplayResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_REPLAY, params)
+            .await
+    }
+
+    pub async fn operator_inbox_export(
+        &self,
+        params: &ipc::OperatorInboxExportRequest,
+    ) -> OrcasResult<ipc::OperatorInboxExportResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_EXPORT, params)
+            .await
+    }
+
+    pub async fn operator_inbox_ack(
+        &self,
+        params: &ipc::OperatorInboxAckRequest,
+    ) -> OrcasResult<ipc::OperatorInboxAckResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_ACK, params).await
+    }
+
+    pub async fn operator_inbox_mirror_checkpoint(
+        &self,
+        params: &ipc::OperatorInboxMirrorCheckpointRequest,
+    ) -> OrcasResult<ipc::OperatorInboxMirrorCheckpointResponse> {
+        self.request(ipc::methods::OPERATOR_INBOX_MIRROR_CHECKPOINT, params)
+            .await
+    }
+
     pub async fn session_get_active(&self) -> OrcasResult<ipc::SessionGetActiveResponse> {
         self.request(
             ipc::methods::SESSION_GET_ACTIVE,

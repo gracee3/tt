@@ -3704,6 +3704,7 @@ mod tests {
                 )]),
                 ..CollaborationState::default()
             },
+            operator_inbox_mirrors: Default::default(),
             ..StoredState::default()
         };
         std::fs::write(

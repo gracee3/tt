@@ -48,6 +48,7 @@ pub fn rebuild_operator_inbox_state(
     let current_items = derive_current_operator_inbox_items(collaboration);
 
     let mut changes = previous.changes;
+    let mut changed = false;
     let mut retained = Vec::with_capacity(current_items.len());
 
     for mut item in current_items {
@@ -64,6 +65,7 @@ pub fn rebuild_operator_inbox_state(
                     item: item.clone(),
                     changed_at: item.updated_at,
                 });
+                changed = true;
             }
         }
         retained.push(item);
@@ -87,6 +89,7 @@ pub fn rebuild_operator_inbox_state(
             item,
             changed_at: chrono::Utc::now(),
         });
+        changed = true;
     }
 
     retained.sort_by(|left, right| {
@@ -105,7 +108,11 @@ pub fn rebuild_operator_inbox_state(
         items: retained,
         checkpoint: ipc::OperatorInboxCheckpoint {
             current_sequence: next_sequence,
-            updated_at: chrono::Utc::now(),
+            updated_at: if changed {
+                chrono::Utc::now()
+            } else {
+                previous.checkpoint.updated_at
+            },
         },
         changes,
     }
@@ -159,6 +166,73 @@ pub fn operator_inbox_changes_after(
         changes.truncate(limit);
     }
     changes
+}
+
+pub fn operator_inbox_replay_items(state: &ipc::OperatorInboxState) -> Vec<ipc::OperatorInboxItem> {
+    let mut items = state.items.clone();
+    items.sort_by(|left, right| {
+        left.sequence
+            .cmp(&right.sequence)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    items
+}
+
+pub fn operator_inbox_mirror_checkpoint_for_peer(
+    mirrors: &BTreeMap<String, ipc::OperatorInboxMirrorCheckpoint>,
+    peer_id: &str,
+) -> ipc::OperatorInboxMirrorCheckpoint {
+    mirrors
+        .get(peer_id)
+        .cloned()
+        .unwrap_or_else(|| ipc::OperatorInboxMirrorCheckpoint {
+            peer_id: peer_id.to_string(),
+            ..Default::default()
+        })
+}
+
+pub fn update_operator_inbox_export_checkpoint(
+    mirrors: &mut BTreeMap<String, ipc::OperatorInboxMirrorCheckpoint>,
+    peer_id: &str,
+    checkpoint: &ipc::OperatorInboxCheckpoint,
+    after_sequence: u64,
+    changes: &[ipc::OperatorInboxChange],
+) -> Result<ipc::OperatorInboxMirrorCheckpoint, String> {
+    let mut mirror = operator_inbox_mirror_checkpoint_for_peer(mirrors, peer_id);
+    let exported_sequence = changes
+        .last()
+        .map(|change| change.sequence)
+        .unwrap_or_else(|| after_sequence.min(checkpoint.current_sequence));
+    mirror.peer_id = peer_id.to_string();
+    mirror.last_exported_sequence = mirror.last_exported_sequence.max(exported_sequence);
+    mirror.updated_at = chrono::Utc::now();
+    mirrors.insert(peer_id.to_string(), mirror.clone());
+    Ok(mirror)
+}
+
+pub fn update_operator_inbox_ack_checkpoint(
+    mirrors: &mut BTreeMap<String, ipc::OperatorInboxMirrorCheckpoint>,
+    peer_id: &str,
+    through_sequence: u64,
+) -> Result<ipc::OperatorInboxMirrorCheckpoint, String> {
+    let mut mirror = operator_inbox_mirror_checkpoint_for_peer(mirrors, peer_id);
+    if through_sequence < mirror.last_acked_sequence {
+        return Err(format!(
+            "inbox ack for peer `{peer_id}` cannot move backward from {} to {through_sequence}",
+            mirror.last_acked_sequence
+        ));
+    }
+    if through_sequence > mirror.last_exported_sequence {
+        return Err(format!(
+            "inbox ack for peer `{peer_id}` cannot exceed exported sequence {}",
+            mirror.last_exported_sequence
+        ));
+    }
+    mirror.peer_id = peer_id.to_string();
+    mirror.last_acked_sequence = through_sequence;
+    mirror.updated_at = chrono::Utc::now();
+    mirrors.insert(peer_id.to_string(), mirror.clone());
+    Ok(mirror)
 }
 
 pub fn resolve_operator_inbox_action_route(
@@ -1398,6 +1472,7 @@ mod tests {
             turn_states: Default::default(),
             collaboration: collaboration.clone(),
             operator_inbox: build_operator_inbox_state(&collaboration),
+            operator_inbox_mirrors: Default::default(),
         };
         let encoded = serde_json::to_value(&stored).expect("serialize");
         let decoded: StoredState = serde_json::from_value(encoded).expect("deserialize");
@@ -1427,6 +1502,133 @@ mod tests {
         let items = list_operator_inbox_items(&build_operator_inbox_state(&collaboration), &request);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "planning_session::session-1");
+    }
+
+    #[test]
+    fn inbox_export_after_sequence_is_ordered_and_deterministic() {
+        let collaboration = sample_collaboration();
+        let inbox = build_operator_inbox_state(&collaboration);
+
+        let all_changes = operator_inbox_changes_after(&inbox, 0, None);
+        assert!(all_changes.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert_eq!(all_changes, operator_inbox_changes_after(&inbox, 0, None));
+
+        let partial = operator_inbox_changes_after(&inbox, 1, Some(2));
+        assert!(partial.iter().all(|change| change.sequence > 1));
+        assert!(partial.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+    }
+
+    #[test]
+    fn peer_scoped_mirror_checkpoint_persists_across_restart() {
+        let mut mirrors = BTreeMap::new();
+        mirrors.insert(
+            "peer-1".to_string(),
+            ipc::OperatorInboxMirrorCheckpoint {
+                peer_id: "peer-1".to_string(),
+                last_exported_sequence: 7,
+                last_acked_sequence: 5,
+                updated_at: sample_now(),
+            },
+        );
+        let stored = StoredState {
+            registry: Default::default(),
+            thread_views: Default::default(),
+            turn_states: Default::default(),
+            collaboration: Default::default(),
+            operator_inbox: Default::default(),
+            operator_inbox_mirrors: mirrors.clone(),
+        };
+        let encoded = serde_json::to_value(&stored).expect("serialize");
+        let decoded: StoredState = serde_json::from_value(encoded).expect("deserialize");
+        assert_eq!(decoded.operator_inbox_mirrors, mirrors);
+    }
+
+    #[test]
+    fn mirror_ack_cannot_move_backward_or_exceed_exported_sequence() {
+        let collaboration = sample_collaboration();
+        let inbox = build_operator_inbox_state(&collaboration);
+        let mut mirrors = BTreeMap::new();
+
+        let export = update_operator_inbox_export_checkpoint(
+            &mut mirrors,
+            "peer-1",
+            &inbox.checkpoint,
+            0,
+            &operator_inbox_changes_after(&inbox, 0, Some(2)),
+        )
+        .expect("export checkpoint");
+        assert_eq!(export.last_exported_sequence, 2);
+
+        let ack = update_operator_inbox_ack_checkpoint(&mut mirrors, "peer-1", 2)
+            .expect("ack checkpoint");
+        assert_eq!(ack.last_acked_sequence, 2);
+
+        assert!(update_operator_inbox_ack_checkpoint(&mut mirrors, "peer-1", 1).is_err());
+        assert!(update_operator_inbox_ack_checkpoint(&mut mirrors, "peer-1", 3).is_err());
+    }
+
+    #[test]
+    fn bootstrap_replay_and_incremental_catch_up_match_rebuilt_view() {
+        let initial_collaboration = sample_collaboration();
+        let base = build_operator_inbox_state(&initial_collaboration);
+        let bootstrap_items = operator_inbox_replay_items(&base);
+
+        let mut next_collaboration = initial_collaboration.clone();
+        next_collaboration.supervisor_proposals.insert(
+            "proposal-1".to_string(),
+            sample_supervisor_proposal_record(orcas_core::SupervisorProposalStatus::Approved),
+        );
+        next_collaboration
+            .planning_sessions
+            .remove("session-passive");
+        let next = rebuild_operator_inbox_state(&next_collaboration, Some(&base));
+        let incremental = operator_inbox_changes_after(&next, base.checkpoint.current_sequence, None);
+
+        let projected = apply_inbox_changes(
+            bootstrap_items
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect(),
+            &incremental,
+        );
+        assert_eq!(projected, next.items);
+    }
+
+    #[test]
+    fn overlapping_export_windows_behave_predictably() {
+        let collaboration = sample_collaboration();
+        let inbox = build_operator_inbox_state(&collaboration);
+        let first = operator_inbox_changes_after(&inbox, 0, Some(2));
+        let second = operator_inbox_changes_after(&inbox, 1, Some(3));
+
+        assert_eq!(first.len(), 2);
+        assert!(second.iter().all(|change| change.sequence > 1));
+        assert!(second.len() >= first.len().saturating_sub(1));
+    }
+
+    #[test]
+    fn removed_inbox_items_mirror_correctly() {
+        let initial_collaboration = sample_collaboration();
+        let base = build_operator_inbox_state(&initial_collaboration);
+
+        let mut next_collaboration = initial_collaboration.clone();
+        next_collaboration.supervisor_proposals.remove("proposal-1");
+        let next = rebuild_operator_inbox_state(&next_collaboration, Some(&base));
+        let changes = operator_inbox_changes_after(&next, base.checkpoint.current_sequence, None);
+
+        assert!(changes
+            .iter()
+            .any(|change| change.kind == ipc::OperatorInboxChangeKind::Removed
+                && change.item.id == "supervisor_proposal::proposal-1"));
+        let projected = apply_inbox_changes(
+            base.items
+                .clone()
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect(),
+            &changes,
+        );
+        assert_eq!(projected, next.items);
     }
 
     #[test]
@@ -1471,6 +1673,7 @@ mod tests {
             turn_states: Default::default(),
             collaboration: collaboration.clone(),
             operator_inbox: build_operator_inbox_state(&collaboration),
+            operator_inbox_mirrors: Default::default(),
         };
         let encoded = serde_json::to_value(&stored).expect("serialize");
         let decoded: StoredState = serde_json::from_value(encoded).expect("deserialize");

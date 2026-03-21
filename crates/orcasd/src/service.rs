@@ -80,7 +80,8 @@ use crate::merge_prep::assess_merge_prep;
 use crate::operator_inbox::{
     build_operator_inbox_state, get_operator_inbox_item, list_operator_inbox_items,
     operator_inbox_changes_after, operator_inbox_checkpoint, rebuild_operator_inbox_state,
-    resolve_operator_inbox_action_route,
+    operator_inbox_replay_items, resolve_operator_inbox_action_route,
+    update_operator_inbox_ack_checkpoint, update_operator_inbox_export_checkpoint,
 };
 use crate::planning_session::{
     build_planning_revision_proposal, build_research_work_unit,
@@ -107,6 +108,7 @@ struct DaemonState {
     recent_thread_id: Option<String>,
     collaboration: CollaborationState,
     operator_inbox: ipc::OperatorInboxState,
+    operator_inbox_mirrors: BTreeMap<String, ipc::OperatorInboxMirrorCheckpoint>,
 }
 
 #[derive(Debug, Default)]
@@ -160,6 +162,7 @@ impl Default for DaemonState {
             recent_thread_id: None,
             collaboration: CollaborationState::default(),
             operator_inbox: ipc::OperatorInboxState::default(),
+            operator_inbox_mirrors: BTreeMap::new(),
         }
     }
 }
@@ -436,6 +439,7 @@ impl OrcasDaemonService {
             } else {
                 stored.operator_inbox
             };
+            state.operator_inbox_mirrors = stored.operator_inbox_mirrors;
             bootstrap_persist = Self::bootstrap_planning_state(&mut state.collaboration);
         }
         self.reconcile_worker_session_tracked_thread_bindings()
@@ -1003,6 +1007,26 @@ impl OrcasDaemonService {
                 let params: ipc::OperatorInboxActionRouteRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.operator_inbox_action_route(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_REPLAY => {
+                let params: ipc::OperatorInboxReplayRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_replay(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_EXPORT => {
+                let params: ipc::OperatorInboxExportRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_export(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_ACK => {
+                let params: ipc::OperatorInboxAckRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_ack(params).await?)?
+            }
+            ipc::methods::OPERATOR_INBOX_MIRROR_CHECKPOINT => {
+                let params: ipc::OperatorInboxMirrorCheckpointRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.operator_inbox_mirror_checkpoint(params).await?)?
             }
             ipc::methods::WORKSTREAM_PLAN_GET => {
                 let params: ipc::WorkstreamPlanGetRequest =
@@ -3664,8 +3688,75 @@ impl OrcasDaemonService {
         let item = get_operator_inbox_item(&self.state.read().await.operator_inbox, &params.item_id)
             .ok_or_else(|| {
                 OrcasError::Protocol(format!("unknown operator inbox item `{}`", params.item_id))
-            })?;
+        })?;
         Ok(ipc::OperatorInboxGetResponse { item })
+    }
+
+    async fn operator_inbox_replay(
+        &self,
+        _: ipc::OperatorInboxReplayRequest,
+    ) -> OrcasResult<ipc::OperatorInboxReplayResponse> {
+        let state = self.state.read().await;
+        Ok(ipc::OperatorInboxReplayResponse {
+            checkpoint: operator_inbox_checkpoint(&state.operator_inbox),
+            items: operator_inbox_replay_items(&state.operator_inbox),
+        })
+    }
+
+    async fn operator_inbox_export(
+        &self,
+        params: ipc::OperatorInboxExportRequest,
+    ) -> OrcasResult<ipc::OperatorInboxExportResponse> {
+        let mut state = self.state.write().await;
+        let checkpoint = operator_inbox_checkpoint(&state.operator_inbox);
+        let changes = operator_inbox_changes_after(
+            &state.operator_inbox,
+            params.after_sequence.unwrap_or_default(),
+            params.limit,
+        );
+        let mirror_checkpoint = update_operator_inbox_export_checkpoint(
+            &mut state.operator_inbox_mirrors,
+            &params.peer_id,
+            &checkpoint,
+            params.after_sequence.unwrap_or_default(),
+            &changes,
+        )
+        .map_err(OrcasError::Protocol)?;
+        Ok(ipc::OperatorInboxExportResponse {
+            checkpoint,
+            mirror_checkpoint,
+            changes,
+        })
+    }
+
+    async fn operator_inbox_ack(
+        &self,
+        params: ipc::OperatorInboxAckRequest,
+    ) -> OrcasResult<ipc::OperatorInboxAckResponse> {
+        let mut state = self.state.write().await;
+        let mirror_checkpoint = update_operator_inbox_ack_checkpoint(
+            &mut state.operator_inbox_mirrors,
+            &params.peer_id,
+            params.through_sequence,
+        )
+        .map_err(OrcasError::Protocol)?;
+        Ok(ipc::OperatorInboxAckResponse { mirror_checkpoint })
+    }
+
+    async fn operator_inbox_mirror_checkpoint(
+        &self,
+        params: ipc::OperatorInboxMirrorCheckpointRequest,
+    ) -> OrcasResult<ipc::OperatorInboxMirrorCheckpointResponse> {
+        let state = self.state.read().await;
+        let mirror_checkpoint = state
+            .operator_inbox_mirrors
+            .get(&params.peer_id)
+            .cloned()
+            .unwrap_or_else(|| ipc::OperatorInboxMirrorCheckpoint {
+                peer_id: params.peer_id.clone(),
+                ..Default::default()
+            });
+        Ok(ipc::OperatorInboxMirrorCheckpointResponse { mirror_checkpoint })
     }
 
     async fn operator_inbox_checkpoint(
@@ -13369,6 +13460,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     .collect::<BTreeMap<_, _>>(),
                 collaboration: state.collaboration.clone(),
                 operator_inbox,
+                operator_inbox_mirrors: state.operator_inbox_mirrors.clone(),
             }
         };
         let result = self.store.save(&stored).await;

@@ -15,6 +15,7 @@
 //! `collaboration.rs` for the daemon-owned execution/runtime model.
 
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -94,6 +95,10 @@ pub mod methods {
     pub const OPERATOR_INBOX_CHECKPOINT: &str = "operator_inbox/checkpoint";
     pub const OPERATOR_INBOX_CHANGES: &str = "operator_inbox/changes";
     pub const OPERATOR_INBOX_ACTION_ROUTE: &str = "operator_inbox/action_route";
+    pub const OPERATOR_INBOX_REPLAY: &str = "operator_inbox/replay";
+    pub const OPERATOR_INBOX_EXPORT: &str = "operator_inbox/export";
+    pub const OPERATOR_INBOX_ACK: &str = "operator_inbox/ack";
+    pub const OPERATOR_INBOX_MIRROR_CHECKPOINT: &str = "operator_inbox/mirror_checkpoint";
     pub const WORKSTREAM_PLAN_GET: &str = "workstream_plan/get";
     pub const WORKSTREAM_PLAN_LIST: &str = "workstream_plan/list";
     pub const PLAN_ASSESSMENT_LIST: &str = "plan_assessment/list";
@@ -404,6 +409,36 @@ pub struct OperatorInboxState {
     pub changes: Vec<OperatorInboxChange>,
 }
 
+/// Peer-scoped mirror/export cursor for the derived inbox projection.
+///
+/// This is intentionally separate from authority replication state: it tracks
+/// how far a remote peer has exported or acknowledged the local inbox read
+/// model, not canonical planning truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorInboxMirrorCheckpoint {
+    pub peer_id: String,
+    pub last_exported_sequence: u64,
+    pub last_acked_sequence: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Default for OperatorInboxMirrorCheckpoint {
+    fn default() -> Self {
+        Self {
+            peer_id: String::new(),
+            last_exported_sequence: 0,
+            last_acked_sequence: 0,
+            updated_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorInboxMirrorState {
+    #[serde(default)]
+    pub peers: BTreeMap<String, OperatorInboxMirrorCheckpoint>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OperatorInboxListRequest {
     #[serde(default)]
@@ -457,6 +492,52 @@ pub struct OperatorInboxChangesRequest {
 pub struct OperatorInboxChangesResponse {
     pub checkpoint: OperatorInboxCheckpoint,
     pub changes: Vec<OperatorInboxChange>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorInboxReplayRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxReplayResponse {
+    pub checkpoint: OperatorInboxCheckpoint,
+    pub items: Vec<OperatorInboxItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxExportRequest {
+    pub peer_id: String,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxExportResponse {
+    pub checkpoint: OperatorInboxCheckpoint,
+    pub mirror_checkpoint: OperatorInboxMirrorCheckpoint,
+    pub changes: Vec<OperatorInboxChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxAckRequest {
+    pub peer_id: String,
+    pub through_sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxAckResponse {
+    pub mirror_checkpoint: OperatorInboxMirrorCheckpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxMirrorCheckpointRequest {
+    pub peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxMirrorCheckpointResponse {
+    pub mirror_checkpoint: OperatorInboxMirrorCheckpoint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
