@@ -30,6 +30,7 @@ use orcas_core::ipc::{
 use orcas_core::{OrcasError, OrcasResult};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::delivery::{NotificationDeliveryContext, NotificationDeliveryTransport};
@@ -168,6 +169,7 @@ fn db_error(error: rusqlite::Error) -> OrcasError {
 #[derive(Debug)]
 pub struct InboxMirrorStore {
     connection: Mutex<Connection>,
+    checkpoint_events: broadcast::Sender<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,9 +184,15 @@ impl InboxMirrorStore {
     pub fn open(path: impl AsRef<Path>) -> OrcasResult<Self> {
         let connection = Connection::open(path).map_err(db_error)?;
         connection.execute_batch(INITIAL_SCHEMA).map_err(db_error)?;
+        let (checkpoint_events, _) = broadcast::channel(32);
         Ok(Self {
             connection: Mutex::new(connection),
+            checkpoint_events,
         })
+    }
+
+    pub fn subscribe_checkpoint_events(&self) -> broadcast::Receiver<()> {
+        self.checkpoint_events.subscribe()
     }
 
     pub fn checkpoint(&self, origin_node_id: &str) -> OrcasResult<OperatorInboxCheckpoint> {
@@ -258,6 +266,57 @@ impl InboxMirrorStore {
                     )
                 })?,
         })
+    }
+
+    pub async fn wait_for_checkpoint(
+        &self,
+        request: &orcas_core::ipc::OperatorInboxWaitForCheckpointRequest,
+    ) -> OrcasResult<orcas_core::ipc::OperatorInboxWaitForCheckpointResponse> {
+        let timeout = tokio::time::Duration::from_millis(request.timeout_ms.unwrap_or(30_000));
+        let after_sequence = request.after_sequence.unwrap_or_default();
+        let mut checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+        if checkpoint.current_sequence > after_sequence {
+            return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                origin_node_id: request.origin_node_id.clone(),
+                checkpoint,
+                timed_out: false,
+            });
+        }
+
+        let mut events = self.subscribe_checkpoint_events();
+        let start = tokio::time::Instant::now();
+        loop {
+            let remaining = timeout.checked_sub(start.elapsed()).unwrap_or_default();
+            if remaining.is_zero() {
+                checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                    origin_node_id: request.origin_node_id.clone(),
+                    checkpoint,
+                    timed_out: true,
+                });
+            }
+
+            match tokio::time::timeout(remaining, events.recv()).await {
+                Ok(Ok(())) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                    if checkpoint.current_sequence > after_sequence {
+                        return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                            origin_node_id: request.origin_node_id.clone(),
+                            checkpoint,
+                            timed_out: false,
+                        });
+                    }
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => {
+                    checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                    return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                        origin_node_id: request.origin_node_id.clone(),
+                        checkpoint: checkpoint.clone(),
+                        timed_out: checkpoint.current_sequence <= after_sequence,
+                    });
+                }
+            }
+        }
     }
 
     fn load_subscription_tx(
@@ -1423,6 +1482,7 @@ impl InboxMirrorStore {
             ],
         ).map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
+        let _ = self.checkpoint_events.send(());
 
         Ok(MirrorApplyResult {
             mirror_checkpoint: OperatorInboxMirrorCheckpoint {

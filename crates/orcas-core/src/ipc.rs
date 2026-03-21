@@ -586,6 +586,22 @@ pub struct OperatorInboxMirrorCheckpointQueryResponse {
     pub checkpoint: OperatorInboxCheckpoint,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorInboxWaitForCheckpointRequest {
+    pub origin_node_id: String,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxWaitForCheckpointResponse {
+    pub origin_node_id: String,
+    pub checkpoint: OperatorInboxCheckpoint,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorInboxMirrorApplyRequest {
     pub origin_node_id: String,

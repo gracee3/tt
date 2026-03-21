@@ -1,5 +1,3 @@
-use reqwest::header::{AUTHORIZATION, HeaderValue};
-use reqwest::Client;
 use tracing::debug;
 
 use orcas_core::ipc::{
@@ -7,7 +5,9 @@ use orcas_core::ipc::{
     NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
     NotificationDeliveryRunPendingRequest, NotificationDeliveryRunPendingResponse,
     OperatorInboxMirrorCheckpointQueryResponse, OperatorInboxMirrorGetResponse,
-    OperatorInboxMirrorListResponse, OperatorNotificationAckRequest, OperatorNotificationAckResponse,
+    OperatorInboxMirrorListResponse, OperatorInboxWaitForCheckpointRequest,
+    OperatorInboxWaitForCheckpointResponse, OperatorNotificationAckRequest,
+    OperatorNotificationAckResponse,
     OperatorNotificationGetRequest, OperatorNotificationGetResponse, OperatorNotificationListRequest,
     OperatorNotificationListResponse, OperatorNotificationSuppressRequest,
     OperatorNotificationSuppressResponse, OperatorRemoteActionClaimRequest,
@@ -22,9 +22,11 @@ use orcas_core::ipc::{
 use orcas_core::{OrcasError, OrcasResult};
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
+use reqwest::header::AUTHORIZATION;
+
 #[derive(Debug, Clone)]
 pub struct OrcasServerClient {
-    client: Client,
     base_url: String,
     operator_api_token: Option<String>,
 }
@@ -32,7 +34,6 @@ pub struct OrcasServerClient {
 impl OrcasServerClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             operator_api_token: None,
         }
@@ -43,7 +44,6 @@ impl OrcasServerClient {
         operator_api_token: impl Into<String>,
     ) -> Self {
         Self {
-            client: Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             operator_api_token: Some(operator_api_token.into()),
         }
@@ -53,22 +53,24 @@ impl OrcasServerClient {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
 
-    fn authorized_request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(token) = &self.operator_api_token {
-            let value = format!("Bearer {token}");
-            if let Ok(header_value) = HeaderValue::from_str(&value) {
-                return builder.header(AUTHORIZATION, header_value);
-            }
-        }
-        builder
+    fn auth_header_value(&self) -> Option<String> {
+        self.operator_api_token
+            .as_ref()
+            .map(|token| format!("Bearer {token}"))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
     ) -> OrcasResult<T> {
-        let response = self
-            .authorized_request(self.client.get(self.url(path)))
+        let mut request = reqwest::Client::new().get(self.url(path));
+        if let Some(value) = self.auth_header_value() {
+            let header_value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|error| OrcasError::Transport(error.to_string()))?;
+            request = request.header(AUTHORIZATION, header_value);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?
@@ -80,19 +82,84 @@ impl OrcasServerClient {
         Ok(response)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> OrcasResult<T> {
+        let mut request = gloo_net::http::Request::get(&self.url(path));
+        if let Some(value) = self.auth_header_value() {
+            request = request.header("Authorization", &value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?;
+        if !response.ok() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(OrcasError::Transport(format!(
+                "http {status} while requesting {}: {body}",
+                self.url(path)
+            )));
+        }
+        let response = response
+            .json::<T>()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?;
+        Ok(response)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     async fn post_json<T: serde::de::DeserializeOwned, U: serde::Serialize>(
         &self,
         path: &str,
         request: &U,
     ) -> OrcasResult<T> {
-        let response = self
-            .authorized_request(self.client.post(self.url(path)))
+        let mut builder = reqwest::Client::new().post(self.url(path));
+        if let Some(value) = self.auth_header_value() {
+            let header_value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|error| OrcasError::Transport(error.to_string()))?;
+            builder = builder.header(AUTHORIZATION, header_value);
+        }
+        let response = builder
             .json(request)
             .send()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?
             .error_for_status()
             .map_err(|error| OrcasError::Transport(error.to_string()))?
+            .json::<T>()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?;
+        Ok(response)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn post_json<T: serde::de::DeserializeOwned, U: serde::Serialize>(
+        &self,
+        path: &str,
+        request: &U,
+    ) -> OrcasResult<T> {
+        let mut builder = gloo_net::http::Request::post(&self.url(path));
+        if let Some(value) = self.auth_header_value() {
+            builder = builder.header("Authorization", &value);
+        }
+        let response = builder
+            .json(request)
+            .map_err(|error| OrcasError::Transport(error.to_string()))?
+            .send()
+            .await
+            .map_err(|error| OrcasError::Transport(error.to_string()))?;
+        if !response.ok() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(OrcasError::Transport(format!(
+                "http {status} while requesting {}: {body}",
+                self.url(path)
+            )));
+        }
+        let response = response
             .json::<T>()
             .await
             .map_err(|error| OrcasError::Transport(error.to_string()))?;
@@ -234,6 +301,14 @@ impl OrcasServerClient {
         origin_node_id: &str,
     ) -> OrcasResult<OperatorInboxMirrorCheckpointQueryResponse> {
         self.get_json(&format!("operator-inbox/{origin_node_id}/checkpoint"))
+            .await
+    }
+
+    pub async fn inbox_wait_for_checkpoint(
+        &self,
+        request: &OperatorInboxWaitForCheckpointRequest,
+    ) -> OrcasResult<OperatorInboxWaitForCheckpointResponse> {
+        self.post_json("operator-inbox/wait_for_checkpoint", request)
             .await
     }
 

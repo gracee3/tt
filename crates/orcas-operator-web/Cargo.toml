@@ -1,0 +1,38 @@
+[package]
+name = "orcas-operator-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "orcas-operator-web"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+console_error_panic_hook = "0.1.7"
+leptos.workspace = true
+leptos_router.workspace = true
+orcas-core = { path = "../orcas-core" }
+orcas-operator-core = { path = "../orcas-operator-core" }
+orcas-server-client = { path = "../orcas-server-client" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3.82", features = [
+    "Window",
+    "Navigator",
+    "ServiceWorkerContainer",
+    "ServiceWorkerRegistration",
+    "Location",
+    "Storage",
+] }
+
+[lints]
+workspace = true

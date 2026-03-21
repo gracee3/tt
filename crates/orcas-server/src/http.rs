@@ -24,6 +24,7 @@ use orcas_core::ipc::{
     NotificationTransportKind, OperatorInboxMirrorApplyRequest, OperatorInboxMirrorApplyResponse,
     OperatorInboxMirrorCheckpointQueryRequest, OperatorInboxMirrorCheckpointQueryResponse,
     OperatorInboxMirrorGetResponse, OperatorInboxMirrorListResponse,
+    OperatorInboxWaitForCheckpointRequest, OperatorInboxWaitForCheckpointResponse,
     OperatorNotificationAckRequest, OperatorNotificationAckResponse,
     OperatorNotificationGetRequest, OperatorNotificationGetResponse,
     OperatorNotificationListRequest, OperatorNotificationListResponse,
@@ -92,6 +93,10 @@ impl InboxMirrorServer {
             .route(
                 "/operator-inbox/{origin_node_id}/items/{item_id}",
                 get(get_item),
+            )
+            .route(
+                "/operator-inbox/wait_for_checkpoint",
+                post(wait_for_inbox_checkpoint),
             )
             .route(
                 "/operator-notifications/list",
@@ -246,6 +251,18 @@ async fn get_item(
         origin_node_id,
         item,
     }))
+}
+
+async fn wait_for_inbox_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorInboxWaitForCheckpointRequest>,
+) -> Result<Json<OperatorInboxWaitForCheckpointResponse>, String> {
+    let response = state
+        .store
+        .wait_for_checkpoint(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
 }
 
 async fn list_notification_candidates(
