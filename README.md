@@ -49,6 +49,23 @@ Once the daemon is running, `orcas doctor` is the quickest way to confirm that O
 orcas-tui
 ```
 
+## Testing
+
+The fast developer path stays the same:
+
+- `make test` runs the normal Rust test suite
+- `cargo test` continues to behave like standard Rust testing
+
+End-to-end operator workflows are available as an opt-in lane under `tests/e2e/`:
+
+- `make test-e2e`
+- `make test-e2e-live`
+- `make test-e2e-long`
+- `make test-e2e SCENARIO=<name>`
+- `make clean-e2e`
+
+Generated E2E output is kept under `target/e2e/` so it is easy to inspect and easy to remove.
+
 ## Implementation
 
 Orcas is written in Rust and designed to be fast and portable. The runtime is built on [Tokio](https://tokio.rs/), which keeps the daemon responsive under concurrent work, and the terminal interface is built with [Ratatui](https://ratatui.rs/), which keeps the interactive surface fast, lightweight, and comfortable to live in. The daemon talks to local clients over a Unix domain socket, keeps snapshots and event streams close to the machine, and avoids turning the control plane into a heavyweight web service when it does not need to be one.

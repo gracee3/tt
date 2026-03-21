@@ -50,6 +50,23 @@ Use real-daemon and real-CLI tests only for the highest-value workflows:
 
 Keep these scenarios small, deterministic, and focused.
 
+### In-Repo E2E Harness
+
+The checked-in E2E harness lives under `tests/e2e/` and is intentionally opt-in.
+
+Use it for scenario-style operator workflows that need real CLI/daemon behavior but should not run as part of `cargo test` or `make test`.
+
+The harness writes generated state only under `target/e2e/`, which keeps scenario artifacts easy to inspect and easy to remove.
+
+The main entrypoints are:
+
+- `make test-e2e`
+- `make test-e2e-live`
+- `make test-e2e-long`
+- `make test-e2e SCENARIO=<name>`
+- `make test-e2e TAG=<tag>`
+- `make clean-e2e`
+
 ### Regression Tests
 
 When a bug or ambiguity is found, add a targeted regression test close to the seam that failed. Prefer a small local test over expanding a large matrix.
@@ -71,6 +88,23 @@ Run the full suite:
 
 ```bash
 cargo test --workspace
+```
+
+Run the fast developer path:
+
+```bash
+make test
+```
+
+Run the E2E harness:
+
+```bash
+make test-e2e
+make test-e2e-live
+make test-e2e-long
+make test-e2e SCENARIO=hello
+make test-e2e TAG=deterministic
+make clean-e2e
 ```
 
 Useful focused examples:

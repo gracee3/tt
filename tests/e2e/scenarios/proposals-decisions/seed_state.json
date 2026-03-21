@@ -1,0 +1,317 @@
+{
+  "registry": {
+    "threads": {},
+    "last_connected_endpoint": null
+  },
+  "thread_views": {},
+  "turn_states": {},
+  "collaboration": {
+    "workstreams": {
+      "ws-proposals": {
+        "id": "ws-proposals",
+        "title": "E2E Proposals Decisions",
+        "objective": "Exercise proposal approval and decision recording",
+        "status": "active",
+        "priority": "high",
+        "created_at": "2026-03-21T01:00:00Z",
+        "updated_at": "2026-03-21T01:00:00Z"
+      }
+    },
+    "authority_workstream_bridges": [],
+    "work_units": {
+      "wu-proposals": {
+        "id": "wu-proposals",
+        "workstream_id": "ws-proposals",
+        "title": "Proposal work unit",
+        "task_statement": "Create a proposal and approve it.",
+        "status": "awaiting_decision",
+        "dependencies": [],
+        "latest_report_id": "report-proposals",
+        "current_assignment_id": "assignment-proposals",
+        "created_at": "2026-03-21T01:00:00Z",
+        "updated_at": "2026-03-21T01:00:00Z"
+      }
+    },
+    "authority_work_unit_bridges": [],
+    "assignments": {
+      "assignment-proposals": {
+        "id": "assignment-proposals",
+        "work_unit_id": "wu-proposals",
+        "plan_id": null,
+        "plan_version": null,
+        "plan_item_id": null,
+        "execution_kind": "direct_execution",
+        "alignment_rationale": null,
+        "worker_id": "worker-proposals",
+        "worker_session_id": "session-proposals",
+        "instructions": "Create a short report for proposal review.",
+        "communication_seed": null,
+        "status": "awaiting_decision",
+        "attempt_number": 1,
+        "created_at": "2026-03-21T01:00:00Z",
+        "updated_at": "2026-03-21T01:00:00Z"
+      }
+    },
+    "workers": {
+      "worker-proposals": {
+        "id": "worker-proposals",
+        "kind": "harness",
+        "status": "idle",
+        "current_assignment_id": "assignment-proposals"
+      }
+    },
+    "worker_sessions": {
+      "session-proposals": {
+        "id": "session-proposals",
+        "worker_id": "worker-proposals",
+        "backend_type": "codex_thread",
+        "thread_id": null,
+        "tracked_thread_id": null,
+        "active_turn_id": null,
+        "runtime_status": "idle",
+        "attachability": "not_attachable",
+        "updated_at": "2026-03-21T01:00:00Z"
+      }
+    },
+    "reports": {
+      "report-proposals": {
+        "id": "report-proposals",
+        "work_unit_id": "wu-proposals",
+        "assignment_id": "assignment-proposals",
+        "worker_id": "worker-proposals",
+        "disposition": "completed",
+        "summary": "Seeded report for proposal review.",
+        "findings": [
+          "This report was bootstrapped for a deterministic e2e test."
+        ],
+        "blockers": [],
+        "questions": [],
+        "recommended_next_actions": [
+          "Approve the proposal without waiting on a live worker turn."
+        ],
+        "confidence": "high",
+        "raw_output": "seeded raw output",
+        "parse_result": "parsed",
+        "needs_supervisor_review": false,
+        "created_at": "2026-03-21T01:00:00Z"
+      }
+    },
+    "decisions": {},
+    "assignment_communications": {},
+    "workspace_operations": {},
+    "landing_authorizations": {},
+    "landing_executions": {},
+    "supervisor_proposals": {
+      "proposal-proposals": {
+        "id": "proposal-proposals",
+        "workstream_id": "ws-proposals",
+        "primary_work_unit_id": "wu-proposals",
+        "source_report_id": "report-proposals",
+        "trigger": {
+          "kind": "human_requested",
+          "requested_at": "2026-03-21T01:00:00Z",
+          "requested_by": "harness",
+          "source_report_id": "report-proposals",
+          "note": "Seeded open proposal for the deterministic e2e test."
+        },
+        "status": "open",
+        "created_at": "2026-03-21T01:00:00Z",
+        "reasoner_backend": "responses_api",
+        "reasoner_model": "gpt-5.4",
+        "reasoner_response_id": null,
+        "reasoner_usage": null,
+        "reasoner_output_text": null,
+        "context_pack": {
+          "schema_version": "supervisor_context_pack.v2",
+          "generated_at": "2026-03-21T01:00:00Z",
+          "trigger": {
+            "kind": "human_requested",
+            "requested_at": "2026-03-21T01:00:00Z",
+            "requested_by": "harness",
+            "source_report_id": "report-proposals",
+            "note": "Seeded open proposal for the deterministic e2e test."
+          },
+          "pack_limits": {
+            "max_related_work_units": 4,
+            "max_prior_reports": 3,
+            "max_prior_decisions": 3,
+            "max_artifacts": 0,
+            "max_raw_report_chars": 3000
+          },
+          "truncation": {
+            "related_work_units_truncated": false,
+            "prior_reports_truncated": false,
+            "prior_decisions_truncated": false,
+            "artifacts_truncated": false,
+            "raw_report_truncated": false
+          },
+          "state_anchor": {
+            "workstream_id": "ws-proposals",
+            "primary_work_unit_id": "wu-proposals",
+            "source_report_id": "report-proposals",
+            "source_report_created_at": "2026-03-21T01:00:00Z",
+            "current_assignment_id": "assignment-proposals",
+            "primary_work_unit_updated_at": "2026-03-21T01:00:00Z",
+            "latest_decision_id": null,
+            "latest_decision_created_at": null
+          },
+          "decision_policy": {
+            "supported_decisions": [
+              "accept",
+              "continue",
+              "redirect",
+              "mark_complete",
+              "escalate_to_human"
+            ],
+            "allowed_decisions": [
+              "accept",
+              "continue",
+              "mark_complete",
+              "escalate_to_human"
+            ],
+            "disallowed_decisions": [
+              "redirect"
+            ],
+            "disallowed_reasons_by_decision": {},
+            "assignment_required_for": [
+              "continue",
+              "redirect"
+            ],
+            "assignment_forbidden_for": [
+              "accept",
+              "mark_complete",
+              "escalate_to_human"
+            ],
+            "human_review_required": true
+          },
+          "workstream": {
+            "id": "ws-proposals",
+            "title": "E2E Proposals Decisions",
+            "objective": "Exercise proposal approval and decision recording",
+            "status": "active",
+            "priority": "high",
+            "success_criteria": [],
+            "constraints": [],
+            "summary": null,
+            "open_work_unit_count": 1,
+            "blocked_work_unit_count": 0,
+            "completed_work_unit_count": 0
+          },
+          "primary_work_unit": {
+            "id": "wu-proposals",
+            "title": "Proposal work unit",
+            "task_statement": "Create a proposal and approve it.",
+            "status": "awaiting_decision",
+            "dependencies": [],
+            "current_assignment_id": "assignment-proposals",
+            "latest_report_id": "report-proposals",
+            "acceptance_criteria": [],
+            "stop_conditions": [],
+            "result_summary": null
+          },
+          "source_report": {
+            "id": "report-proposals",
+            "assignment_id": "assignment-proposals",
+            "worker_id": "worker-proposals",
+            "worker_session_id": null,
+            "submitted_at": "2026-03-21T01:00:00Z",
+            "disposition": "completed",
+            "summary": "Seeded report for proposal review.",
+            "findings": [
+              "This report was bootstrapped for a deterministic e2e test."
+            ],
+            "blockers": [],
+            "questions": [],
+            "recommended_next_actions": [
+              "Approve the proposal without waiting on a live worker turn."
+            ],
+            "confidence": "high",
+            "parse_result": "parsed",
+            "needs_supervisor_review": false,
+            "raw_output_excerpt": "seeded raw output"
+          },
+          "current_assignment": {
+            "id": "assignment-proposals",
+            "status": "awaiting_decision",
+            "attempt_number": 1,
+            "plan_id": null,
+            "plan_version": null,
+            "plan_item_id": null,
+            "execution_kind": "direct_execution",
+            "alignment_rationale": null,
+            "worker_id": "worker-proposals",
+            "worker_session_id": "session-proposals",
+            "instructions": "Create a short report for proposal review.",
+            "created_at": "2026-03-21T01:00:00Z",
+            "updated_at": "2026-03-21T01:00:00Z"
+          },
+          "worker_session": {
+            "id": "session-proposals",
+            "worker_id": "worker-proposals",
+            "backend_type": "codex_thread",
+            "thread_id": null,
+            "active_turn_id": null,
+            "runtime_status": "idle",
+            "attachability": "not_attachable",
+            "updated_at": "2026-03-21T01:00:00Z"
+          },
+          "dependency_context": {
+            "upstream_dependencies": [],
+            "downstream_dependents": []
+          },
+          "related_work_units": [],
+          "recent_primary_history": {
+            "prior_reports": [],
+            "prior_decisions": []
+          },
+          "relevant_artifacts": [],
+          "operator_request": null
+        },
+        "prompt_render": null,
+        "response_artifact": null,
+        "proposal": {
+          "schema_version": "supervisor_proposal.v2",
+          "summary": {
+            "headline": "Approve the seeded report",
+            "situation": "The work unit has a seeded report and is ready for a deterministic approval flow.",
+            "recommended_action": "Approve the proposal and record the decision.",
+            "key_evidence": [
+              "Work unit is already awaiting decision.",
+              "A latest report is seeded and matches the current assignment."
+            ],
+            "risks": [],
+            "review_focus": [
+              "Confirm the approval path updates proposal state."
+            ]
+          },
+          "proposed_decision": {
+            "decision_type": "accept",
+            "target_work_unit_id": "wu-proposals",
+            "source_report_id": "report-proposals",
+            "rationale": "Seeded proposal for the deterministic e2e test.",
+            "expected_work_unit_status": "accepted",
+            "requires_assignment": false
+          },
+          "draft_next_assignment": null,
+          "confidence": "high",
+          "plan_assessment": null,
+          "plan_revision_proposal": null,
+          "warnings": [],
+          "open_questions": []
+        },
+        "approval_edits": null,
+        "approved_proposal": null,
+        "generation_failure": null,
+        "validated_at": null,
+        "reviewed_at": null,
+        "reviewed_by": null,
+        "review_note": null,
+        "approved_decision_id": null,
+        "approved_assignment_id": null
+      }
+    },
+    "codex_thread_assignments": {},
+    "supervisor_turn_decisions": {},
+    "planning": {}
+  }
+}

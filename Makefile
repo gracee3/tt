@@ -13,6 +13,9 @@ DIST_NAME := $(APP_NAME)-v$(VERSION)-$(TARGET)
 DIST_DIR := dist/$(DIST_NAME)
 
 CARGO := cargo
+E2E_RUNNER := tests/e2e/run_all.sh
+SCENARIO ?=
+TAG ?=
 
 MAIN_BIN := orcas
 AUX_BINS := orcasd orcas-tui
@@ -34,6 +37,18 @@ clippy:
 .PHONY: test
 test:
 	$(CARGO) test --workspace
+
+.PHONY: test-e2e
+test-e2e:
+	@E2E_SUITE=deterministic $(if $(SCENARIO),E2E_SCENARIO=$(SCENARIO),) $(if $(TAG),E2E_TAG=$(TAG),) ./$(E2E_RUNNER)
+
+.PHONY: test-e2e-live
+test-e2e-live:
+	@E2E_SUITE=live $(if $(SCENARIO),E2E_SCENARIO=$(SCENARIO),) $(if $(TAG),E2E_TAG=$(TAG),) ./$(E2E_RUNNER)
+
+.PHONY: test-e2e-long
+test-e2e-long:
+	@E2E_SUITE=long $(if $(SCENARIO),E2E_SCENARIO=$(SCENARIO),) $(if $(TAG),E2E_TAG=$(TAG),) ./$(E2E_RUNNER)
 
 .PHONY: build
 build:
@@ -102,6 +117,10 @@ dist: build
 .PHONY: clean
 clean:
 	$(CARGO) clean
+
+.PHONY: clean-e2e
+clean-e2e:
+	rm -rf target/e2e
 
 .PHONY: clean-dist
 clean-dist:
