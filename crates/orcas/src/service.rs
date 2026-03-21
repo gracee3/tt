@@ -304,6 +304,169 @@ fn print_prune_workspace_operation(operation: &orcas_core::WorkspaceOperationRec
     }
 }
 
+fn print_planning_session(session: &orcas_core::PlanningSession) {
+    println!("surface: planning_session");
+    println!("planning_session_id: {}", session.session_id);
+    println!("planning_session_workstream_id: {}", session.workstream_id);
+    println!("planning_session_status: {:?}", session.status);
+    println!("planning_session_thread_id: {}", session.planning_thread_id);
+    println!(
+        "planning_session_base_plan_id: {}",
+        session
+            .base_plan_id
+            .as_ref()
+            .map(|plan_id| plan_id.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
+        "planning_session_base_plan_version: {}",
+        session
+            .base_plan_version
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
+        "planning_session_research_assignment_id: {}",
+        session.research_assignment_id.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "planning_session_research_report_id: {}",
+        session.research_report_id.as_deref().unwrap_or("unset")
+    );
+    println!(
+        "planning_session_draft_revision_proposal_id: {}",
+        session
+            .draft_revision_proposal_id
+            .as_ref()
+            .map(|proposal_id| proposal_id.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
+        "planning_session_approved_plan_id: {}",
+        session
+            .approved_plan_id
+            .as_ref()
+            .map(|plan_id| plan_id.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!(
+        "planning_session_approved_plan_version: {}",
+        session
+            .approved_plan_version
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
+    println!("planning_session_created_at: {}", session.created_at);
+    println!("planning_session_created_by: {}", session.created_by);
+    println!("planning_session_updated_at: {}", session.updated_at);
+    println!("planning_session_updated_by: {}", session.updated_by);
+    if let Some(note) = session.request_note.as_ref() {
+        println!("planning_session_request_note: {note}");
+    }
+    if let Some(reviewed_at) = session.reviewed_at.as_ref() {
+        println!("planning_session_reviewed_at: {}", reviewed_at);
+    }
+    if let Some(reviewed_by) = session.reviewed_by.as_ref() {
+        println!("planning_session_reviewed_by: {reviewed_by}");
+    }
+    if let Some(review_note) = session.review_note.as_ref() {
+        println!("planning_session_review_note: {review_note}");
+    }
+    if let Some(superseded_by_session_id) = session.superseded_by_session_id.as_ref() {
+        println!(
+            "planning_session_superseded_by_session_id: {}",
+            superseded_by_session_id
+        );
+    }
+    let summary = &session.latest_structured_summary;
+    println!("planning_session_summary_objective: {}", summary.objective);
+    println!(
+        "planning_session_summary_research_status: {:?}",
+        summary.research_status
+    );
+    println!(
+        "planning_session_summary_ready_for_review: {}",
+        summary.ready_for_review
+    );
+    println!(
+        "planning_session_summary_draft_plan_summary: {}",
+        summary.draft_plan_summary.as_deref().unwrap_or("unset")
+    );
+    if summary.requirements.is_empty() {
+        println!("planning_session_summary_requirements: none");
+    } else {
+        for requirement in &summary.requirements {
+            println!("planning_session_requirement: {requirement}");
+        }
+    }
+    if summary.constraints.is_empty() {
+        println!("planning_session_summary_constraints: none");
+    } else {
+        for constraint in &summary.constraints {
+            println!("planning_session_constraint: {constraint}");
+        }
+    }
+    if summary.non_goals.is_empty() {
+        println!("planning_session_summary_non_goals: none");
+    } else {
+        for non_goal in &summary.non_goals {
+            println!("planning_session_non_goal: {non_goal}");
+        }
+    }
+    if summary.open_questions.is_empty() {
+        println!("planning_session_summary_open_questions: none");
+    } else {
+        for question in &summary.open_questions {
+            println!("planning_session_open_question: {question}");
+        }
+    }
+}
+
+fn print_planning_revision_proposal(proposal: &orcas_core::planning::PlanRevisionProposal) {
+    println!("planning_revision_proposal_id: {}", proposal.proposal_id);
+    println!(
+        "planning_revision_proposal_workstream_id: {}",
+        proposal.workstream_id
+    );
+    println!(
+        "planning_revision_proposal_base_plan_id: {}",
+        proposal.base_plan_id
+    );
+    println!(
+        "planning_revision_proposal_base_plan_version: {}",
+        proposal.base_plan_version
+    );
+    println!("planning_revision_proposal_status: {:?}", proposal.status);
+    println!(
+        "planning_revision_proposal_created_at: {}",
+        proposal.created_at
+    );
+    println!(
+        "planning_revision_proposal_created_by: {}",
+        proposal.created_by
+    );
+    println!(
+        "planning_revision_proposal_rationale: {}",
+        proposal.rationale
+    );
+    println!(
+        "planning_revision_proposal_expected_benefit: {}",
+        proposal.expected_benefit
+    );
+    if proposal.tradeoffs.is_empty() {
+        println!("planning_revision_proposal_tradeoffs: none");
+    } else {
+        for tradeoff in &proposal.tradeoffs {
+            println!("planning_revision_proposal_tradeoff: {tradeoff}");
+        }
+    }
+    if proposal.ops.is_empty() {
+        println!("planning_revision_proposal_ops: none");
+    } else {
+        println!("planning_revision_proposal_ops: {}", proposal.ops.len());
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProposalArtifactExportFormat {
     Json,
@@ -1530,6 +1693,276 @@ impl SupervisorService {
                 println!("prune_workspace_result_notes: {notes}");
             }
         }
+        Ok(())
+    }
+
+    pub async fn planning_session_create(
+        &self,
+        workstream_id: &str,
+        planning_thread_id: Option<String>,
+        objective: String,
+        research_status: orcas_core::PlanningSessionResearchStatus,
+        requirements: Vec<String>,
+        constraints: Vec<String>,
+        non_goals: Vec<String>,
+        open_questions: Vec<String>,
+        draft_plan_summary: Option<String>,
+        created_by: Option<String>,
+        request_note: Option<String>,
+        model: Option<String>,
+        cwd: Option<PathBuf>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_create(&ipc::PlanningSessionCreateRequest {
+                workstream_id: workstream_id.to_string(),
+                planning_thread_id,
+                initial_objective: objective,
+                research_status,
+                requirements,
+                constraints,
+                non_goals,
+                open_questions,
+                draft_plan_summary,
+                created_by,
+                request_note,
+                model,
+                cwd: cwd.map(|path| path.display().to_string()),
+            })
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_get(&self, session_id: &str) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_get(&ipc::PlanningSessionGetRequest {
+                session_id: session_id.to_string(),
+            })
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_list(
+        &self,
+        workstream_id: Option<String>,
+        include_closed: bool,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_list(&ipc::PlanningSessionListRequest {
+                workstream_id,
+                include_closed,
+            })
+            .await?;
+        if response.sessions.is_empty() {
+            println!("no planning sessions");
+            return Ok(());
+        }
+        for session in response.sessions {
+            println!(
+                "{}\t{:?}\t{}\t{}\t{}",
+                session.session_id,
+                session.status,
+                session.workstream_id,
+                session.planning_thread_id,
+                session.updated_at
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn planning_session_update_summary(
+        &self,
+        session_id: &str,
+        objective: String,
+        requirements: Vec<String>,
+        constraints: Vec<String>,
+        non_goals: Vec<String>,
+        open_questions: Vec<String>,
+        research_status: orcas_core::PlanningSessionResearchStatus,
+        draft_plan_summary: Option<String>,
+        ready_for_review: bool,
+        updated_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_update_summary(&ipc::PlanningSessionUpdateSummaryRequest {
+                session_id: session_id.to_string(),
+                summary: orcas_core::PlanningSessionStructuredSummary {
+                    objective,
+                    requirements,
+                    constraints,
+                    non_goals,
+                    open_questions,
+                    research_status,
+                    draft_plan_summary,
+                    ready_for_review,
+                },
+                updated_by,
+                note,
+            })
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_request_supervisor_context(
+        &self,
+        session_id: &str,
+        requested_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_request_supervisor_context(
+                &ipc::PlanningSessionRequestSupervisorContextRequest {
+                    session_id: session_id.to_string(),
+                    requested_by,
+                    note,
+                },
+            )
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_request_research(
+        &self,
+        session_id: &str,
+        worker_id: &str,
+        worker_kind: Option<String>,
+        model: Option<String>,
+        cwd: Option<PathBuf>,
+        requested_by: Option<String>,
+        request_note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_request_research(&ipc::PlanningSessionRequestResearchRequest {
+                session_id: session_id.to_string(),
+                worker_id: worker_id.to_string(),
+                requested_by,
+                request_note,
+                worker_kind,
+                model,
+                cwd: cwd.map(|path| path.display().to_string()),
+            })
+            .await?;
+        print_planning_session(&response.session);
+        println!("research_assignment_id: {}", response.assignment.id);
+        println!(
+            "research_assignment_status: {:?}",
+            response.assignment.status
+        );
+        println!("research_worker_id: {}", response.worker.id);
+        println!("research_worker_session_id: {}", response.worker_session.id);
+        println!("research_report_id: {}", response.report.id);
+        println!(
+            "research_report_disposition: {:?}",
+            response.report.disposition
+        );
+        println!("research_report_summary: {}", response.report.summary);
+        Ok(())
+    }
+
+    pub async fn planning_session_mark_ready_for_review(
+        &self,
+        session_id: &str,
+        updated_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_mark_ready_for_review(
+                &ipc::PlanningSessionMarkReadyForReviewRequest {
+                    session_id: session_id.to_string(),
+                    updated_by,
+                    note,
+                },
+            )
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_abort(
+        &self,
+        session_id: &str,
+        updated_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_abort(&ipc::PlanningSessionAbortRequest {
+                session_id: session_id.to_string(),
+                updated_by,
+                note,
+            })
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_approve(
+        &self,
+        session_id: &str,
+        approved_by: Option<String>,
+        review_note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_approve(&ipc::PlanningSessionApproveRequest {
+                session_id: session_id.to_string(),
+                approved_by,
+                review_note,
+            })
+            .await?;
+        print_planning_session(&response.session);
+        if let Some(proposal) = response.revision_proposal.as_ref() {
+            print_planning_revision_proposal(proposal);
+        }
+        Ok(())
+    }
+
+    pub async fn planning_session_reject(
+        &self,
+        session_id: &str,
+        rejected_by: Option<String>,
+        review_note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_reject(&ipc::PlanningSessionRejectRequest {
+                session_id: session_id.to_string(),
+                rejected_by,
+                review_note,
+            })
+            .await?;
+        print_planning_session(&response.session);
+        Ok(())
+    }
+
+    pub async fn planning_session_supersede(
+        &self,
+        session_id: &str,
+        superseded_by_session_id: Option<String>,
+        updated_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .planning_session_supersede(&ipc::PlanningSessionSupersedeRequest {
+                session_id: session_id.to_string(),
+                superseded_by_session_id,
+                updated_by,
+                note,
+            })
+            .await?;
+        print_planning_session(&response.session);
         Ok(())
     }
 

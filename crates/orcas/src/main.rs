@@ -94,6 +94,10 @@ enum TopCommand {
         #[command(subcommand)]
         command: WorkunitsCommand,
     },
+    PlanningSessions {
+        #[command(subcommand)]
+        command: PlanningSessionsCommand,
+    },
     TrackedThreads {
         #[command(subcommand)]
         command: TrackedThreadsCommand,
@@ -184,6 +188,22 @@ enum TrackedThreadsCommand {
     AuthorizeMerge(TrackedThreadRefArgs),
     ExecuteLanding(TrackedThreadRefArgs),
     PruneWorkspace(TrackedThreadRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+#[command(about = "Supervisor-owned planning session orchestration")]
+enum PlanningSessionsCommand {
+    Create(PlanningSessionCreateArgs),
+    Get(PlanningSessionRefArgs),
+    List(PlanningSessionListArgs),
+    UpdateSummary(PlanningSessionUpdateSummaryArgs),
+    RequestSupervisorContext(PlanningSessionRequestSupervisorContextArgs),
+    RequestResearch(PlanningSessionRequestResearchArgs),
+    MarkReadyForReview(PlanningSessionMarkReadyForReviewArgs),
+    Abort(PlanningSessionAbortArgs),
+    Approve(PlanningSessionApproveArgs),
+    Reject(PlanningSessionRejectArgs),
+    Supersede(PlanningSessionSupersedeArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -414,6 +434,150 @@ struct TrackedThreadWorkspaceArgs {
     status: Option<TrackedThreadWorkspaceStatusArg>,
     #[arg(long = "workspace-last-reported-head-commit")]
     last_reported_head_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionRefArgs {
+    #[arg(long = "session")]
+    session: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionListArgs {
+    #[arg(long)]
+    workstream: Option<String>,
+    #[arg(long, default_value_t = false)]
+    include_closed: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionSummaryArgs {
+    #[arg(long)]
+    objective: String,
+    #[arg(long = "requirement")]
+    requirements: Vec<String>,
+    #[arg(long = "constraint")]
+    constraints: Vec<String>,
+    #[arg(long = "non-goal")]
+    non_goals: Vec<String>,
+    #[arg(long = "open-question")]
+    open_questions: Vec<String>,
+    #[arg(long, value_enum, default_value_t = PlanningSessionResearchStatusArg::NotRequested)]
+    research_status: PlanningSessionResearchStatusArg,
+    #[arg(long)]
+    draft_plan_summary: Option<String>,
+    #[arg(long, default_value_t = false)]
+    ready_for_review: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionCreateArgs {
+    #[arg(long)]
+    workstream: String,
+    #[arg(long = "planning-thread")]
+    planning_thread_id: Option<String>,
+    #[command(flatten)]
+    summary: PlanningSessionSummaryArgs,
+    #[arg(long)]
+    created_by: Option<String>,
+    #[arg(long)]
+    request_note: Option<String>,
+    #[arg(long)]
+    model: Option<String>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionUpdateSummaryArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[command(flatten)]
+    summary: PlanningSessionSummaryArgs,
+    #[arg(long)]
+    updated_by: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionRequestSupervisorContextArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    requested_by: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionRequestResearchArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    worker: String,
+    #[arg(long)]
+    worker_kind: Option<String>,
+    #[arg(long)]
+    model: Option<String>,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    requested_by: Option<String>,
+    #[arg(long)]
+    request_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionMarkReadyForReviewArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    updated_by: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionAbortArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    updated_by: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionApproveArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    approved_by: Option<String>,
+    #[arg(long)]
+    review_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionRejectArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long)]
+    rejected_by: Option<String>,
+    #[arg(long)]
+    review_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct PlanningSessionSupersedeArgs {
+    #[arg(long = "session")]
+    session: String,
+    #[arg(long = "superseded-by-session")]
+    superseded_by_session: Option<String>,
+    #[arg(long)]
+    updated_by: Option<String>,
+    #[arg(long)]
+    note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -715,6 +879,14 @@ enum TrackedThreadWorkspaceStatusArg {
     Pruned,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlanningSessionResearchStatusArg {
+    NotRequested,
+    Requested,
+    Completed,
+    Failed,
+}
+
 impl From<WorkstreamStatusArg> for WorkstreamStatus {
     fn from(value: WorkstreamStatusArg) -> Self {
         match value {
@@ -821,6 +993,17 @@ impl From<TrackedThreadWorkspaceStatusArg> for authority::TrackedThreadWorkspace
     }
 }
 
+impl From<PlanningSessionResearchStatusArg> for orcas_core::PlanningSessionResearchStatus {
+    fn from(value: PlanningSessionResearchStatusArg) -> Self {
+        match value {
+            PlanningSessionResearchStatusArg::NotRequested => Self::NotRequested,
+            PlanningSessionResearchStatusArg::Requested => Self::Requested,
+            PlanningSessionResearchStatusArg::Completed => Self::Completed,
+            PlanningSessionResearchStatusArg::Failed => Self::Failed,
+        }
+    }
+}
+
 impl TrackedThreadWorkspaceArgs {
     fn is_empty(&self) -> bool {
         self.repository_root.is_none()
@@ -845,46 +1028,46 @@ impl TrackedThreadWorkspaceArgs {
             return Ok(None);
         }
 
-        let repository_root = self
-            .repository_root
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--workspace-repository-root is required when declaring a tracked-thread workspace"
-                )
-            })?;
-        let worktree_path = self
-            .worktree_path
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--workspace-worktree-path is required when declaring a tracked-thread workspace"
-                )
-            })?;
-        let branch_name = self
-            .branch_name
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--workspace-branch-name is required when declaring a tracked-thread workspace"
-                )
-            })?;
-        let base_ref = self
-            .base_ref
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--workspace-base-ref is required when declaring a tracked-thread workspace"
-                )
-            })?;
-        let landing_target = self
-            .landing_target
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--workspace-landing-target is required when declaring a tracked-thread workspace"
-                )
-            })?;
-        let strategy = self.strategy.unwrap_or(TrackedThreadWorkspaceStrategyArg::DedicatedThreadWorktree);
-        let landing_policy = self.landing_policy.unwrap_or(TrackedThreadWorkspaceLandingPolicyArg::MergeToMain);
-        let sync_policy = self.sync_policy.unwrap_or(TrackedThreadWorkspaceSyncPolicyArg::Manual);
-        let cleanup_policy = self.cleanup_policy.unwrap_or(TrackedThreadWorkspaceCleanupPolicyArg::KeepUntilCampaignClosed);
-        let status = self.status.unwrap_or(TrackedThreadWorkspaceStatusArg::Requested);
+        let repository_root = self.repository_root.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--workspace-repository-root is required when declaring a tracked-thread workspace"
+            )
+        })?;
+        let worktree_path = self.worktree_path.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--workspace-worktree-path is required when declaring a tracked-thread workspace"
+            )
+        })?;
+        let branch_name = self.branch_name.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--workspace-branch-name is required when declaring a tracked-thread workspace"
+            )
+        })?;
+        let base_ref = self.base_ref.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--workspace-base-ref is required when declaring a tracked-thread workspace"
+            )
+        })?;
+        let landing_target = self.landing_target.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--workspace-landing-target is required when declaring a tracked-thread workspace"
+            )
+        })?;
+        let strategy = self
+            .strategy
+            .unwrap_or(TrackedThreadWorkspaceStrategyArg::DedicatedThreadWorktree);
+        let landing_policy = self
+            .landing_policy
+            .unwrap_or(TrackedThreadWorkspaceLandingPolicyArg::MergeToMain);
+        let sync_policy = self
+            .sync_policy
+            .unwrap_or(TrackedThreadWorkspaceSyncPolicyArg::Manual);
+        let cleanup_policy = self
+            .cleanup_policy
+            .unwrap_or(TrackedThreadWorkspaceCleanupPolicyArg::KeepUntilCampaignClosed);
+        let status = self
+            .status
+            .unwrap_or(TrackedThreadWorkspaceStatusArg::Requested);
 
         Ok(Some(authority::TrackedThreadWorkspace {
             repository_root,
@@ -903,7 +1086,6 @@ impl TrackedThreadWorkspaceArgs {
         }))
     }
 }
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CodexDecisionStatusArg {
     ProposedToHuman,
@@ -1096,12 +1278,119 @@ async fn main() -> Result<()> {
                 WorkunitsCommand::Get(args) => service.workunit_get(&args.workunit).await?,
             }
         }
+        TopCommand::PlanningSessions { command } => {
+            let service = SupervisorService::load(&overrides).await?;
+            match command {
+                PlanningSessionsCommand::Create(args) => {
+                    service
+                        .planning_session_create(
+                            &args.workstream,
+                            args.planning_thread_id,
+                            args.summary.objective,
+                            args.summary.research_status.into(),
+                            args.summary.requirements,
+                            args.summary.constraints,
+                            args.summary.non_goals,
+                            args.summary.open_questions,
+                            args.summary.draft_plan_summary,
+                            args.created_by,
+                            args.request_note,
+                            args.model,
+                            args.cwd,
+                        )
+                        .await?;
+                }
+                PlanningSessionsCommand::Get(args) => {
+                    service.planning_session_get(&args.session).await?;
+                }
+                PlanningSessionsCommand::List(args) => {
+                    service
+                        .planning_session_list(args.workstream, args.include_closed)
+                        .await?;
+                }
+                PlanningSessionsCommand::UpdateSummary(args) => {
+                    service
+                        .planning_session_update_summary(
+                            &args.session,
+                            args.summary.objective,
+                            args.summary.requirements,
+                            args.summary.constraints,
+                            args.summary.non_goals,
+                            args.summary.open_questions,
+                            args.summary.research_status.into(),
+                            args.summary.draft_plan_summary,
+                            args.summary.ready_for_review,
+                            args.updated_by,
+                            args.note,
+                        )
+                        .await?;
+                }
+                PlanningSessionsCommand::RequestSupervisorContext(args) => {
+                    service
+                        .planning_session_request_supervisor_context(
+                            &args.session,
+                            args.requested_by,
+                            args.note,
+                        )
+                        .await?;
+                }
+                PlanningSessionsCommand::RequestResearch(args) => {
+                    service
+                        .planning_session_request_research(
+                            &args.session,
+                            &args.worker,
+                            args.worker_kind,
+                            args.model,
+                            args.cwd,
+                            args.requested_by,
+                            args.request_note,
+                        )
+                        .await?;
+                }
+                PlanningSessionsCommand::MarkReadyForReview(args) => {
+                    service
+                        .planning_session_mark_ready_for_review(
+                            &args.session,
+                            args.updated_by,
+                            args.note,
+                        )
+                        .await?;
+                }
+                PlanningSessionsCommand::Abort(args) => {
+                    service
+                        .planning_session_abort(&args.session, args.updated_by, args.note)
+                        .await?;
+                }
+                PlanningSessionsCommand::Approve(args) => {
+                    service
+                        .planning_session_approve(&args.session, args.approved_by, args.review_note)
+                        .await?;
+                }
+                PlanningSessionsCommand::Reject(args) => {
+                    service
+                        .planning_session_reject(&args.session, args.rejected_by, args.review_note)
+                        .await?;
+                }
+                PlanningSessionsCommand::Supersede(args) => {
+                    service
+                        .planning_session_supersede(
+                            &args.session,
+                            args.superseded_by_session,
+                            args.updated_by,
+                            args.note,
+                        )
+                        .await?;
+                }
+            }
+        }
         TopCommand::TrackedThreads { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
                 TrackedThreadsCommand::Create(args) => {
                     let tracked_thread_id = authority::TrackedThreadId::new();
-                    let workspace = args.workspace.try_into_workspace(tracked_thread_id.clone())?;
+                    let workspace = args
+                        .workspace
+                        .try_into_workspace(tracked_thread_id.clone())?;
                     service
                         .tracked_thread_create(
                             &args.workunit,
@@ -1116,10 +1405,11 @@ async fn main() -> Result<()> {
                         .await?;
                 }
                 TrackedThreadsCommand::Edit(args) => {
-                    let tracked_thread_id = authority::TrackedThreadId::parse(
-                        args.tracked_thread.clone(),
-                    )?;
-                    let workspace = args.workspace.try_into_workspace(tracked_thread_id.clone())?;
+                    let tracked_thread_id =
+                        authority::TrackedThreadId::parse(args.tracked_thread.clone())?;
+                    let workspace = args
+                        .workspace
+                        .try_into_workspace(tracked_thread_id.clone())?;
                     service
                         .tracked_thread_edit(
                             &args.tracked_thread,

@@ -333,6 +333,97 @@ impl OrcasIpcClient {
         self.request(ipc::methods::WORKUNIT_GET, params).await
     }
 
+    pub async fn planning_session_create(
+        &self,
+        params: &ipc::PlanningSessionCreateRequest,
+    ) -> OrcasResult<ipc::PlanningSessionCreateResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_CREATE, params)
+            .await
+    }
+
+    pub async fn planning_session_get(
+        &self,
+        params: &ipc::PlanningSessionGetRequest,
+    ) -> OrcasResult<ipc::PlanningSessionGetResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_GET, params)
+            .await
+    }
+
+    pub async fn planning_session_list(
+        &self,
+        params: &ipc::PlanningSessionListRequest,
+    ) -> OrcasResult<ipc::PlanningSessionListResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_LIST, params)
+            .await
+    }
+
+    pub async fn planning_session_update_summary(
+        &self,
+        params: &ipc::PlanningSessionUpdateSummaryRequest,
+    ) -> OrcasResult<ipc::PlanningSessionUpdateSummaryResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_UPDATE_SUMMARY, params)
+            .await
+    }
+
+    pub async fn planning_session_request_supervisor_context(
+        &self,
+        params: &ipc::PlanningSessionRequestSupervisorContextRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRequestSupervisorContextResponse> {
+        self.request(
+            ipc::methods::PLANNING_SESSION_REQUEST_SUPERVISOR_CONTEXT,
+            params,
+        )
+        .await
+    }
+
+    pub async fn planning_session_request_research(
+        &self,
+        params: &ipc::PlanningSessionRequestResearchRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRequestResearchResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_REQUEST_RESEARCH, params)
+            .await
+    }
+
+    pub async fn planning_session_mark_ready_for_review(
+        &self,
+        params: &ipc::PlanningSessionMarkReadyForReviewRequest,
+    ) -> OrcasResult<ipc::PlanningSessionMarkReadyForReviewResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_MARK_READY_FOR_REVIEW, params)
+            .await
+    }
+
+    pub async fn planning_session_abort(
+        &self,
+        params: &ipc::PlanningSessionAbortRequest,
+    ) -> OrcasResult<ipc::PlanningSessionAbortResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_ABORT, params)
+            .await
+    }
+
+    pub async fn planning_session_approve(
+        &self,
+        params: &ipc::PlanningSessionApproveRequest,
+    ) -> OrcasResult<ipc::PlanningSessionApproveResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_APPROVE, params)
+            .await
+    }
+
+    pub async fn planning_session_reject(
+        &self,
+        params: &ipc::PlanningSessionRejectRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRejectResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_REJECT, params)
+            .await
+    }
+
+    pub async fn planning_session_supersede(
+        &self,
+        params: &ipc::PlanningSessionSupersedeRequest,
+    ) -> OrcasResult<ipc::PlanningSessionSupersedeResponse> {
+        self.request(ipc::methods::PLANNING_SESSION_SUPERSEDE, params)
+            .await
+    }
+
     pub async fn authority_hierarchy_get(
         &self,
         params: &ipc::AuthorityHierarchyGetRequest,

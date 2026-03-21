@@ -35,6 +35,10 @@ use orcas_codex::{
 };
 use orcas_core::authority;
 use orcas_core::authority::{AuthorityCommand, AuthorityQueryStore};
+use orcas_core::collaboration::{
+    PlanningSession, PlanningSessionResearchStatus, PlanningSessionStatus,
+    PlanningSessionStructuredSummary,
+};
 use orcas_core::ipc;
 use orcas_core::jsonrpc::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
@@ -71,12 +75,18 @@ use crate::authority_store::{AuthorityMutationResult, AuthoritySqliteStore};
 use crate::landing_authorization::landing_authorization_is_current;
 use crate::landing_execution::landing_execution_matches_authorization_basis;
 use crate::merge_prep::assess_merge_prep;
+use crate::planning_session::{
+    build_planning_revision_proposal, build_research_work_unit,
+    planning_session_status_is_terminal, planning_session_thread_prompt,
+};
 use crate::process::{OrcasDaemonProcessManager, OrcasRuntimeOverrides, apply_runtime_overrides};
 use crate::supervisor::{
     ResponsesApiReasoner, SupervisorReasoner, apply_edits, build_context_pack,
     compile_assignment_instructions, proposal_freshness_error, state_anchor_freshness_error,
     validate_proposal,
 };
+
+const SUPERVISOR_CLI_OPERATOR: &str = "supervisor_cli_operator";
 
 const RECENT_EVENT_LIMIT: usize = 200;
 const CLIENT_WRITE_QUEUE: usize = 256;
@@ -956,6 +966,64 @@ impl OrcasDaemonService {
                 let params: ipc::PlanRevisionProposalListRequest =
                     Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.plan_revision_proposal_list(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_CREATE => {
+                let params: ipc::PlanningSessionCreateRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_create(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_GET => {
+                let params: ipc::PlanningSessionGetRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_get(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_LIST => {
+                let params: ipc::PlanningSessionListRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_list(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_UPDATE_SUMMARY => {
+                let params: ipc::PlanningSessionUpdateSummaryRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_update_summary(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_REQUEST_SUPERVISOR_CONTEXT => {
+                let params: ipc::PlanningSessionRequestSupervisorContextRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(
+                    self.planning_session_request_supervisor_context(params)
+                        .await?,
+                )?
+            }
+            ipc::methods::PLANNING_SESSION_REQUEST_RESEARCH => {
+                let params: ipc::PlanningSessionRequestResearchRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_request_research(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_MARK_READY_FOR_REVIEW => {
+                let params: ipc::PlanningSessionMarkReadyForReviewRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_mark_ready_for_review(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_ABORT => {
+                let params: ipc::PlanningSessionAbortRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_abort(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_APPROVE => {
+                let params: ipc::PlanningSessionApproveRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_approve(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_REJECT => {
+                let params: ipc::PlanningSessionRejectRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_reject(params).await?)?
+            }
+            ipc::methods::PLANNING_SESSION_SUPERSEDE => {
+                let params: ipc::PlanningSessionSupersedeRequest =
+                    Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.planning_session_supersede(params).await?)?
             }
             ipc::methods::AUTHORITY_TRACKED_THREAD_PREPARE_WORKSPACE => {
                 let params: ipc::AuthorityTrackedThreadPrepareWorkspaceRequest =
@@ -3436,6 +3504,709 @@ impl OrcasDaemonService {
                 .then_with(|| left.proposal_id.as_str().cmp(right.proposal_id.as_str()))
         });
         Ok(ipc::PlanRevisionProposalListResponse { proposals })
+    }
+
+    async fn planning_session_create(
+        &self,
+        params: ipc::PlanningSessionCreateRequest,
+    ) -> OrcasResult<ipc::PlanningSessionCreateResponse> {
+        let created_by = params
+            .created_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let initial_objective = params.initial_objective.trim().to_string();
+        if params.workstream_id.trim().is_empty() || initial_objective.is_empty() {
+            return Err(OrcasError::Protocol(
+                "planning session create requires a workstream and initial objective".to_string(),
+            ));
+        }
+
+        let (workstream, active_plan) = self
+            .ensure_planning_workstream_available(&params.workstream_id)
+            .await?;
+        let planning_thread_id = if let Some(planning_thread_id) = params.planning_thread_id.clone()
+        {
+            self.thread_from_state(&planning_thread_id)
+                .await
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown Codex thread `{planning_thread_id}` for planning session"
+                    ))
+                })?;
+            planning_thread_id
+        } else {
+            self.thread_start(ipc::ThreadStartRequest {
+                cwd: params.cwd.clone(),
+                model: params.model.clone(),
+                ephemeral: false,
+            })
+            .await?
+            .thread
+            .id
+        };
+        {
+            let state = self.state.read().await;
+            if state
+                .collaboration
+                .planning_sessions
+                .values()
+                .any(|existing| existing.planning_thread_id == planning_thread_id)
+            {
+                return Err(OrcasError::Protocol(format!(
+                    "Codex thread `{planning_thread_id}` is already attached to a planning session"
+                )));
+            }
+        }
+
+        let session_id = Self::new_object_id("planning_session");
+        let request_note = params
+            .request_note
+            .clone()
+            .filter(|note| !note.trim().is_empty());
+        let mut summary = PlanningSessionStructuredSummary {
+            objective: initial_objective,
+            research_status: params.research_status,
+            requirements: params.requirements.clone(),
+            constraints: params.constraints.clone(),
+            non_goals: params.non_goals.clone(),
+            open_questions: params.open_questions.clone(),
+            draft_plan_summary: params.draft_plan_summary.clone(),
+            ready_for_review: false,
+        };
+        if let Some(note) = request_note.as_ref() {
+            summary
+                .open_questions
+                .push(format!("Supervisor note: {note}"));
+        }
+        let status = if summary.research_status == PlanningSessionResearchStatus::Requested {
+            PlanningSessionStatus::ResearchRequested
+        } else if summary.ready_for_review {
+            PlanningSessionStatus::AwaitingApproval
+        } else {
+            PlanningSessionStatus::Chatting
+        };
+
+        let session_preview = PlanningSession {
+            session_id: session_id.clone(),
+            workstream_id: workstream.id.clone(),
+            status,
+            planning_thread_id: planning_thread_id.clone(),
+            base_plan_id: Some(active_plan.plan_id.clone()),
+            base_plan_version: Some(active_plan.version),
+            research_assignment_id: None,
+            research_report_id: None,
+            draft_revision_proposal_id: None,
+            approved_plan_id: None,
+            approved_plan_version: None,
+            latest_structured_summary: summary.clone(),
+            created_at: Utc::now(),
+            created_by: created_by.clone(),
+            updated_at: Utc::now(),
+            updated_by: created_by.clone(),
+            request_note: request_note.clone(),
+            reviewed_at: None,
+            reviewed_by: None,
+            review_note: None,
+            superseded_by_session_id: None,
+        };
+        let planning_prompt =
+            planning_session_thread_prompt(&session_preview, &workstream, Some(&active_plan));
+        self.turn_start(ipc::TurnStartRequest {
+            thread_id: planning_thread_id.clone(),
+            text: planning_prompt,
+            cwd: params.cwd.clone(),
+            model: params.model.clone(),
+        })
+        .await?;
+        let session = session_preview.clone();
+        {
+            let mut state = self.state.write().await;
+            state
+                .collaboration
+                .planning_sessions
+                .insert(session_id.clone(), session_preview);
+        }
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionCreateResponse { session })
+    }
+
+    async fn planning_session_get(
+        &self,
+        params: ipc::PlanningSessionGetRequest,
+    ) -> OrcasResult<ipc::PlanningSessionGetResponse> {
+        let session = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .planning_sessions
+            .get(&params.session_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown planning session `{}`", params.session_id))
+            })?;
+        Ok(ipc::PlanningSessionGetResponse { session })
+    }
+
+    async fn planning_session_list(
+        &self,
+        params: ipc::PlanningSessionListRequest,
+    ) -> OrcasResult<ipc::PlanningSessionListResponse> {
+        let mut sessions = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .planning_sessions
+            .values()
+            .filter(|session| {
+                params
+                    .workstream_id
+                    .as_ref()
+                    .map(|workstream_id| &session.workstream_id == workstream_id)
+                    .unwrap_or(true)
+            })
+            .filter(|session| {
+                params.include_closed || !planning_session_status_is_terminal(session.status)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        Ok(ipc::PlanningSessionListResponse { sessions })
+    }
+
+    async fn planning_session_update_summary(
+        &self,
+        params: ipc::PlanningSessionUpdateSummaryRequest,
+    ) -> OrcasResult<ipc::PlanningSessionUpdateSummaryResponse> {
+        let updated_by = params
+            .updated_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            session.latest_structured_summary = params.summary.clone();
+            session.status = if session.latest_structured_summary.research_status
+                == PlanningSessionResearchStatus::Requested
+            {
+                PlanningSessionStatus::ResearchRequested
+            } else if session.latest_structured_summary.ready_for_review {
+                PlanningSessionStatus::AwaitingApproval
+            } else {
+                PlanningSessionStatus::Chatting
+            };
+            session.updated_at = Utc::now();
+            session.updated_by = updated_by.clone();
+            if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
+                session.review_note = Some(note.clone());
+            }
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionUpdateSummaryResponse { session })
+    }
+
+    async fn planning_session_request_supervisor_context(
+        &self,
+        params: ipc::PlanningSessionRequestSupervisorContextRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRequestSupervisorContextResponse> {
+        let requested_by = params
+            .requested_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
+                session
+                    .latest_structured_summary
+                    .open_questions
+                    .push(format!("Supervisor context requested: {note}"));
+                session.review_note = Some(note.clone());
+            }
+            session.status = PlanningSessionStatus::Chatting;
+            session.updated_at = Utc::now();
+            session.updated_by = requested_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionRequestSupervisorContextResponse { session })
+    }
+
+    async fn planning_session_request_research(
+        &self,
+        params: ipc::PlanningSessionRequestResearchRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRequestResearchResponse> {
+        let requested_by = params
+            .requested_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session_snapshot = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .planning_sessions
+            .get(&params.session_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown planning session `{}`", params.session_id))
+            })?;
+        if planning_session_status_is_terminal(session_snapshot.status) {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` is already closed",
+                session_snapshot.session_id
+            )));
+        }
+        if session_snapshot.research_assignment_id.is_some()
+            || session_snapshot.research_report_id.is_some()
+            || session_snapshot.latest_structured_summary.research_status
+                != PlanningSessionResearchStatus::NotRequested
+        {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` already used its bounded research turn",
+                session_snapshot.session_id
+            )));
+        }
+
+        let worker_kind = params
+            .worker_kind
+            .clone()
+            .unwrap_or_else(|| "codex".to_string());
+        let objective = session_snapshot.latest_structured_summary.objective.clone();
+        let (workstream, _active_plan) = self
+            .ensure_planning_workstream_available(&session_snapshot.workstream_id)
+            .await?;
+        let research_work_unit_id = Self::new_object_id("planning_research_work_unit");
+        let research_work_unit = build_research_work_unit(
+            &workstream,
+            &session_snapshot,
+            research_work_unit_id.clone(),
+            Utc::now(),
+        );
+        let metadata = self.authority_command_metadata("planning_session_research")?;
+        let create_request = ipc::AuthorityWorkunitCreateRequest {
+            command: orcas_core::authority::CreateWorkUnit {
+                metadata,
+                work_unit_id: orcas_core::authority::WorkUnitId::parse(
+                    research_work_unit_id.clone(),
+                )?,
+                workstream_id: orcas_core::authority::WorkstreamId::parse(workstream.id.clone())?,
+                title: research_work_unit.title.clone(),
+                task_statement: if let Some(note) = params
+                    .request_note
+                    .as_ref()
+                    .filter(|note| !note.trim().is_empty())
+                {
+                    format!("{objective}\n\nRequest note: {note}")
+                } else {
+                    research_work_unit.task_statement.clone()
+                },
+                status: WorkUnitStatus::Ready,
+            },
+        };
+        let work_unit = self
+            .authority_workunit_create(create_request)
+            .await?
+            .work_unit;
+        {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            session.status = PlanningSessionStatus::ResearchRequested;
+            session.latest_structured_summary.research_status =
+                PlanningSessionResearchStatus::Requested;
+            session.updated_at = Utc::now();
+            session.updated_by = requested_by.clone();
+        }
+        self.persist_collaboration_state().await?;
+        let assignment_response = self
+            .assignment_start(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: params.worker_id.clone(),
+                worker_kind: Some(worker_kind),
+                instructions: Some(objective.clone()),
+                model: params.model.clone(),
+                cwd: params.cwd.clone(),
+                ..Default::default()
+            })
+            .await?;
+
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            session.research_assignment_id = Some(assignment_response.assignment.id.clone());
+            session.research_report_id = Some(assignment_response.report.id.clone());
+            session.latest_structured_summary.research_status =
+                match assignment_response.report.disposition {
+                    ReportDisposition::Completed => PlanningSessionResearchStatus::Completed,
+                    ReportDisposition::Blocked
+                    | ReportDisposition::Failed
+                    | ReportDisposition::Interrupted
+                    | ReportDisposition::Partial
+                    | ReportDisposition::Unknown => PlanningSessionResearchStatus::Failed,
+                };
+            session.status = if session.latest_structured_summary.ready_for_review {
+                PlanningSessionStatus::AwaitingApproval
+            } else {
+                PlanningSessionStatus::Chatting
+            };
+            session.updated_at = Utc::now();
+            session.updated_by = requested_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionRequestResearchResponse {
+            session,
+            assignment: assignment_response.assignment,
+            worker: assignment_response.worker,
+            worker_session: assignment_response.worker_session,
+            report: assignment_response.report,
+        })
+    }
+
+    async fn planning_session_mark_ready_for_review(
+        &self,
+        params: ipc::PlanningSessionMarkReadyForReviewRequest,
+    ) -> OrcasResult<ipc::PlanningSessionMarkReadyForReviewResponse> {
+        let updated_by = params
+            .updated_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            session.latest_structured_summary.ready_for_review = true;
+            session.status = PlanningSessionStatus::AwaitingApproval;
+            session.updated_at = Utc::now();
+            session.updated_by = updated_by;
+            if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
+                session.review_note = Some(note.clone());
+            }
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionMarkReadyForReviewResponse { session })
+    }
+
+    async fn planning_session_abort(
+        &self,
+        params: ipc::PlanningSessionAbortRequest,
+    ) -> OrcasResult<ipc::PlanningSessionAbortResponse> {
+        let updated_by = params
+            .updated_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            session.status = PlanningSessionStatus::Aborted;
+            session.reviewed_at = Some(Utc::now());
+            session.reviewed_by = Some(updated_by.clone());
+            if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
+                session.review_note = Some(note.clone());
+            }
+            session.updated_at = Utc::now();
+            session.updated_by = updated_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionAbortResponse { session })
+    }
+
+    async fn planning_session_approve(
+        &self,
+        params: ipc::PlanningSessionApproveRequest,
+    ) -> OrcasResult<ipc::PlanningSessionApproveResponse> {
+        let approved_by = params
+            .approved_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session_snapshot = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .planning_sessions
+            .get(&params.session_id)
+            .cloned()
+            .ok_or_else(|| {
+                OrcasError::Protocol(format!("unknown planning session `{}`", params.session_id))
+            })?;
+        if planning_session_status_is_terminal(session_snapshot.status) {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` is already closed",
+                session_snapshot.session_id
+            )));
+        }
+        if !session_snapshot.latest_structured_summary.ready_for_review {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` is not marked ready for review",
+                session_snapshot.session_id
+            )));
+        }
+        if matches!(
+            session_snapshot.latest_structured_summary.research_status,
+            PlanningSessionResearchStatus::Requested
+        ) {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` still has research in progress",
+                session_snapshot.session_id
+            )));
+        }
+        let (_workstream, active_plan) = self
+            .ensure_planning_workstream_available(&session_snapshot.workstream_id)
+            .await?;
+        if session_snapshot.base_plan_id.as_ref() != Some(&active_plan.plan_id)
+            || session_snapshot.base_plan_version != Some(active_plan.version)
+        {
+            return Err(OrcasError::Protocol(format!(
+                "planning session `{}` is stale relative to the active plan",
+                session_snapshot.session_id
+            )));
+        }
+
+        let proposal = {
+            let mut state = self.state.write().await;
+            if let Some(proposal_id) = session_snapshot.draft_revision_proposal_id.as_ref() {
+                if let Some(existing) = state
+                    .collaboration
+                    .planning
+                    .revision_proposals
+                    .get(proposal_id.as_str())
+                    .cloned()
+                {
+                    existing
+                } else {
+                    let proposal = build_planning_revision_proposal(
+                        &session_snapshot,
+                        &active_plan,
+                        &approved_by,
+                        Utc::now(),
+                    )?;
+                    state
+                        .collaboration
+                        .planning
+                        .propose_revision(proposal.clone())?;
+                    proposal
+                }
+            } else {
+                let proposal = build_planning_revision_proposal(
+                    &session_snapshot,
+                    &active_plan,
+                    &approved_by,
+                    Utc::now(),
+                )?;
+                state
+                    .collaboration
+                    .planning
+                    .propose_revision(proposal.clone())?;
+                proposal
+            }
+        };
+
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            session.status = PlanningSessionStatus::Approved;
+            session.draft_revision_proposal_id = Some(proposal.proposal_id.clone());
+            session.approved_plan_id = Some(active_plan.plan_id.clone());
+            session.approved_plan_version = Some(active_plan.version);
+            session.reviewed_at = Some(Utc::now());
+            session.reviewed_by = Some(approved_by.clone());
+            if let Some(note) = params
+                .review_note
+                .as_ref()
+                .filter(|note| !note.trim().is_empty())
+            {
+                session.review_note = Some(note.clone());
+            }
+            session.updated_at = Utc::now();
+            session.updated_by = approved_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionApproveResponse {
+            session,
+            revision_proposal: Some(proposal),
+        })
+    }
+
+    async fn planning_session_reject(
+        &self,
+        params: ipc::PlanningSessionRejectRequest,
+    ) -> OrcasResult<ipc::PlanningSessionRejectResponse> {
+        let rejected_by = params
+            .rejected_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            session.status = PlanningSessionStatus::Rejected;
+            session.reviewed_at = Some(Utc::now());
+            session.reviewed_by = Some(rejected_by.clone());
+            if let Some(note) = params
+                .review_note
+                .as_ref()
+                .filter(|note| !note.trim().is_empty())
+            {
+                session.review_note = Some(note.clone());
+            }
+            session.updated_at = Utc::now();
+            session.updated_by = rejected_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionRejectResponse { session })
+    }
+
+    async fn planning_session_supersede(
+        &self,
+        params: ipc::PlanningSessionSupersedeRequest,
+    ) -> OrcasResult<ipc::PlanningSessionSupersedeResponse> {
+        let updated_by = params
+            .updated_by
+            .clone()
+            .unwrap_or_else(|| SUPERVISOR_CLI_OPERATOR.to_string());
+        let session = {
+            let mut state = self.state.write().await;
+            let session = state
+                .collaboration
+                .planning_sessions
+                .get_mut(&params.session_id)
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "unknown planning session `{}`",
+                        params.session_id
+                    ))
+                })?;
+            if planning_session_status_is_terminal(session.status) {
+                return Err(OrcasError::Protocol(format!(
+                    "planning session `{}` is already closed",
+                    session.session_id
+                )));
+            }
+            session.status = PlanningSessionStatus::Superseded;
+            session.superseded_by_session_id = params.superseded_by_session_id.clone();
+            session.reviewed_at = Some(Utc::now());
+            session.reviewed_by = Some(updated_by.clone());
+            if let Some(note) = params.note.as_ref().filter(|note| !note.trim().is_empty()) {
+                session.review_note = Some(note.clone());
+            }
+            session.updated_at = Utc::now();
+            session.updated_by = updated_by;
+            session.clone()
+        };
+        self.persist_collaboration_state().await?;
+        Ok(ipc::PlanningSessionSupersedeResponse { session })
     }
 
     async fn assignment_start(
@@ -9731,6 +10502,82 @@ impl OrcasDaemonService {
             "daemon_bootstrap",
         );
         Ok(())
+    }
+
+    async fn ensure_planning_workstream_available(
+        &self,
+        workstream_id: &str,
+    ) -> OrcasResult<(Workstream, orcas_core::planning::WorkstreamPlan)> {
+        let bridged_workstream = {
+            let state = self.state.read().await;
+            if let Some(workstream) = state.collaboration.workstreams.get(workstream_id) {
+                workstream.clone()
+            } else {
+                drop(state);
+                let authority_workstream_id =
+                    orcas_core::authority::WorkstreamId::parse(workstream_id)?;
+                let authority_workstream = self
+                    .authority_store
+                    .get_workstream(&authority_workstream_id)
+                    .await?
+                    .ok_or_else(|| {
+                        OrcasError::Protocol(format!("unknown workstream `{workstream_id}`"))
+                    })?;
+                if authority_workstream.deleted_at.is_some() {
+                    return Err(OrcasError::Protocol(format!(
+                        "authority workstream `{workstream_id}` has been deleted"
+                    )));
+                }
+                let mut state = self.state.write().await;
+                let bridged =
+                    Self::authority_workstream_record_to_collaboration(&authority_workstream);
+                state
+                    .collaboration
+                    .workstreams
+                    .entry(workstream_id.to_string())
+                    .or_insert_with(|| bridged.clone());
+                state
+                    .collaboration
+                    .authority_workstream_bridges
+                    .insert(workstream_id.to_string());
+                bridged
+            }
+        };
+
+        let active_plan = {
+            let mut state = self.state.write().await;
+            let bridged_work_units = state
+                .collaboration
+                .work_units
+                .values()
+                .filter(|work_unit| work_unit.workstream_id == workstream_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let _ = state.collaboration.planning.bootstrap_workstream(
+                &bridged_workstream,
+                &bridged_work_units,
+                "planning_session",
+                Utc::now(),
+            )?;
+            state
+                .collaboration
+                .planning
+                .active_plan(workstream_id)
+                .cloned()
+                .ok_or_else(|| {
+                    OrcasError::Protocol(format!(
+                        "workstream `{workstream_id}` does not have an active plan"
+                    ))
+                })?
+        };
+        Ok((bridged_workstream, active_plan))
+    }
+
+    fn authority_command_metadata(&self, actor: &str) -> OrcasResult<authority::CommandMetadata> {
+        Ok(authority::CommandMetadata::new(
+            self.authority_store.origin_node_id()?,
+            authority::CommandActor::parse(actor)?,
+        ))
     }
 
     async fn ensure_assignment_communication_record(

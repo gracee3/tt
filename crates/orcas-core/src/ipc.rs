@@ -22,7 +22,8 @@ use crate::authority;
 use crate::collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, Decision, DecisionType,
-    LandingAuthorizationRecord, LandingExecutionRecord, Report, ReportConfidence,
+    LandingAuthorizationRecord, LandingExecutionRecord, PlanningSession,
+    PlanningSessionResearchStatus, PlanningSessionStructuredSummary, Report, ReportConfidence,
     ReportDisposition, ReportParseResult, SupervisorTurnDecision, SupervisorTurnDecisionKind,
     SupervisorTurnDecisionStatus, SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, Worker,
     WorkerSession, WorkspaceOperationRecord, Workstream, WorkstreamStatus,
@@ -89,6 +90,19 @@ pub mod methods {
     pub const WORKSTREAM_PLAN_LIST: &str = "workstream_plan/list";
     pub const PLAN_ASSESSMENT_LIST: &str = "plan_assessment/list";
     pub const PLAN_REVISION_PROPOSAL_LIST: &str = "plan_revision_proposal/list";
+    pub const PLANNING_SESSION_CREATE: &str = "planning_session/create";
+    pub const PLANNING_SESSION_GET: &str = "planning_session/get";
+    pub const PLANNING_SESSION_LIST: &str = "planning_session/list";
+    pub const PLANNING_SESSION_UPDATE_SUMMARY: &str = "planning_session/update_summary";
+    pub const PLANNING_SESSION_REQUEST_SUPERVISOR_CONTEXT: &str =
+        "planning_session/request_supervisor_context";
+    pub const PLANNING_SESSION_REQUEST_RESEARCH: &str = "planning_session/request_research";
+    pub const PLANNING_SESSION_MARK_READY_FOR_REVIEW: &str =
+        "planning_session/mark_ready_for_review";
+    pub const PLANNING_SESSION_ABORT: &str = "planning_session/abort";
+    pub const PLANNING_SESSION_APPROVE: &str = "planning_session/approve";
+    pub const PLANNING_SESSION_REJECT: &str = "planning_session/reject";
+    pub const PLANNING_SESSION_SUPERSEDE: &str = "planning_session/supersede";
     pub const AUTHORITY_TRACKED_THREAD_PREPARE_WORKSPACE: &str =
         "authority/tracked_thread/prepare_workspace";
     pub const AUTHORITY_TRACKED_THREAD_REFRESH_WORKSPACE: &str =
@@ -1678,6 +1692,191 @@ pub struct WorkstreamPlanListRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamPlanListResponse {
     pub plans: Vec<WorkstreamPlan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionCreateRequest {
+    pub workstream_id: String,
+    #[serde(default)]
+    pub planning_thread_id: Option<String>,
+    #[serde(default)]
+    pub initial_objective: String,
+    #[serde(default)]
+    pub research_status: PlanningSessionResearchStatus,
+    #[serde(default)]
+    pub requirements: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub draft_plan_summary: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionCreateResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionGetRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionGetResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanningSessionListRequest {
+    #[serde(default)]
+    pub workstream_id: Option<String>,
+    #[serde(default)]
+    pub include_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionListResponse {
+    pub sessions: Vec<PlanningSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionUpdateSummaryRequest {
+    pub session_id: String,
+    pub summary: PlanningSessionStructuredSummary,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionUpdateSummaryResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRequestSupervisorContextRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRequestSupervisorContextResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRequestResearchRequest {
+    pub session_id: String,
+    pub worker_id: String,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub worker_kind: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRequestResearchResponse {
+    pub session: PlanningSession,
+    pub assignment: Assignment,
+    pub worker: Worker,
+    pub worker_session: WorkerSession,
+    pub report: Report,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionMarkReadyForReviewRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionMarkReadyForReviewResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionAbortRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionAbortResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionApproveRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub review_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionApproveResponse {
+    pub session: PlanningSession,
+    #[serde(default)]
+    pub revision_proposal: Option<PlanRevisionProposal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRejectRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub rejected_by: Option<String>,
+    #[serde(default)]
+    pub review_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionRejectResponse {
+    pub session: PlanningSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionSupersedeRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub superseded_by_session_id: Option<String>,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSessionSupersedeResponse {
+    pub session: PlanningSession,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

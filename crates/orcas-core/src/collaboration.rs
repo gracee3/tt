@@ -22,7 +22,9 @@ use crate::communication::{
     TrackedThreadWorkspaceOperationKind, TrackedThreadWorkspaceOperationStatus,
 };
 use crate::ipc::{TrackedThreadMergePrepReadiness, TrackedThreadMergePrepReason};
-use crate::planning::{PlanExecutionKind, PlanId, PlanItemId, PlanningState};
+use crate::planning::{
+    PlanExecutionKind, PlanId, PlanItemId, PlanRevisionProposalId, PlanningState,
+};
 use crate::supervisor::SupervisorProposalRecord;
 
 /// Daemon-owned collaboration and execution/runtime state.
@@ -63,6 +65,8 @@ pub struct CollaborationState {
     pub landing_authorizations: BTreeMap<String, LandingAuthorizationRecord>,
     #[serde(default)]
     pub landing_executions: BTreeMap<String, LandingExecutionRecord>,
+    #[serde(default)]
+    pub planning_sessions: BTreeMap<String, PlanningSession>,
     #[serde(default)]
     pub supervisor_proposals: BTreeMap<String, SupervisorProposalRecord>,
     #[serde(default)]
@@ -539,6 +543,92 @@ pub enum WorkerSessionAttachability {
     Unknown,
 }
 
+/// Lifecycle for a supervisor-owned planning session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningSessionStatus {
+    #[default]
+    Draft,
+    Chatting,
+    ResearchRequested,
+    AwaitingApproval,
+    Approved,
+    Rejected,
+    Superseded,
+    Aborted,
+}
+
+/// Lifecycle of the bounded research turn attached to a planning session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningSessionResearchStatus {
+    #[default]
+    NotRequested,
+    Requested,
+    Completed,
+    Failed,
+}
+
+/// Typed summary for the current state of a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlanningSessionStructuredSummary {
+    pub objective: String,
+    #[serde(default)]
+    pub requirements: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub research_status: PlanningSessionResearchStatus,
+    #[serde(default)]
+    pub draft_plan_summary: Option<String>,
+    #[serde(default)]
+    pub ready_for_review: bool,
+}
+
+/// Supervisor-owned orchestration record for a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSession {
+    pub session_id: String,
+    pub workstream_id: String,
+    #[serde(default)]
+    pub status: PlanningSessionStatus,
+    pub planning_thread_id: String,
+    #[serde(default)]
+    pub base_plan_id: Option<PlanId>,
+    #[serde(default)]
+    pub base_plan_version: Option<u64>,
+    #[serde(default)]
+    pub research_assignment_id: Option<String>,
+    #[serde(default)]
+    pub research_report_id: Option<String>,
+    #[serde(default)]
+    pub draft_revision_proposal_id: Option<PlanRevisionProposalId>,
+    #[serde(default)]
+    pub approved_plan_id: Option<PlanId>,
+    #[serde(default)]
+    pub approved_plan_version: Option<u64>,
+    #[serde(default)]
+    pub latest_structured_summary: PlanningSessionStructuredSummary,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+    #[serde(default)]
+    pub request_note: Option<String>,
+    #[serde(default)]
+    pub reviewed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub reviewed_by: Option<String>,
+    #[serde(default)]
+    pub review_note: Option<String>,
+    #[serde(default)]
+    pub superseded_by_session_id: Option<String>,
+}
+
 /// A worker session record persisted by the daemon runtime model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSession {
@@ -554,6 +644,61 @@ pub struct WorkerSession {
     #[serde(default)]
     pub attachability: WorkerSessionAttachability,
     pub updated_at: DateTime<Utc>,
+}
+
+impl CollaborationState {
+    #[must_use]
+    pub fn planning_session(&self, session_id: &str) -> Option<&PlanningSession> {
+        self.planning_sessions.get(session_id)
+    }
+
+    #[must_use]
+    pub fn planning_session_mut(&mut self, session_id: &str) -> Option<&mut PlanningSession> {
+        self.planning_sessions.get_mut(session_id)
+    }
+
+    #[must_use]
+    pub fn latest_planning_session_for_workstream(
+        &self,
+        workstream_id: &str,
+    ) -> Option<&PlanningSession> {
+        self.planning_sessions
+            .values()
+            .filter(|session| session.workstream_id == workstream_id)
+            .max_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left.session_id.cmp(&right.session_id))
+            })
+    }
+
+    #[must_use]
+    pub fn open_planning_sessions_for_workstream(
+        &self,
+        workstream_id: &str,
+    ) -> Vec<&PlanningSession> {
+        let mut sessions = self
+            .planning_sessions
+            .values()
+            .filter(|session| {
+                session.workstream_id == workstream_id
+                    && !matches!(
+                        session.status,
+                        PlanningSessionStatus::Approved
+                            | PlanningSessionStatus::Rejected
+                            | PlanningSessionStatus::Superseded
+                            | PlanningSessionStatus::Aborted
+                    )
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        sessions
+    }
 }
 
 /// Outcome classification for a report produced by an assignment.
