@@ -67,11 +67,11 @@ pub enum TrackedThreadPruneWorkspaceResultStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcceptanceCriterionStatus {
-    #[serde(alias = "pass")]
+    #[serde(alias = "pass", alias = "passed")]
     Met,
     #[serde(alias = "partial", alias = "partially_met")]
     PartiallyMet,
-    #[serde(alias = "fail")]
+    #[serde(alias = "fail", alias = "failed")]
     NotMet,
     NotAttempted,
 }
@@ -384,7 +384,7 @@ pub struct PromptRenderArtifact {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptanceResult {
-    #[serde(alias = "acceptance_id")]
+    #[serde(alias = "acceptance_id", alias = "id")]
     pub criterion_id: String,
     pub status: AcceptanceCriterionStatus,
     #[serde(default, alias = "details")]
@@ -463,6 +463,7 @@ pub struct WorkerReportEnvelope {
     pub triggered_stop_condition_ids: Vec<String>,
     #[serde(deserialize_with = "deserialize_touched_files")]
     pub touched_files: Vec<TouchedFile>,
+    #[serde(default, deserialize_with = "deserialize_stringish_vec")]
     pub commands_run: Vec<String>,
     pub artifacts: Vec<String>,
     pub blockers: Vec<String>,
@@ -493,6 +494,12 @@ fn stringish_value_to_string(value: Value) -> String {
         Value::Object(map) => {
             if let Some(summary) = map.get("summary").and_then(Value::as_str) {
                 summary.to_string()
+            } else if let Some(command) = map.get("command").and_then(Value::as_str) {
+                if let Some(exit_code) = map.get("exit_code").and_then(Value::as_i64) {
+                    format!("{command} (exit {exit_code})")
+                } else {
+                    command.to_string()
+                }
             } else if let (Some(name), Some(status)) = (
                 map.get("name").and_then(Value::as_str),
                 map.get("status").and_then(Value::as_str),
@@ -974,6 +981,70 @@ mod tests {
         assert_eq!(
             round_trip.acceptance_results[0].status,
             AcceptanceCriterionStatus::PartiallyMet
+        );
+    }
+
+    #[test]
+    fn worker_report_envelope_accepts_live_object_commands_and_acceptance_shape() {
+        let value = json!({
+            "schema_version": "worker_report_envelope.v1",
+            "assignment_id": "assignment-1",
+            "packet_id": "packet-1",
+            "task_mode": "implement",
+            "disposition": "completed",
+            "summary": "Fixed the bounded bug.",
+            "confidence": "high",
+            "acceptance_results": [
+                {
+                    "id": "acceptance_1",
+                    "status": "passed",
+                    "details": "Implemented the minimal code change."
+                }
+            ],
+            "triggered_stop_condition_ids": ["stop_1"],
+            "touched_files": [
+                {
+                    "path": "main.c",
+                    "change_type": "modified",
+                    "summary": "Updated the greeting string."
+                }
+            ],
+            "commands_run": [
+                {
+                    "command": "make test -j1 V=1",
+                    "exit_code": 0
+                }
+            ],
+            "artifacts": [],
+            "blockers": [],
+            "questions": [],
+            "recommended_next_actions": [],
+            "uncertainties": [],
+            "review_signal": {
+                "level": "normal",
+                "reasons": [],
+                "focus": []
+            },
+            "workspace_report": null,
+            "prune_workspace_result": null,
+            "landing_execution_result": null,
+            "mode_payload": {
+                "kind": "implement",
+                "semantic_changes": ["Changed one line in main.c."],
+                "tests_run": ["make test"],
+                "rough_edges": []
+            }
+        });
+
+        let envelope =
+            serde_json::from_value::<WorkerReportEnvelope>(value).expect("deserialize live shape");
+        assert_eq!(
+            envelope.acceptance_results[0].status,
+            AcceptanceCriterionStatus::Met
+        );
+        assert_eq!(
+            envelope.commands_run,
+            vec!["make test -j1 V=1 (exit 0)".to_string()]
         );
     }
 

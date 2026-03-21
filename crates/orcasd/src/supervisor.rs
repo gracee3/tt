@@ -1932,9 +1932,12 @@ fn proposal_json_schema() -> Value {
                     "workstream_id",
                     "plan_id",
                     "plan_version",
+                    "assignment_id",
+                    "plan_item_id",
                     "alignment_status",
                     "progress_summary",
                     "drift_risk",
+                    "blocker_summary",
                     "recommended_next_action",
                     "proposed_revision_needed",
                     "execution_kind",
@@ -1992,7 +1995,20 @@ fn proposal_json_schema() -> Value {
                     "urgency",
                     "expected_benefit",
                     "tradeoffs",
-                    "ops"
+                    "ops",
+                    "status",
+                    "created_at",
+                    "created_by",
+                    "reviewed_at",
+                    "reviewed_by",
+                    "review_note",
+                    "apply_started_at",
+                    "apply_finished_at",
+                    "apply_error",
+                    "recovery",
+                    "applied_plan_id",
+                    "applied_plan_version",
+                    "source_supervisor_proposal_id"
                 ],
                 "properties": {
                     "proposal_id": { "type": "string" },
@@ -2009,7 +2025,8 @@ fn proposal_json_schema() -> Value {
                     "ops": {
                         "type": "array",
                         "items": {
-                            "type": "object"
+                            "type": "object",
+                            "additionalProperties": false
                         }
                     },
                     "status": {
@@ -2524,6 +2541,48 @@ mod tests {
         let proposal = sample_proposal(DecisionType::Continue);
 
         validate_proposal(&proposal, &pack, &collaboration).expect("proposal should validate");
+    }
+
+    #[test]
+    fn proposal_schema_includes_nullable_plan_assessment_and_revision_fields_in_required_list() {
+        let schema = super::proposal_json_schema();
+        let plan_assessment_required = schema["properties"]["plan_assessment"]["required"]
+            .as_array()
+            .expect("plan_assessment required");
+        for field in ["assignment_id", "plan_item_id", "blocker_summary"] {
+            assert!(
+                plan_assessment_required
+                    .iter()
+                    .any(|value: &serde_json::Value| value.as_str() == Some(field)),
+                "plan_assessment schema must require {field}"
+            );
+        }
+
+        let plan_revision_required = schema["properties"]["plan_revision_proposal"]["required"]
+            .as_array()
+            .expect("plan_revision_proposal required");
+        for field in [
+            "status",
+            "created_at",
+            "created_by",
+            "reviewed_at",
+            "reviewed_by",
+            "review_note",
+            "apply_started_at",
+            "apply_finished_at",
+            "apply_error",
+            "recovery",
+            "applied_plan_id",
+            "applied_plan_version",
+            "source_supervisor_proposal_id",
+        ] {
+            assert!(
+                plan_revision_required
+                    .iter()
+                    .any(|value: &serde_json::Value| value.as_str() == Some(field)),
+                "plan_revision_proposal schema must require {field}"
+            );
+        }
     }
 
     #[test]

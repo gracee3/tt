@@ -95,5 +95,6 @@ That removes `target/e2e/` and nothing else.
 - `git-worktrees`
 - `phased-fibonacci`
 - `live-worker-direct-patch`
+- `live-supervisor-micro-proposal`
 
 The current migration keeps the existing behavior first, then opens the path for a truly live worker-turn scenario next.
