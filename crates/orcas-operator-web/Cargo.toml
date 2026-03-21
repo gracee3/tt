@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 chrono.workspace = true
 console_error_panic_hook = "0.1.7"
+js-sys = "0.3.91"
 leptos.workspace = true
 leptos_router.workspace = true
 orcas-core = { path = "../orcas-core" }
@@ -22,10 +23,23 @@ orcas-operator-core = { path = "../orcas-operator-core" }
 orcas-server-client = { path = "../orcas-server-client" }
 serde.workspace = true
 serde_json.workspace = true
+wasm-bindgen = "0.2.104"
+wasm-bindgen-futures = "0.4.55"
 uuid.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3.82", features = [
+    "Notification",
+    "NotificationPermission",
+    "PermissionState",
+    "PushEncryptionKeyName",
+    "PushManager",
+    "PushPermissionState",
+    "PushSubscription",
+    "PushSubscriptionKeys",
+    "PushSubscriptionJson",
+    "PushSubscriptionOptions",
+    "PushSubscriptionOptionsInit",
     "Window",
     "Navigator",
     "ServiceWorkerContainer",

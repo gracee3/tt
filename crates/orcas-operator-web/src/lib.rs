@@ -1,6 +1,11 @@
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code, unused_variables))]
+
 mod api;
 mod pwa;
 mod storage;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use leptos::prelude::*;
 use leptos_router::components::{A, Route, Router, Routes};
@@ -9,10 +14,10 @@ use leptos_router::path;
 
 use orcas_core::ipc::OperatorRemoteActionRequestStatus;
 use orcas_operator_core::{
-    action_kind_label, inbox_status_label, remote_action_status_label, source_kind_label,
     DeliveryJobView, DeliveryPageView, InboxDetailPageView, InboxItemCardView, InboxPageView,
     NotificationCandidateView, NotificationPageView, OperatorServerSettings, RemoteActionPageView,
-    RemoteActionRequestView,
+    RemoteActionRequestView, action_kind_label, inbox_status_label, remote_action_status_label,
+    source_kind_label,
 };
 
 pub fn mount_app() {
@@ -116,6 +121,26 @@ fn SettingsPanel() -> impl IntoView {
                     }
                 />
             </label>
+            <label class="field">
+                <span>"Push public key"</span>
+                <input
+                    type="text"
+                    placeholder="VAPID public key"
+                    prop:value=move || {
+                        settings.with(|settings| settings.push_public_key.clone().unwrap_or_default())
+                    }
+                    on:input=move |ev| {
+                        let value = event_target_value(&ev);
+                        settings.update(|settings| {
+                            settings.push_public_key = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value)
+                            };
+                        });
+                    }
+                />
+            </label>
             <p class="settings-status">
                 {move || {
                     let current = settings.get();
@@ -124,10 +149,142 @@ fn SettingsPanel() -> impl IntoView {
                     } else {
                         "Configure server URL and origin node id to load data.".to_string()
                     }
-                }}
+            }}
             </p>
             <p class="settings-note">"Settings persist to localStorage."</p>
+            <PushRegistrationPanel />
         </section>
+    }
+}
+
+#[component]
+fn PushRegistrationPanel() -> impl IntoView {
+    let settings = use_context::<RwSignal<OperatorServerSettings>>()
+        .expect("settings context should be provided");
+    let refresh_epoch = RwSignal::new(0u64);
+    let working = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let status = LocalResource::new(move || {
+        let settings = settings.get_untracked();
+        let _refresh_epoch = refresh_epoch.get();
+        async move { api::load_browser_push_status(settings).await }
+    });
+
+    view! {
+        <article class="push-panel">
+            <h3>"Browser notifications"</h3>
+            <p class="settings-status">
+                "Register this browser as a push target without talking to the daemon directly."
+            </p>
+            <div class="toolbar">
+                <button
+                    class="primary-button"
+                    disabled=move || working.get()
+                    on:click=move |_| {
+                        let _settings = settings.get_untracked();
+                        working.set(true);
+                        error.set(None);
+                        let _refresh_epoch = refresh_epoch.clone();
+                        let _error = error.clone();
+                        let _working = working.clone();
+                        #[cfg(target_arch = "wasm32")]
+                        leptos::spawn_local(async move {
+                            let result = api::register_browser_push_subscription(_settings).await;
+                            _working.set(false);
+                            match result {
+                                Ok(_) => _refresh_epoch.update(|value| *value += 1),
+                                Err(failure) => _error.set(Some(failure)),
+                            }
+                        });
+                    }
+                >
+                    "Enable browser notifications"
+                </button>
+                <button
+                    class="refresh-button"
+                    disabled=move || working.get()
+                    on:click=move |_| {
+                        let _settings = settings.get_untracked();
+                        working.set(true);
+                        error.set(None);
+                        let _refresh_epoch = refresh_epoch.clone();
+                        let _error = error.clone();
+                        let _working = working.clone();
+                        #[cfg(target_arch = "wasm32")]
+                        leptos::spawn_local(async move {
+                            let result = api::disable_browser_push_subscription(_settings).await;
+                            _working.set(false);
+                            match result {
+                                Ok(_) => _refresh_epoch.update(|value| *value += 1),
+                                Err(failure) => _error.set(Some(failure)),
+                            }
+                        });
+                    }
+                >
+                    "Disable"
+                </button>
+                <button
+                    class="refresh-button"
+                    disabled=move || working.get()
+                    on:click=move |_| refresh_epoch.update(|value| *value += 1)
+                >
+                    "Refresh status"
+                </button>
+            </div>
+            {move || match error.get() {
+                Some(error) => view! { <ErrorPanel error=error /> }.into_any(),
+                None => view! {}.into_any(),
+            }}
+            {move || match status.get() {
+                None => view! { <p class="muted">"Loading browser push status…"</p> }.into_any(),
+                Some(Err(error)) => view! { <ErrorPanel error=error /> }.into_any(),
+                Some(Ok(state)) => {
+                    let permission = pwa::browser_notification_permission_label(
+                        state.notification_permission,
+                    );
+                    view! {
+                        <dl class="detail-grid">
+                            <div>
+                                <dt>"Service worker"</dt>
+                                <dd>{if state.service_worker_registered { "registered" } else { "not registered" }}</dd>
+                            </div>
+                            <div>
+                                <dt>"Permission"</dt>
+                                <dd>{permission}</dd>
+                            </div>
+                            <div>
+                                <dt>"Browser subscription"</dt>
+                                <dd>
+                                    {state
+                                        .browser_subscription
+                                        .as_ref()
+                                        .map(|subscription| subscription.endpoint.as_str())
+                                        .unwrap_or("none")}
+                                </dd>
+                            </div>
+                            <div>
+                                <dt>"Recipient id"</dt>
+                                <dd>{state.recipient_id.clone()}</dd>
+                            </div>
+                            <div>
+                                <dt>"Subscription id"</dt>
+                                <dd>{state.subscription_id.clone()}</dd>
+                            </div>
+                            <div>
+                                <dt>"Server subscription"</dt>
+                                <dd>
+                                    {state
+                                        .server_subscription_enabled
+                                        .map(|enabled| if enabled { "enabled" } else { "disabled" })
+                                        .unwrap_or("not registered")}
+                                </dd>
+                            </div>
+                        </dl>
+                    }
+                    .into_any()
+                }
+            }}
+        </article>
     }
 }
 
@@ -135,15 +292,92 @@ fn SettingsPanel() -> impl IntoView {
 fn InboxRoute() -> impl IntoView {
     let settings = use_context::<RwSignal<OperatorServerSettings>>()
         .expect("settings context should be provided");
-    let settings_value = move || settings.get();
+    let refresh_epoch = RwSignal::new(0u64);
+    let watch_error = RwSignal::new(None::<String>);
+    let settings_value = move || settings.get_untracked();
     let inbox = LocalResource::new(move || {
         let settings = settings_value();
+        let _refresh_epoch = refresh_epoch.get();
         async move { api::load_inbox_page(settings).await }
+    });
+
+    Effect::new({
+        let _settings = settings.clone();
+        let _refresh_epoch = refresh_epoch.clone();
+        let _watch_error = watch_error.clone();
+        move |_| {
+            let alive = Arc::new(AtomicBool::new(true));
+            on_cleanup({
+                let alive = alive.clone();
+                move || alive.store(false, Ordering::Release)
+            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                let settings = _settings.clone();
+                let refresh_epoch = _refresh_epoch.clone();
+                let watch_error = _watch_error.clone();
+                let alive = alive.clone();
+                leptos::spawn_local(async move {
+                    let current_settings = settings.get_untracked();
+                    if !storage::settings_ready(&current_settings) {
+                        return;
+                    }
+                    let mut after_sequence =
+                        match api::inbox_checkpoint(current_settings.clone()).await {
+                            Ok(response) => response.checkpoint.sequence,
+                            Err(error) => {
+                                watch_error.set(Some(error));
+                                return;
+                            }
+                        };
+                    loop {
+                        if !alive.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let current_settings = settings.get_untracked();
+                        if !storage::settings_ready(&current_settings) {
+                            break;
+                        }
+                        match api::wait_for_inbox_checkpoint(
+                            current_settings,
+                            Some(after_sequence),
+                            Some(30_000),
+                        )
+                        .await
+                        {
+                            Ok(response) => {
+                                if !alive.load(Ordering::Acquire) {
+                                    break;
+                                }
+                                if let Some(next_sequence) =
+                                    api::inbox_checkpoint_advance(after_sequence, &response)
+                                {
+                                    after_sequence = next_sequence;
+                                    watch_error.set(None);
+                                    refresh_epoch.update(|value| *value += 1);
+                                }
+                            }
+                            Err(error) => {
+                                watch_error.set(Some(error));
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
     });
 
     view! {
         <PageFrame title="Actionable inbox" subtitle="Derived mirrored work that needs operator attention">
-            <button class="refresh-button" on:click=move |_| inbox.refetch()>"Refresh"</button>
+            <div class="toolbar">
+                <button class="refresh-button" on:click=move |_| inbox.refetch()>"Refresh"</button>
+                <span class="muted">"Auto-refreshes on server checkpoint changes while this view is open."</span>
+            </div>
+            {move || match watch_error.get() {
+                Some(error) => view! { <ErrorPanel error=format!("Live refresh paused: {error}") /> }.into_any(),
+                None => view! {}.into_any(),
+            }}
             {move || match inbox.get() {
                 None => view! { <p class="muted">"Loading inbox…"</p> }.into_any(),
                 Some(Err(error)) => view! { <ErrorPanel error=error /> }.into_any(),
@@ -270,8 +504,7 @@ fn ActionRoute() -> impl IntoView {
         };
         if !matches!(
             request.status,
-            OperatorRemoteActionRequestStatus::Pending
-                | OperatorRemoteActionRequestStatus::Claimed
+            OperatorRemoteActionRequestStatus::Pending | OperatorRemoteActionRequestStatus::Claimed
         ) {
             watching.set(false);
             return;
@@ -340,11 +573,7 @@ fn ActionRoute() -> impl IntoView {
 }
 
 #[component]
-fn PageFrame(
-    title: &'static str,
-    subtitle: &'static str,
-    children: Children,
-) -> impl IntoView {
+fn PageFrame(title: &'static str, subtitle: &'static str, children: Children) -> impl IntoView {
     view! {
         <section class="page">
             <header class="page-header">
@@ -464,8 +693,16 @@ fn render_inbox_detail_page(
         .notification_candidates
         .first()
         .map(|candidate| candidate.origin_node_id.clone())
-        .or_else(|| page.delivery_jobs.first().map(|job| job.origin_node_id.clone()))
-        .or_else(|| page.remote_action_requests.first().map(|request| request.origin_node_id.clone()))
+        .or_else(|| {
+            page.delivery_jobs
+                .first()
+                .map(|job| job.origin_node_id.clone())
+        })
+        .or_else(|| {
+            page.remote_action_requests
+                .first()
+                .map(|request| request.origin_node_id.clone())
+        })
         .unwrap_or_default();
     let note = RwSignal::new(String::new());
     let submitting = RwSignal::new(false);

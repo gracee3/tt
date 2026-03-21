@@ -1,16 +1,26 @@
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code, unused_variables))]
+
 use orcas_core::ipc::{
-    NotificationDeliveryJobListRequest, OperatorInboxWaitForCheckpointRequest,
+    NotificationDeliveryJobListRequest, NotificationRecipientUpsertRequest,
+    NotificationSubscriptionListRequest, NotificationSubscriptionSetEnabledRequest,
+    NotificationSubscriptionUpsertRequest, NotificationTransportKind,
+    OperatorInboxWaitForCheckpointRequest, OperatorInboxWaitForCheckpointResponse,
     OperatorNotificationListRequest, OperatorRemoteActionCreateRequest,
     OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
     OperatorRemoteActionWaitRequest,
 };
 use orcas_operator_core::{
-    build_delivery_page, build_inbox_detail_page, build_inbox_page, build_notification_page,
-    build_remote_action_page, DeliveryPageView, InboxDetailPageView, InboxPageView,
-    NotificationPageView, OperatorServerSettings, RemoteActionPageView,
+    DeliveryPageView, InboxDetailPageView, InboxPageView, NotificationPageView,
+    OperatorServerSettings, RemoteActionPageView, build_delivery_page, build_inbox_detail_page,
+    build_inbox_page, build_notification_page, build_remote_action_page,
 };
 use orcas_server_client::OrcasServerClient;
 use uuid::Uuid;
+
+use crate::pwa::{
+    self, BrowserNotificationPermission, BrowserPushState, BrowserPushSubscriptionSnapshot,
+};
+use crate::storage;
 
 fn client_from_settings(settings: &OperatorServerSettings) -> Result<OrcasServerClient, String> {
     if settings.server_url.trim().is_empty() {
@@ -31,6 +41,192 @@ fn configured_origin(settings: &OperatorServerSettings) -> Result<&str, String> 
         return Err("origin node id is required".to_string());
     }
     Ok(origin)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserPushStatusView {
+    pub browser_instance_id: String,
+    pub recipient_id: String,
+    pub subscription_id: String,
+    pub service_worker_registered: bool,
+    pub notification_permission: BrowserNotificationPermission,
+    pub browser_subscription: Option<BrowserPushSubscriptionSnapshot>,
+    pub server_subscription_enabled: Option<bool>,
+}
+
+fn browser_push_identity(
+    settings: &OperatorServerSettings,
+) -> Result<storage::BrowserPushIdentity, String> {
+    let _ = configured_origin(settings)?;
+    let identity = storage::load_browser_push_identity();
+    storage::save_browser_push_identity(&identity);
+    Ok(identity)
+}
+
+fn browser_push_display_name(origin: &str, identity: &storage::BrowserPushIdentity) -> String {
+    let short = identity
+        .browser_instance_id
+        .split('-')
+        .next()
+        .unwrap_or(&identity.browser_instance_id);
+    format!("Orcas web browser {origin} ({short})")
+}
+
+fn browser_push_endpoint_payload(
+    subscription: &BrowserPushSubscriptionSnapshot,
+) -> serde_json::Value {
+    serde_json::json!({
+        "endpoint": subscription.endpoint,
+        "keys": {
+            "auth": subscription.auth,
+            "p256dh": subscription.p256dh,
+        }
+    })
+}
+
+pub fn inbox_checkpoint_advance(
+    after_sequence: u64,
+    response: &OperatorInboxWaitForCheckpointResponse,
+) -> Option<u64> {
+    if response.timed_out {
+        return None;
+    }
+    (response.checkpoint.current_sequence > after_sequence)
+        .then_some(response.checkpoint.current_sequence)
+}
+
+async fn sync_browser_push_subscription(
+    settings: OperatorServerSettings,
+    browser_state: BrowserPushState,
+) -> Result<BrowserPushStatusView, String> {
+    let origin = configured_origin(&settings)?.to_string();
+    let client = client_from_settings(&settings)?;
+    let identity = browser_push_identity(&settings)?;
+    let recipient_id = storage::browser_push_recipient_id(&origin, &identity);
+    let subscription_id = storage::browser_push_subscription_id(&origin, &identity);
+    let display_name = browser_push_display_name(&origin, &identity);
+
+    let recipient = client
+        .notification_recipient_upsert(&NotificationRecipientUpsertRequest {
+            recipient_id: recipient_id.clone(),
+            display_name,
+            enabled: true,
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .recipient;
+
+    let server_subscription_enabled =
+        if let Some(subscription) = browser_state.subscription.as_ref() {
+            let request = NotificationSubscriptionUpsertRequest {
+                subscription_id: subscription_id.clone(),
+                recipient_id: recipient.recipient_id.clone(),
+                transport_kind: NotificationTransportKind::WebPush,
+                endpoint: browser_push_endpoint_payload(subscription),
+                enabled: true,
+            };
+            let subscription = client
+                .notification_subscription_upsert(&request)
+                .await
+                .map_err(|error| error.to_string())?
+                .subscription;
+            Some(subscription.enabled)
+        } else {
+            None
+        };
+
+    let server_subscription_enabled = client
+        .notification_subscription_list(&NotificationSubscriptionListRequest {
+            recipient_id: Some(recipient_id.clone()),
+            enabled_only: false,
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .subscriptions
+        .into_iter()
+        .find(|subscription| subscription.subscription_id == subscription_id)
+        .map(|subscription| subscription.enabled)
+        .or(server_subscription_enabled);
+
+    Ok(BrowserPushStatusView {
+        browser_instance_id: identity.browser_instance_id,
+        recipient_id,
+        subscription_id,
+        service_worker_registered: browser_state.service_worker_registered,
+        notification_permission: browser_state.notification_permission,
+        browser_subscription: browser_state.subscription,
+        server_subscription_enabled,
+    })
+}
+
+pub async fn load_browser_push_status(
+    settings: OperatorServerSettings,
+) -> Result<BrowserPushStatusView, String> {
+    let origin = configured_origin(&settings)?;
+    let identity = browser_push_identity(&settings)?;
+    let recipient_id = storage::browser_push_recipient_id(origin, &identity);
+    let subscription_id = storage::browser_push_subscription_id(origin, &identity);
+    let browser_state = pwa::inspect_browser_push_state().await?;
+    let client = client_from_settings(&settings)?;
+    let server_subscription_enabled = client
+        .notification_subscription_list(&NotificationSubscriptionListRequest {
+            recipient_id: Some(recipient_id.clone()),
+            enabled_only: false,
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .subscriptions
+        .into_iter()
+        .find(|subscription| subscription.subscription_id == subscription_id)
+        .map(|subscription| subscription.enabled);
+    Ok(BrowserPushStatusView {
+        browser_instance_id: identity.browser_instance_id,
+        recipient_id,
+        subscription_id,
+        service_worker_registered: browser_state.service_worker_registered,
+        notification_permission: browser_state.notification_permission,
+        browser_subscription: browser_state.subscription,
+        server_subscription_enabled,
+    })
+}
+
+pub async fn register_browser_push_subscription(
+    settings: OperatorServerSettings,
+) -> Result<BrowserPushStatusView, String> {
+    let browser_state =
+        pwa::register_browser_push_subscription(settings.push_public_key.clone()).await?;
+    sync_browser_push_subscription(settings, browser_state).await
+}
+
+pub async fn disable_browser_push_subscription(
+    settings: OperatorServerSettings,
+) -> Result<BrowserPushStatusView, String> {
+    let browser_state = pwa::disable_browser_push_subscription().await?;
+    let origin = configured_origin(&settings)?.to_string();
+    let client = client_from_settings(&settings)?;
+    let identity = browser_push_identity(&settings)?;
+    let recipient_id = storage::browser_push_recipient_id(&origin, &identity);
+    let subscription_id = storage::browser_push_subscription_id(&origin, &identity);
+    if client
+        .notification_subscription_list(&NotificationSubscriptionListRequest {
+            recipient_id: Some(recipient_id.clone()),
+            enabled_only: false,
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .subscriptions
+        .into_iter()
+        .any(|subscription| subscription.subscription_id == subscription_id)
+    {
+        let _ = client
+            .notification_subscription_set_enabled(&NotificationSubscriptionSetEnabledRequest {
+                subscription_id: subscription_id.clone(),
+                enabled: false,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    sync_browser_push_subscription(settings, browser_state).await
 }
 
 pub async fn load_inbox_page(settings: OperatorServerSettings) -> Result<InboxPageView, String> {
@@ -103,7 +299,10 @@ pub async fn load_notifications_page(
         })
         .await
         .map_err(|error| error.to_string())?;
-    Ok(build_notification_page(response.origin_node_id, &response.candidates))
+    Ok(build_notification_page(
+        response.origin_node_id,
+        &response.candidates,
+    ))
 }
 
 pub async fn load_deliveries_page(
@@ -149,7 +348,9 @@ pub async fn load_action_request(
         })
         .await
         .map_err(|error| error.to_string())?;
-    Ok(response.request.map(orcas_operator_core::remote_action_request_view))
+    Ok(response
+        .request
+        .map(orcas_operator_core::remote_action_request_view))
 }
 
 pub async fn submit_remote_action(
@@ -173,7 +374,9 @@ pub async fn submit_remote_action(
         })
         .await
         .map_err(|error| error.to_string())?;
-    Ok(orcas_operator_core::remote_action_request_view(response.request))
+    Ok(orcas_operator_core::remote_action_request_view(
+        response.request,
+    ))
 }
 
 pub async fn wait_for_remote_action_update(
@@ -193,7 +396,9 @@ pub async fn wait_for_remote_action_update(
         })
         .await
         .map_err(|error| error.to_string())?;
-    Ok(response.request.map(orcas_operator_core::remote_action_request_view))
+    Ok(response
+        .request
+        .map(orcas_operator_core::remote_action_request_view))
 }
 
 pub async fn wait_for_inbox_checkpoint(
@@ -237,5 +442,51 @@ mod tests {
         let key = generated_idempotency_key();
         assert!(!key.trim().is_empty());
         assert!(Uuid::parse_str(&key).is_ok());
+    }
+
+    #[test]
+    fn browser_push_identity_is_stable_and_scoped() {
+        let identity = storage::BrowserPushIdentity {
+            browser_instance_id: "browser-123".to_string(),
+        };
+        assert_eq!(
+            storage::browser_push_recipient_id("origin-a", &identity),
+            "browser::origin-a::browser-123"
+        );
+        assert_eq!(
+            storage::browser_push_subscription_id("origin-a", &identity),
+            "browser::origin-a::browser-123::webpush"
+        );
+    }
+
+    #[test]
+    fn browser_push_endpoint_payload_includes_keys() {
+        let payload = browser_push_endpoint_payload(&BrowserPushSubscriptionSnapshot {
+            endpoint: "https://example.invalid/push".to_string(),
+            auth: Some("auth".to_string()),
+            p256dh: Some("p256dh".to_string()),
+        });
+        assert_eq!(payload["endpoint"], "https://example.invalid/push");
+        assert_eq!(payload["keys"]["auth"], "auth");
+        assert_eq!(payload["keys"]["p256dh"], "p256dh");
+    }
+
+    #[test]
+    fn inbox_checkpoint_wait_only_advances_on_new_sequence() {
+        let current = orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+            origin_node_id: "origin-a".to_string(),
+            checkpoint: orcas_core::ipc::OperatorInboxCheckpoint {
+                current_sequence: 7,
+                updated_at: chrono::Utc::now(),
+            },
+            timed_out: false,
+        };
+        assert_eq!(inbox_checkpoint_advance(6, &current), Some(7));
+        assert_eq!(inbox_checkpoint_advance(7, &current), None);
+        let timed_out = orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+            timed_out: true,
+            ..current
+        };
+        assert_eq!(inbox_checkpoint_advance(6, &timed_out), None);
     }
 }

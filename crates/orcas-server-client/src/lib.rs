@@ -4,11 +4,16 @@ use orcas_core::ipc::{
     NotificationDeliveryJobGetRequest, NotificationDeliveryJobGetResponse,
     NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
     NotificationDeliveryRunPendingRequest, NotificationDeliveryRunPendingResponse,
+    NotificationRecipientListRequest, NotificationRecipientListResponse,
+    NotificationRecipientUpsertRequest, NotificationRecipientUpsertResponse,
+    NotificationSubscriptionListRequest, NotificationSubscriptionListResponse,
+    NotificationSubscriptionSetEnabledRequest, NotificationSubscriptionSetEnabledResponse,
+    NotificationSubscriptionUpsertRequest, NotificationSubscriptionUpsertResponse,
     OperatorInboxMirrorCheckpointQueryResponse, OperatorInboxMirrorGetResponse,
     OperatorInboxMirrorListResponse, OperatorInboxWaitForCheckpointRequest,
     OperatorInboxWaitForCheckpointResponse, OperatorNotificationAckRequest,
-    OperatorNotificationAckResponse,
-    OperatorNotificationGetRequest, OperatorNotificationGetResponse, OperatorNotificationListRequest,
+    OperatorNotificationAckResponse, OperatorNotificationGetRequest,
+    OperatorNotificationGetResponse, OperatorNotificationListRequest,
     OperatorNotificationListResponse, OperatorNotificationSuppressRequest,
     OperatorNotificationSuppressResponse, OperatorRemoteActionClaimRequest,
     OperatorRemoteActionClaimResponse, OperatorRemoteActionCompleteRequest,
@@ -60,10 +65,7 @@ impl OrcasServerClient {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn get_json<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> OrcasResult<T> {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> OrcasResult<T> {
         let mut request = reqwest::Client::new().get(self.url(path));
         if let Some(value) = self.auth_header_value() {
             let header_value = reqwest::header::HeaderValue::from_str(&value)
@@ -83,10 +85,7 @@ impl OrcasServerClient {
     }
 
     #[cfg(target_arch = "wasm32")]
-    async fn get_json<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> OrcasResult<T> {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> OrcasResult<T> {
         let mut request = gloo_net::http::Request::get(&self.url(path));
         if let Some(value) = self.auth_header_value() {
             request = request.header("Authorization", &value);
@@ -187,24 +186,21 @@ impl OrcasServerClient {
         &self,
         request: &OperatorNotificationListRequest,
     ) -> OrcasResult<OperatorNotificationListResponse> {
-        self.post_json("operator-notifications/list", request)
-            .await
+        self.post_json("operator-notifications/list", request).await
     }
 
     pub async fn notification_get(
         &self,
         request: &OperatorNotificationGetRequest,
     ) -> OrcasResult<OperatorNotificationGetResponse> {
-        self.post_json("operator-notifications/get", request)
-            .await
+        self.post_json("operator-notifications/get", request).await
     }
 
     pub async fn notification_ack(
         &self,
         request: &OperatorNotificationAckRequest,
     ) -> OrcasResult<OperatorNotificationAckResponse> {
-        self.post_json("operator-notifications/ack", request)
-            .await
+        self.post_json("operator-notifications/ack", request).await
     }
 
     pub async fn notification_suppress(
@@ -212,7 +208,47 @@ impl OrcasServerClient {
         request: &OperatorNotificationSuppressRequest,
     ) -> OrcasResult<OperatorNotificationSuppressResponse> {
         self.post_json("operator-notifications/suppress", request)
-        .await
+            .await
+    }
+
+    pub async fn notification_recipient_upsert(
+        &self,
+        request: &NotificationRecipientUpsertRequest,
+    ) -> OrcasResult<NotificationRecipientUpsertResponse> {
+        self.post_json("operator-notifications/recipients/upsert", request)
+            .await
+    }
+
+    pub async fn notification_recipient_list(
+        &self,
+        request: &NotificationRecipientListRequest,
+    ) -> OrcasResult<NotificationRecipientListResponse> {
+        self.post_json("operator-notifications/recipients/list", request)
+            .await
+    }
+
+    pub async fn notification_subscription_upsert(
+        &self,
+        request: &NotificationSubscriptionUpsertRequest,
+    ) -> OrcasResult<NotificationSubscriptionUpsertResponse> {
+        self.post_json("operator-notifications/subscriptions/upsert", request)
+            .await
+    }
+
+    pub async fn notification_subscription_list(
+        &self,
+        request: &NotificationSubscriptionListRequest,
+    ) -> OrcasResult<NotificationSubscriptionListResponse> {
+        self.post_json("operator-notifications/subscriptions/list", request)
+            .await
+    }
+
+    pub async fn notification_subscription_set_enabled(
+        &self,
+        request: &NotificationSubscriptionSetEnabledRequest,
+    ) -> OrcasResult<NotificationSubscriptionSetEnabledResponse> {
+        self.post_json("operator-notifications/subscriptions/set_enabled", request)
+            .await
     }
 
     pub async fn delivery_job_list(
@@ -220,7 +256,7 @@ impl OrcasServerClient {
         request: &NotificationDeliveryJobListRequest,
     ) -> OrcasResult<NotificationDeliveryJobListResponse> {
         self.post_json("operator-notifications/delivery-jobs/list", request)
-        .await
+            .await
     }
 
     pub async fn delivery_job_get(
@@ -228,7 +264,7 @@ impl OrcasServerClient {
         request: &NotificationDeliveryJobGetRequest,
     ) -> OrcasResult<NotificationDeliveryJobGetResponse> {
         self.post_json("operator-notifications/delivery-jobs/get", request)
-        .await
+            .await
     }
 
     pub async fn delivery_run_pending(
@@ -236,7 +272,7 @@ impl OrcasServerClient {
         request: &NotificationDeliveryRunPendingRequest,
     ) -> OrcasResult<NotificationDeliveryRunPendingResponse> {
         self.post_json("operator-notifications/delivery/run_pending", request)
-        .await
+            .await
     }
 
     pub async fn remote_action_create(
@@ -246,24 +282,21 @@ impl OrcasServerClient {
         if request.idempotency_key.is_none() {
             request.idempotency_key = Some(Uuid::now_v7().to_string());
         }
-        self.post_json("operator-actions/request", &request)
-            .await
+        self.post_json("operator-actions/request", &request).await
     }
 
     pub async fn remote_action_list(
         &self,
         request: &OperatorRemoteActionListRequest,
     ) -> OrcasResult<OperatorRemoteActionListResponse> {
-        self.post_json("operator-actions/list", request)
-            .await
+        self.post_json("operator-actions/list", request).await
     }
 
     pub async fn remote_action_get(
         &self,
         request: &OperatorRemoteActionGetRequest,
     ) -> OrcasResult<OperatorRemoteActionGetResponse> {
-        self.post_json("operator-actions/get", request)
-            .await
+        self.post_json("operator-actions/get", request).await
     }
 
     pub async fn remote_action_claim(
@@ -277,8 +310,7 @@ impl OrcasServerClient {
         &self,
         request: &OperatorRemoteActionCompleteRequest,
     ) -> OrcasResult<OperatorRemoteActionCompleteResponse> {
-        self.post_json("operator-actions/complete", request)
-            .await
+        self.post_json("operator-actions/complete", request).await
     }
 
     pub async fn remote_action_fail(
@@ -292,8 +324,7 @@ impl OrcasServerClient {
         &self,
         request: &OperatorRemoteActionWaitRequest,
     ) -> OrcasResult<OperatorRemoteActionWaitResponse> {
-        self.post_json("operator-actions/wait", request)
-            .await
+        self.post_json("operator-actions/wait", request).await
     }
 
     pub async fn inbox_checkpoint(
@@ -336,18 +367,19 @@ mod tests {
     use tempfile::TempDir;
     use tokio::net::TcpListener;
 
+    use crate::OrcasServerClient;
     use orcas_core::ipc::{
         NotificationDeliveryJobListRequest, NotificationDeliveryJobStatus,
-        NotificationRecipientUpsertRequest, NotificationSubscriptionUpsertRequest,
-        NotificationTransportKind, OperatorInboxActionKind, OperatorInboxChange,
-        OperatorInboxChangeKind, OperatorInboxCheckpoint, OperatorInboxItem, OperatorInboxItemStatus,
-        OperatorInboxSourceKind, OperatorNotificationCandidateStatus, OperatorRemoteActionClaimRequest,
+        NotificationRecipientListRequest, NotificationRecipientUpsertRequest,
+        NotificationSubscriptionListRequest, NotificationSubscriptionSetEnabledRequest,
+        NotificationSubscriptionUpsertRequest, NotificationTransportKind, OperatorInboxActionKind,
+        OperatorInboxChange, OperatorInboxChangeKind, OperatorInboxCheckpoint, OperatorInboxItem,
+        OperatorInboxItemStatus, OperatorInboxSourceKind, OperatorNotificationCandidateStatus,
+        OperatorNotificationListRequest, OperatorRemoteActionClaimRequest,
         OperatorRemoteActionCompleteRequest, OperatorRemoteActionCreateRequest,
-        OperatorRemoteActionGetRequest, OperatorRemoteActionRequestStatus,
-        OperatorRemoteActionWaitRequest, OperatorNotificationListRequest,
-        OperatorRemoteActionListRequest,
+        OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
+        OperatorRemoteActionRequestStatus, OperatorRemoteActionWaitRequest,
     };
-    use crate::OrcasServerClient;
     use orcas_server::InboxMirrorServer;
     use orcas_server::InboxMirrorStore;
 
@@ -363,7 +395,10 @@ mod tests {
             title: title.to_string(),
             summary: format!("summary {title}"),
             status: OperatorInboxItemStatus::Open,
-            available_actions: vec![OperatorInboxActionKind::Approve, OperatorInboxActionKind::Reject],
+            available_actions: vec![
+                OperatorInboxActionKind::Approve,
+                OperatorInboxActionKind::Reject,
+            ],
             created_at: now,
             updated_at: now,
             resolved_at: None,
@@ -391,10 +426,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let server_url = format!("http://{}", listener.local_addr().expect("addr"));
         let handle = tokio::spawn(async move {
-            server
-                .serve_with_listener(listener)
-                .await
-                .expect("server");
+            server.serve_with_listener(listener).await.expect("server");
         });
         (tempdir, server_url, token, handle)
     }
@@ -460,7 +492,10 @@ mod tests {
             .operator_inbox_list(origin_node_id)
             .await;
         let unauthorized = unauthorized.expect_err("unauthorized error");
-        assert!(unauthorized.to_string().contains("401"), "expected auth failure");
+        assert!(
+            unauthorized.to_string().contains("401"),
+            "expected auth failure"
+        );
 
         let client = OrcasServerClient::with_operator_api_token(server_url, token);
         let response = client
@@ -491,7 +526,10 @@ mod tests {
             .operator_inbox_get(origin_node_id, "proposal-1")
             .await
             .expect("inbox get");
-        assert_eq!(inbox_item.item.expect("inbox item").status, OperatorInboxItemStatus::Open);
+        assert_eq!(
+            inbox_item.item.expect("inbox item").status,
+            OperatorInboxItemStatus::Open
+        );
 
         let notifications = client
             .notification_list(&OperatorNotificationListRequest {
@@ -513,10 +551,12 @@ mod tests {
             })
             .await
             .expect("delivery list");
-        assert!(delivery_jobs
-            .jobs
-            .iter()
-            .all(|job| job.status == NotificationDeliveryJobStatus::Pending));
+        assert!(
+            delivery_jobs
+                .jobs
+                .iter()
+                .all(|job| job.status == NotificationDeliveryJobStatus::Pending)
+        );
 
         let create = client
             .remote_action_create(OperatorRemoteActionCreateRequest {
@@ -529,7 +569,10 @@ mod tests {
             })
             .await
             .expect("remote action create");
-        assert_eq!(create.request.status, OperatorRemoteActionRequestStatus::Pending);
+        assert_eq!(
+            create.request.status,
+            OperatorRemoteActionRequestStatus::Pending
+        );
         let listed = client
             .remote_action_list(&OperatorRemoteActionListRequest {
                 origin_node_id: origin_node_id.to_string(),
@@ -546,7 +589,83 @@ mod tests {
             })
             .await
             .expect("remote action get");
-        assert_eq!(got.request.expect("request").request_id, create.request.request_id);
+        assert_eq!(
+            got.request.expect("request").request_id,
+            create.request.request_id
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn recipient_and_subscription_registration_round_trip_through_the_client() {
+        let (_tempdir, server_url, token, handle) = start_server().await;
+        let client = OrcasServerClient::with_operator_api_token(server_url, token);
+
+        let recipient = client
+            .notification_recipient_upsert(&NotificationRecipientUpsertRequest {
+                recipient_id: "browser::origin-a::client-1".to_string(),
+                display_name: "Orcas web browser origin-a".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("recipient upsert")
+            .recipient;
+        assert!(recipient.enabled);
+
+        let subscription = client
+            .notification_subscription_upsert(&NotificationSubscriptionUpsertRequest {
+                subscription_id: "browser::origin-a::client-1::webpush".to_string(),
+                recipient_id: recipient.recipient_id.clone(),
+                transport_kind: NotificationTransportKind::WebPush,
+                endpoint: serde_json::json!({
+                    "endpoint": "https://example.invalid/push",
+                    "keys": {
+                        "auth": "auth-key",
+                        "p256dh": "p256dh-key"
+                    }
+                }),
+                enabled: true,
+            })
+            .await
+            .expect("subscription upsert")
+            .subscription;
+        assert!(subscription.enabled);
+        assert_eq!(
+            subscription.transport_kind,
+            NotificationTransportKind::WebPush
+        );
+
+        let subscriptions = client
+            .notification_subscription_list(&NotificationSubscriptionListRequest {
+                recipient_id: Some(recipient.recipient_id.clone()),
+                enabled_only: true,
+            })
+            .await
+            .expect("subscription list");
+        assert_eq!(subscriptions.subscriptions.len(), 1);
+        assert_eq!(
+            subscriptions.subscriptions[0].subscription_id,
+            subscription.subscription_id
+        );
+
+        let updated = client
+            .notification_subscription_set_enabled(&NotificationSubscriptionSetEnabledRequest {
+                subscription_id: subscription.subscription_id.clone(),
+                enabled: false,
+            })
+            .await
+            .expect("disable")
+            .subscription;
+        assert!(!updated.enabled);
+
+        let recipients = client
+            .notification_recipient_list(&NotificationRecipientListRequest {
+                include_disabled: true,
+            })
+            .await
+            .expect("recipient list");
+        assert_eq!(recipients.recipients.len(), 1);
 
         handle.abort();
     }
@@ -646,14 +765,13 @@ mod tests {
             .await
             .expect("claim");
         let claimed_request = claimed.requests.first().expect("claimed request");
-        assert_eq!(claimed_request.request.status, OperatorRemoteActionRequestStatus::Claimed);
+        assert_eq!(
+            claimed_request.request.status,
+            OperatorRemoteActionRequestStatus::Claimed
+        );
         let waited = wait_handle.await.expect("wait task").expect("wait result");
         assert_eq!(
-            waited
-                .request
-                .as_ref()
-                .expect("waited request")
-                .status,
+            waited.request.as_ref().expect("waited request").status,
             OperatorRemoteActionRequestStatus::Claimed
         );
 
@@ -683,14 +801,16 @@ mod tests {
             })
             .await
             .expect("complete");
-        assert_eq!(completed.request.status, OperatorRemoteActionRequestStatus::Completed);
-        let final_wait = wait_after_claim.await.expect("wait task").expect("wait result");
         assert_eq!(
-            final_wait
-                .request
-                .as_ref()
-                .expect("final request")
-                .status,
+            completed.request.status,
+            OperatorRemoteActionRequestStatus::Completed
+        );
+        let final_wait = wait_after_claim
+            .await
+            .expect("wait task")
+            .expect("wait result");
+        assert_eq!(
+            final_wait.request.as_ref().expect("final request").status,
             OperatorRemoteActionRequestStatus::Completed
         );
 
@@ -711,10 +831,12 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert!(unauthorized
-            .expect_err("unauthorized")
-            .to_string()
-            .contains("401"));
+        assert!(
+            unauthorized
+                .expect_err("unauthorized")
+                .to_string()
+                .contains("401")
+        );
 
         let client = OrcasServerClient::with_operator_api_token(server_url, token);
         let err = client
@@ -762,7 +884,12 @@ mod tests {
             })
             .await
             .expect("claim");
-        let claim_token = claimed.requests.first().expect("claimed").claim_token.clone();
+        let claim_token = claimed
+            .requests
+            .first()
+            .expect("claimed")
+            .claim_token
+            .clone();
         let err = client
             .remote_action_complete(&OperatorRemoteActionCompleteRequest {
                 origin_node_id: origin_node_id.to_string(),

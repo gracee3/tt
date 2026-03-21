@@ -13,6 +13,8 @@ pub struct OperatorServerSettings {
     #[serde(default)]
     pub operator_api_token: Option<String>,
     #[serde(default)]
+    pub push_public_key: Option<String>,
+    #[serde(default)]
     pub origin_node_id: String,
 }
 
@@ -21,6 +23,7 @@ impl Default for OperatorServerSettings {
         Self {
             server_url: String::new(),
             operator_api_token: None,
+            push_public_key: None,
             origin_node_id: String::new(),
         }
     }
@@ -133,7 +136,10 @@ pub struct InboxDetailPageView {
     pub remote_action_requests: Vec<RemoteActionRequestView>,
 }
 
-pub fn build_inbox_page(origin_node_id: impl Into<String>, items: &[OperatorInboxItem]) -> InboxPageView {
+pub fn build_inbox_page(
+    origin_node_id: impl Into<String>,
+    items: &[OperatorInboxItem],
+) -> InboxPageView {
     let origin_node_id = origin_node_id.into();
     let mut proposal_items = Vec::new();
     let mut decision_items = Vec::new();
@@ -146,10 +152,18 @@ pub fn build_inbox_page(origin_node_id: impl Into<String>, items: &[OperatorInbo
             actionable_count += 1;
         }
         match item.source_kind {
-            OperatorInboxSourceKind::SupervisorProposal => proposal_items.push(inbox_item_card_view(item)),
-            OperatorInboxSourceKind::SupervisorDecision => decision_items.push(inbox_item_card_view(item)),
-            OperatorInboxSourceKind::PlanningSession => session_items.push(inbox_item_card_view(item)),
-            OperatorInboxSourceKind::PlanRevisionProposal => revision_items.push(inbox_item_card_view(item)),
+            OperatorInboxSourceKind::SupervisorProposal => {
+                proposal_items.push(inbox_item_card_view(item))
+            }
+            OperatorInboxSourceKind::SupervisorDecision => {
+                decision_items.push(inbox_item_card_view(item))
+            }
+            OperatorInboxSourceKind::PlanningSession => {
+                session_items.push(inbox_item_card_view(item))
+            }
+            OperatorInboxSourceKind::PlanRevisionProposal => {
+                revision_items.push(inbox_item_card_view(item))
+            }
         }
     }
 
@@ -157,14 +171,21 @@ pub fn build_inbox_page(origin_node_id: impl Into<String>, items: &[OperatorInbo
         (OperatorInboxSourceKind::SupervisorProposal, proposal_items),
         (OperatorInboxSourceKind::SupervisorDecision, decision_items),
         (OperatorInboxSourceKind::PlanningSession, session_items),
-        (OperatorInboxSourceKind::PlanRevisionProposal, revision_items),
+        (
+            OperatorInboxSourceKind::PlanRevisionProposal,
+            revision_items,
+        ),
     ]
     .into_iter()
     .filter_map(|(source_kind, mut items)| {
         if items.is_empty() {
             return None;
         }
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
+        items.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         Some(InboxSectionView {
             source_kind,
             title: source_kind_label(source_kind),
@@ -192,7 +213,11 @@ pub fn build_notification_page(
         .cloned()
         .map(notification_candidate_view)
         .collect::<Vec<_>>();
-    candidates.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.candidate_id.cmp(&b.candidate_id)));
+    candidates.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.candidate_id.cmp(&b.candidate_id))
+    });
     NotificationPageView {
         origin_node_id,
         candidates,
@@ -200,20 +225,30 @@ pub fn build_notification_page(
 }
 
 pub fn build_delivery_page(jobs: &[NotificationDeliveryJob]) -> DeliveryPageView {
-    let mut jobs = jobs.iter().cloned().map(delivery_job_view).collect::<Vec<_>>();
-    jobs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.job_id.cmp(&b.job_id)));
+    let mut jobs = jobs
+        .iter()
+        .cloned()
+        .map(delivery_job_view)
+        .collect::<Vec<_>>();
+    jobs.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.job_id.cmp(&b.job_id))
+    });
     DeliveryPageView { jobs }
 }
 
-pub fn build_remote_action_page(
-    requests: &[OperatorRemoteActionRequest],
-) -> RemoteActionPageView {
+pub fn build_remote_action_page(requests: &[OperatorRemoteActionRequest]) -> RemoteActionPageView {
     let mut requests = requests
         .iter()
         .cloned()
         .map(remote_action_request_view)
         .collect::<Vec<_>>();
-    requests.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.request_id.cmp(&b.request_id)));
+    requests.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.request_id.cmp(&b.request_id))
+    });
     RemoteActionPageView { requests }
 }
 
@@ -227,7 +262,11 @@ pub fn build_inbox_detail_page(
     let item_id = item.as_ref().map(|item| item.id.clone());
     let candidate_views = candidates
         .iter()
-        .filter(|candidate| item_id.as_deref().is_none_or(|item_id| candidate.item_id == item_id))
+        .filter(|candidate| {
+            item_id
+                .as_deref()
+                .is_none_or(|item_id| candidate.item_id == item_id)
+        })
         .cloned()
         .map(notification_candidate_view)
         .collect::<Vec<_>>();
@@ -237,13 +276,20 @@ pub fn build_inbox_detail_page(
         .collect::<Vec<_>>();
     let delivery_views = jobs
         .iter()
-        .filter(|job| relevant_candidate_ids.is_empty() || relevant_candidate_ids.contains(&job.candidate_id.as_str()))
+        .filter(|job| {
+            relevant_candidate_ids.is_empty()
+                || relevant_candidate_ids.contains(&job.candidate_id.as_str())
+        })
         .cloned()
         .map(delivery_job_view)
         .collect::<Vec<_>>();
     let request_views = requests
         .iter()
-        .filter(|request| item_id.as_deref().is_none_or(|item_id| request.item_id == item_id))
+        .filter(|request| {
+            item_id
+                .as_deref()
+                .is_none_or(|item_id| request.item_id == item_id)
+        })
         .cloned()
         .map(remote_action_request_view)
         .collect::<Vec<_>>();
@@ -320,9 +366,7 @@ pub fn delivery_job_view(job: NotificationDeliveryJob) -> DeliveryJobView {
     }
 }
 
-pub fn remote_action_request_view(
-    request: OperatorRemoteActionRequest,
-) -> RemoteActionRequestView {
+pub fn remote_action_request_view(request: OperatorRemoteActionRequest) -> RemoteActionRequestView {
     RemoteActionRequestView {
         request_id: request.request_id,
         origin_node_id: request.origin_node_id,
@@ -331,10 +375,13 @@ pub fn remote_action_request_view(
         action_label: action_kind_label(request.action_kind),
         status: request.status,
         status_label: remote_action_status_label(request.status),
-        summary: request
-            .request_note
-            .clone()
-            .unwrap_or_else(|| format!("{} via {}", request.item.title, action_kind_label(request.action_kind))),
+        summary: request.request_note.clone().unwrap_or_else(|| {
+            format!(
+                "{} via {}",
+                request.item.title,
+                action_kind_label(request.action_kind)
+            )
+        }),
         created_at: request.created_at,
         updated_at: request.updated_at,
         claimed_by: request.claimed_by,
@@ -417,11 +464,16 @@ mod tests {
     use orcas_core::ipc::{
         NotificationDeliveryJob, NotificationDeliveryJobStatus, NotificationTransportKind,
         OperatorInboxActionKind, OperatorInboxItem, OperatorInboxItemStatus,
-        OperatorInboxSourceKind, OperatorNotificationCandidate, OperatorNotificationCandidateStatus,
-        OperatorRemoteActionRequest, OperatorRemoteActionRequestStatus,
+        OperatorInboxSourceKind, OperatorNotificationCandidate,
+        OperatorNotificationCandidateStatus, OperatorRemoteActionRequest,
+        OperatorRemoteActionRequestStatus,
     };
 
-    fn inbox_item(id: &str, source_kind: OperatorInboxSourceKind, status: OperatorInboxItemStatus) -> OperatorInboxItem {
+    fn inbox_item(
+        id: &str,
+        source_kind: OperatorInboxSourceKind,
+        status: OperatorInboxItemStatus,
+    ) -> OperatorInboxItem {
         let now = Utc::now();
         OperatorInboxItem {
             id: id.to_string(),
@@ -433,7 +485,10 @@ mod tests {
             title: format!("Title {id}"),
             summary: format!("Summary {id}"),
             status,
-            available_actions: vec![OperatorInboxActionKind::Approve, OperatorInboxActionKind::Reject],
+            available_actions: vec![
+                OperatorInboxActionKind::Approve,
+                OperatorInboxActionKind::Reject,
+            ],
             created_at: now,
             updated_at: now,
             resolved_at: None,
@@ -447,9 +502,21 @@ mod tests {
         let page = build_inbox_page(
             "origin-1",
             &[
-                inbox_item("proposal-1", OperatorInboxSourceKind::SupervisorProposal, OperatorInboxItemStatus::Open),
-                inbox_item("decision-1", OperatorInboxSourceKind::SupervisorDecision, OperatorInboxItemStatus::Resolved),
-                inbox_item("session-1", OperatorInboxSourceKind::PlanningSession, OperatorInboxItemStatus::Open),
+                inbox_item(
+                    "proposal-1",
+                    OperatorInboxSourceKind::SupervisorProposal,
+                    OperatorInboxItemStatus::Open,
+                ),
+                inbox_item(
+                    "decision-1",
+                    OperatorInboxSourceKind::SupervisorDecision,
+                    OperatorInboxItemStatus::Resolved,
+                ),
+                inbox_item(
+                    "session-1",
+                    OperatorInboxSourceKind::PlanningSession,
+                    OperatorInboxItemStatus::Open,
+                ),
             ],
         );
 
@@ -539,9 +606,18 @@ mod tests {
             &[request],
         );
 
-        assert_eq!(notification_status_label(OperatorNotificationCandidateStatus::Pending), "Pending");
-        assert_eq!(delivery_status_label(NotificationDeliveryJobStatus::Pending), "Pending");
-        assert_eq!(remote_action_status_label(OperatorRemoteActionRequestStatus::Pending), "Pending");
+        assert_eq!(
+            notification_status_label(OperatorNotificationCandidateStatus::Pending),
+            "Pending"
+        );
+        assert_eq!(
+            delivery_status_label(NotificationDeliveryJobStatus::Pending),
+            "Pending"
+        );
+        assert_eq!(
+            remote_action_status_label(OperatorRemoteActionRequestStatus::Pending),
+            "Pending"
+        );
         assert_eq!(detail.notification_candidates.len(), 1);
         assert_eq!(detail.delivery_jobs.len(), 1);
         assert_eq!(detail.remote_action_requests.len(), 1);
