@@ -184,21 +184,24 @@ pub fn parse_worker_report(
         "worker report envelope extracted"
     );
 
-    let envelope: WorkerReportEnvelope = match serde_json::from_str(json_payload.trim()) {
-        Ok(envelope) => envelope,
-        Err(error) => {
-            warn!(
-                assignment_id = %assignment.id,
-                packet_id = %record.packet.packet_id,
-                stage = "decode_envelope",
-                duration_ms = started_at.elapsed().as_millis() as u64,
-                error = %error,
-                "worker report envelope decode failed"
-            );
-            return fallback(Some(format!(
-                "worker report envelope JSON could not be decoded: {error}"
-            )));
-        }
+    let Some(envelope) =
+        parse_worker_report_envelope(
+            &json_payload,
+            assignment,
+            record,
+            extraction.surrounding_text,
+        )
+    else {
+        warn!(
+            assignment_id = %assignment.id,
+            packet_id = %record.packet.packet_id,
+            stage = "decode_envelope",
+            duration_ms = started_at.elapsed().as_millis() as u64,
+            "worker report envelope decode failed"
+        );
+        return fallback(Some(
+            "worker report envelope JSON could not be decoded".to_string(),
+        ));
     };
 
     let validation =
@@ -284,6 +287,83 @@ pub fn parse_worker_report(
         );
     }
     parsed
+}
+
+fn parse_worker_report_envelope(
+    json_payload: &str,
+    assignment: &Assignment,
+    record: &AssignmentCommunicationRecord,
+    surrounding_text: bool,
+) -> Option<WorkerReportEnvelope> {
+    if let Ok(envelope) = serde_json::from_str::<WorkerReportEnvelope>(json_payload.trim()) {
+        return Some(envelope);
+    }
+
+    let repaired_payload = repair_worker_report_envelope_payload(json_payload, assignment, record)?;
+    let Ok(envelope) = serde_json::from_str::<WorkerReportEnvelope>(&repaired_payload) else {
+        return None;
+    };
+    debug!(
+        assignment_id = %assignment.id,
+        packet_id = %record.packet.packet_id,
+        stage = "decode_envelope_repaired",
+        surrounding_text,
+        "worker report envelope decode repaired after a malformed identity field"
+    );
+    Some(envelope)
+}
+
+fn repair_worker_report_envelope_payload(
+    json_payload: &str,
+    assignment: &Assignment,
+    record: &AssignmentCommunicationRecord,
+) -> Option<String> {
+    let mut repaired = json_payload.to_string();
+    let mut changed = false;
+    changed |= repair_json_string_field(&mut repaired, "assignment_id", &assignment.id);
+    changed |= repair_json_string_field(
+        &mut repaired,
+        "packet_id",
+        &record.packet.packet_id,
+    );
+    changed |= repair_json_string_field(
+        &mut repaired,
+        "schema_version",
+        crate::assignment_comm::WORKER_REPORT_ENVELOPE_SCHEMA_VERSION,
+    );
+    changed.then_some(repaired)
+}
+
+fn repair_json_string_field(json_payload: &mut String, field: &str, value: &str) -> bool {
+    let needle = format!("\"{field}\":");
+    let Some(field_index) = json_payload.find(&needle) else {
+        return false;
+    };
+    let line_start = json_payload[..field_index]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = json_payload[field_index..]
+        .find('\n')
+        .map(|offset| field_index + offset)
+        .unwrap_or(json_payload.len());
+    let line = &json_payload[line_start..line_end];
+    let Some(colon_index) = line.find(':') else {
+        return false;
+    };
+    let value_segment = &line[colon_index + 1..];
+    if value_segment.trim_start().starts_with('"') {
+        return false;
+    }
+    let Some(comma_index) = value_segment.find(',') else {
+        return false;
+    };
+    let prefix = &line[..colon_index + 1];
+    let suffix = &value_segment[comma_index..];
+    let quoted_value = serde_json::to_string(value).expect("string value can be serialized");
+    let replacement = format!("{prefix} {quoted_value}{suffix}");
+    json_payload.replace_range(line_start..line_end, &replacement);
+    true
 }
 
 fn extract_envelope(raw_output: &str) -> EnvelopeExtraction {
@@ -620,6 +700,31 @@ mod tests {
                 .structural_issues
                 .iter()
                 .any(|issue| issue.contains("JSON could not be decoded"))
+        );
+    }
+
+    #[test]
+    fn parse_worker_report_repairs_malformed_assignment_identity_field() {
+        let assignment = sample_assignment();
+        let record = sample_record(&assignment);
+        let raw = format!(
+            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\":264 \"ignment-1\",\n  \"packet_id\": \"{}\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Completed the bounded change.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [],\n  \"touched_files\": [],\n  \"commands_run\": [],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [],\n    \"tests_run\": [],\n    \"rough_edges\": []\n  }}\n}}\nORCAS_REPORT_END",
+            record.packet.packet_id
+        );
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert!(parsed.envelope.is_some());
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        assert_eq!(parsed.summary, "Completed the bounded change.");
+        assert_eq!(
+            parsed
+                .envelope
+                .as_ref()
+                .expect("envelope")
+                .assignment_id,
+            assignment.id
         );
     }
 

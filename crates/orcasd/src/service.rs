@@ -1648,6 +1648,12 @@ impl OrcasDaemonService {
         params: ipc::TurnStartRequest,
     ) -> OrcasResult<ipc::TurnStartResponse> {
         self.connect_upstream().await?;
+        info!(
+            thread_id = %params.thread_id,
+            has_cwd = params.cwd.is_some(),
+            has_model = params.model.is_some(),
+            "starting upstream Codex turn"
+        );
         let response = self
             .codex_client
             .turn_start(types::TurnStartParams {
@@ -1663,8 +1669,18 @@ impl OrcasDaemonService {
                 model: params.model,
             })
             .await?;
+        info!(
+            thread_id = %params.thread_id,
+            turn_id = %response.turn.id,
+            "upstream Codex turn started"
+        );
         self.record_turn_started(&params.thread_id, &response.turn.id, "submitted")
             .await;
+        info!(
+            thread_id = %params.thread_id,
+            turn_id = %response.turn.id,
+            "recorded upstream Codex turn start"
+        );
         Ok(ipc::TurnStartResponse {
             turn_id: response.turn.id,
             thread_id: params.thread_id,
@@ -4412,6 +4428,12 @@ impl OrcasDaemonService {
             .await?;
         self.persist_collaboration_state().await?;
 
+        info!(
+            assignment_id = %assignment_id,
+            thread_id = %thread_id,
+            turn_id = %turn.turn_id,
+            "waiting for assignment turn to reach terminal state"
+        );
         let turn_state = match self.wait_for_turn_terminal(&thread_id, &turn.turn_id).await {
             Ok(turn_state) => turn_state,
             Err(error) => {
@@ -4421,19 +4443,42 @@ impl OrcasDaemonService {
                 return Err(error);
             }
         };
+        info!(
+            assignment_id = %assignment_id,
+            thread_id = %thread_id,
+            turn_id = %turn.turn_id,
+            lifecycle = ?turn_state.lifecycle,
+            "assignment turn reached terminal state"
+        );
         let raw_output = self
             .raw_output_for_turn(&thread_id, &turn.turn_id)
             .await
             .unwrap_or_default();
-        let (report, _assignment_after_report, _work_unit_after_report) =
-            Box::pin(self.ingest_assignment_turn_outcome(
+        info!(
+            assignment_id = %assignment_id,
+            thread_id = %thread_id,
+            turn_id = %turn.turn_id,
+            raw_output_len = raw_output.len(),
+            "captured raw output for completed assignment turn"
+        );
+        let report = self
+            .complete_prepared_assignment_turn(
                 &assignment_id,
                 &worker_id,
                 &worker_session_id,
+                &thread_id,
+                &turn.turn_id,
                 turn_state,
                 raw_output,
-            ))
+            )
             .await?;
+        info!(
+            assignment_id = %assignment_id,
+            thread_id = %thread_id,
+            turn_id = %turn.turn_id,
+            report_id = %report.id,
+            "ingested assignment turn outcome"
+        );
 
         let (assignment, worker, worker_session) = {
             let state = self.state.read().await;
@@ -4470,6 +4515,35 @@ impl OrcasDaemonService {
             worker_session,
             report,
         })
+    }
+
+    async fn complete_prepared_assignment_turn(
+        &self,
+        assignment_id: &str,
+        worker_id: &str,
+        worker_session_id: &str,
+        thread_id: &str,
+        turn_id: &str,
+        turn_state: ipc::TurnStateView,
+        raw_output: String,
+    ) -> OrcasResult<Report> {
+        let (report, _assignment_after_report, _work_unit_after_report) =
+            self.ingest_assignment_turn_outcome(
+                assignment_id,
+                worker_id,
+                worker_session_id,
+                turn_state,
+                raw_output,
+            )
+            .await?;
+        info!(
+            assignment_id = %assignment_id,
+            thread_id = %thread_id,
+            turn_id = %turn_id,
+            report_id = %report.id,
+            "ingested assignment turn outcome"
+        );
+        Ok(report)
     }
 
     async fn start_tracked_thread_workspace_operation(
@@ -5281,7 +5355,32 @@ impl OrcasDaemonService {
         turn_state: ipc::TurnStateView,
         raw_output: String,
     ) -> OrcasResult<(Report, Assignment, WorkUnit, Vec<SupervisorProposalRecord>)> {
+        self.record_assignment_turn_outcome_impl(
+            assignment_id,
+            worker_id,
+            worker_session_id,
+            turn_state,
+            raw_output,
+        )
+        .await
+    }
+
+    async fn record_assignment_turn_outcome_impl(
+        &self,
+        assignment_id: &str,
+        worker_id: &str,
+        worker_session_id: &str,
+        turn_state: ipc::TurnStateView,
+        raw_output: String,
+    ) -> OrcasResult<(Report, Assignment, WorkUnit, Vec<SupervisorProposalRecord>)> {
+        Box::pin(async move {
         let started_at = Instant::now();
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            "recording assignment turn outcome"
+        );
         self.ensure_assignment_communication_record(assignment_id, None, None)
             .await?;
         let (assignment_for_parse, communication_record) = {
@@ -5311,6 +5410,14 @@ impl OrcasDaemonService {
             turn_state.lifecycle,
             &assignment_for_parse,
             &communication_record,
+        );
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            parse_result = ?parsed_report.validation.parse_result,
+            disposition = ?parsed_report.disposition,
+            "assignment turn outcome parsed"
         );
         let workspace_report = parsed_report
             .envelope
@@ -5397,6 +5504,13 @@ impl OrcasDaemonService {
             session.updated_at = now;
         }
         drop(state);
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            report_id = %report.id,
+            "assignment turn outcome state updated"
+        );
 
         if parsed_report.validation.parse_result != ReportParseResult::Invalid
             && let Some(workspace_report) = workspace_report.as_ref()
@@ -5642,6 +5756,8 @@ impl OrcasDaemonService {
             work_unit_after_report,
             stale_proposals,
         ))
+        })
+        .await
     }
 
     async fn record_worker_workspace_report(
@@ -5747,6 +5863,31 @@ impl OrcasDaemonService {
         turn_state: ipc::TurnStateView,
         raw_output: String,
     ) -> OrcasResult<(Report, Assignment, WorkUnit)> {
+        self.ingest_assignment_turn_outcome_impl(
+            assignment_id,
+            worker_id,
+            worker_session_id,
+            turn_state,
+            raw_output,
+        )
+        .await
+    }
+
+    async fn ingest_assignment_turn_outcome_impl(
+        &self,
+        assignment_id: &str,
+        worker_id: &str,
+        worker_session_id: &str,
+        turn_state: ipc::TurnStateView,
+        raw_output: String,
+    ) -> OrcasResult<(Report, Assignment, WorkUnit)> {
+        Box::pin(async move {
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            "ingesting assignment turn outcome"
+        );
         let (report, assignment_after_report, work_unit_after_report, stale_proposals) =
             Box::pin(self.record_assignment_turn_outcome(
                 assignment_id,
@@ -5756,6 +5897,13 @@ impl OrcasDaemonService {
                 raw_output,
             ))
             .await?;
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            report_id = %report.id,
+            "assignment turn outcome recorded"
+        );
         self.persist_collaboration_state().await?;
         self.emit_report_recorded(&report).await;
         let assignment_event_action = match assignment_after_report.status {
@@ -5778,7 +5926,16 @@ impl OrcasDaemonService {
                 .await;
         }
         self.maybe_auto_create_proposal_for_report(&report).await;
+        info!(
+            assignment_id = %assignment_id,
+            worker_id = %worker_id,
+            worker_session_id = %worker_session_id,
+            report_id = %report.id,
+            "assignment turn outcome ingestion complete"
+        );
         Ok((report, assignment_after_report, work_unit_after_report))
+        })
+        .await
     }
 
     async fn assignment_get(
@@ -12099,6 +12256,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
     }
 
     async fn refresh_codex_supervisor_state_for_thread(&self, thread_id: &str) -> OrcasResult<()> {
+        info!(thread_id = %thread_id, "refreshing codex supervisor state for thread");
         let (created, stale, updated_assignments) = {
             let now = Utc::now();
             let mut state = self.state.write().await;
@@ -12278,6 +12436,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             )
             .await;
         }
+        info!(thread_id = %thread_id, "finished refreshing codex supervisor state for thread");
         Ok(())
     }
 
@@ -13268,6 +13427,12 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 turn_id,
                 status,
             } => {
+                info!(
+                    thread_id = %thread_id,
+                    turn_id = %turn_id,
+                    status = %status,
+                    "processing upstream turn completion event"
+                );
                 let (session, turn, thread, turn_state) = {
                     let mut state = self.state.write().await;
                     let (turn, thread_summary, turn_state) = {
@@ -13319,14 +13484,13 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     }
                     (state.session.clone(), turn, thread_summary, turn_state)
                 };
-                if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
-                    let _ = self.persist_thread_view(thread_view).await;
-                }
-                let _ = self.persist_turn_state_view(&turn_state).await;
                 let _ = (thread, session, turn);
-                let _ = self
-                    .refresh_codex_supervisor_state_for_thread(&thread_id)
-                    .await;
+                info!(
+                    thread_id = %thread_id,
+                    turn_id = %turn_id,
+                    status = %status,
+                    "processed upstream turn completion event"
+                );
             }
             OrcasEvent::ItemStarted {
                 thread_id,
