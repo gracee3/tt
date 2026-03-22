@@ -10,9 +10,9 @@ mod workspace;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::mount::mount_to_body;
+use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::task::spawn_local;
 use leptos_router::components::{A, Route, Router, Routes};
@@ -24,7 +24,8 @@ use orcas_operator_core::{
     DeliveryJobView, DeliveryPageView, InboxDetailPageView, InboxItemCardView, InboxPageView,
     NotificationCandidateView, NotificationPageView, OperatorServerSettings, RemoteActionPageView,
     RemoteActionRequestView, ViewChangeSummary, action_kind_label, delivery_status_hint,
-    inbox_status_hint, inbox_status_label, notification_status_hint, remote_action_status_hint,
+    inbox_status_hint, inbox_status_label, notification_status_hint,
+    pending_remote_action_request_for_item_action, remote_action_status_hint,
     remote_action_status_label, source_kind_label, summarize_delivery_page_change,
     summarize_inbox_page_change, summarize_notification_page_change,
     summarize_remote_action_request_change,
@@ -1223,6 +1224,7 @@ fn render_inbox_detail_page(
         .as_ref()
         .map(|item| item.summary.clone())
         .unwrap_or_else(|| "No item data".to_string());
+    let item_updated_at = item.as_ref().map(|item| item.updated_at);
     let title = item
         .as_ref()
         .map(|item| item.title.clone())
@@ -1309,37 +1311,77 @@ fn render_inbox_detail_page(
                             let settings = settings.clone();
                             let navigate = navigate_action.clone();
                             let item_id_value = item_id.clone();
+                            let item_updated_at = item_updated_at.clone();
+                            let existing_request = item_id_value.as_deref().and_then(|item_id| {
+                                pending_remote_action_request_for_item_action(
+                                    &page.remote_action_requests,
+                                    item_id,
+                                    action_kind,
+                                )
+                                .cloned()
+                            });
+                            let action_row = match existing_request {
+                                Some(request) => view! {
+                                    <a class="primary-button secondary-button" href={format!("/actions/{}", request.request_id)}>
+                                        {format!("{} pending", action_kind_label(action_kind))}
+                                    </a>
+                                }
+                                .into_any(),
+                                None => view! {
+                                    <button
+                                        class="primary-button"
+                                        disabled=move || submitting.get()
+                                        on:click=move |_| {
+                                            submitting.set(true);
+                                            let _note_value = note.get();
+                                            let _settings_value = settings.get();
+                                            let _navigate = navigate.clone();
+                                            let item_id_value = item_id_value.clone();
+                                            let item_updated_at = item_updated_at.clone();
+                                            #[cfg(target_arch = "wasm32")]
+                                            spawn_local(async move {
+                                                let Some(item_id_value) = item_id_value else {
+                                                    submitting.set(false);
+                                                    watch_error_or_log("missing inbox item id for action submission".to_string());
+                                                    return;
+                                                };
+                                                let Some(item_updated_at) = item_updated_at else {
+                                                    submitting.set(false);
+                                                    watch_error_or_log("missing inbox item timestamp for action submission".to_string());
+                                                    return;
+                                                };
+                                                let idempotency_key = storage::remote_action_idempotency_key(
+                                                    &_settings_value.origin_node_id,
+                                                    &item_id_value,
+                                                    action_kind,
+                                                    item_updated_at,
+                                                );
+                                                let result = api::submit_remote_action(
+                                                    _settings_value,
+                                                    item_id_value,
+                                                    action_kind,
+                                                    Some("web-operator".to_string()),
+                                                    if _note_value.trim().is_empty() { None } else { Some(_note_value) },
+                                                    Some(idempotency_key),
+                                                )
+                                                .await;
+                                                submitting.set(false);
+                                                match result {
+                                                    Ok(request) => _navigate(&format!("/actions/{}", request.request_id)),
+                                                    Err(error) => watch_error_or_log(error),
+                                                }
+                                            });
+                                        }
+                                    >
+                                        {action_kind_label(action_kind)}
+                                    </button>
+                                }
+                                .into_any(),
+                            };
                             view! {
-                                <button
-                                    class="primary-button"
-                                    disabled=move || submitting.get()
-                                    on:click=move |_| {
-                                        submitting.set(true);
-                                        let _note_value = note.get();
-                                        let _settings_value = settings.get();
-                                        let _navigate = navigate.clone();
-                                        let item_id_value = item_id_value.clone();
-                                        #[cfg(target_arch = "wasm32")]
-                                        spawn_local(async move {
-                                            let result = api::submit_remote_action(
-                                                _settings_value,
-                                                item_id_value.clone().unwrap_or_default(),
-                                                action_kind,
-                                                Some("web-operator".to_string()),
-                                                if _note_value.trim().is_empty() { None } else { Some(_note_value) },
-                                                Some(api::generated_idempotency_key()),
-                                            )
-                                            .await;
-                                            submitting.set(false);
-                                            match result {
-                                                Ok(request) => _navigate(&format!("/actions/{}", request.request_id)),
-                                                Err(error) => watch_error_or_log(error),
-                                            }
-                                        });
-                                    }
-                                >
-                                    {action_kind_label(action_kind)}
-                                </button>
+                                <div class="action-button-row">
+                                    {action_row}
+                                </div>
                             }
                         }).collect_view()}
                     </div>

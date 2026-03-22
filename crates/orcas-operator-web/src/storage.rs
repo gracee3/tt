@@ -4,6 +4,9 @@ use orcas_operator_core::OperatorServerSettings;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+use orcas_core::ipc::OperatorInboxActionKind;
+
 use crate::workspace::WorkspaceState;
 
 const STORAGE_KEY: &str = "orcas.operator.web.settings.v1";
@@ -95,6 +98,18 @@ pub fn browser_push_subscription_id(
     format!(
         "browser::{origin_node_id}::{}::webpush",
         identity.browser_instance_id
+    )
+}
+
+pub fn remote_action_idempotency_key(
+    origin_node_id: &str,
+    item_id: &str,
+    action_kind: OperatorInboxActionKind,
+    item_updated_at: DateTime<Utc>,
+) -> String {
+    format!(
+        "orcas-operator-web::{origin_node_id}::{item_id}::{action_kind:?}::{}",
+        item_updated_at.to_rfc3339()
     )
 }
 

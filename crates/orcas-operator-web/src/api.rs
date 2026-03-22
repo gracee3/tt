@@ -519,6 +519,8 @@ pub fn generated_idempotency_key() -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     #[test]
@@ -553,6 +555,35 @@ mod tests {
         assert_eq!(payload["endpoint"], "https://example.invalid/push");
         assert_eq!(payload["keys"]["auth"], "auth");
         assert_eq!(payload["keys"]["p256dh"], "p256dh");
+    }
+
+    #[test]
+    fn remote_action_idempotency_key_is_stable_for_the_same_item_state() {
+        let updated_at = chrono::Utc
+            .with_ymd_and_hms(2026, 3, 22, 1, 42, 17)
+            .single()
+            .expect("timestamp");
+        let first = storage::remote_action_idempotency_key(
+            "origin-a",
+            "planning_session::session-1",
+            orcas_core::ipc::OperatorInboxActionKind::Approve,
+            updated_at,
+        );
+        let second = storage::remote_action_idempotency_key(
+            "origin-a",
+            "planning_session::session-1",
+            orcas_core::ipc::OperatorInboxActionKind::Approve,
+            updated_at,
+        );
+        let different = storage::remote_action_idempotency_key(
+            "origin-a",
+            "planning_session::session-1",
+            orcas_core::ipc::OperatorInboxActionKind::Reject,
+            updated_at,
+        );
+
+        assert_eq!(first, second);
+        assert_ne!(first, different);
     }
 
     #[test]

@@ -545,6 +545,22 @@ pub fn summarize_remote_action_request_change(
     None
 }
 
+pub fn pending_remote_action_request_for_item_action<'a>(
+    requests: &'a [RemoteActionRequestView],
+    item_id: &str,
+    action_kind: OperatorInboxActionKind,
+) -> Option<&'a RemoteActionRequestView> {
+    requests.iter().find(|request| {
+        request.item_id == item_id
+            && request.action_kind == action_kind
+            && matches!(
+                request.status,
+                OperatorRemoteActionRequestStatus::Pending
+                    | OperatorRemoteActionRequestStatus::Claimed
+            )
+    })
+}
+
 pub fn build_inbox_page(
     origin_node_id: impl Into<String>,
     items: &[OperatorInboxItem],
@@ -1234,6 +1250,45 @@ mod tests {
         assert_eq!(summary.headline, "Remote action status changed");
         assert!(summary.detail.contains("Claimed to Failed"));
         assert!(summarize_remote_action_request_change(Some(&current), &current).is_none());
+    }
+
+    #[test]
+    fn pending_remote_action_request_lookup_matches_item_and_action() {
+        let now = Utc::now();
+        let request = RemoteActionRequestView {
+            request_id: "request-1".to_string(),
+            origin_node_id: "origin-1".to_string(),
+            item_id: "proposal-1".to_string(),
+            action_kind: OperatorInboxActionKind::Approve,
+            action_label: "Approve",
+            status: OperatorRemoteActionRequestStatus::Pending,
+            status_label: "Pending",
+            summary: "Review proposal".to_string(),
+            created_at: now,
+            updated_at: now,
+            claimed_by: None,
+            completed_at: None,
+            failed_at: None,
+            result: None,
+            error: None,
+        };
+
+        let found = pending_remote_action_request_for_item_action(
+            std::slice::from_ref(&request),
+            "proposal-1",
+            OperatorInboxActionKind::Approve,
+        );
+        assert_eq!(
+            found.map(|request| request.request_id.as_str()),
+            Some("request-1")
+        );
+
+        let missing = pending_remote_action_request_for_item_action(
+            std::slice::from_ref(&request),
+            "proposal-1",
+            OperatorInboxActionKind::Reject,
+        );
+        assert!(missing.is_none());
     }
 
     #[test]
