@@ -18,8 +18,11 @@ use orcas_core::ipc::OperatorRemoteActionRequestStatus;
 use orcas_operator_core::{
     DeliveryJobView, DeliveryPageView, InboxDetailPageView, InboxItemCardView, InboxPageView,
     NotificationCandidateView, NotificationPageView, OperatorServerSettings, RemoteActionPageView,
-    RemoteActionRequestView, action_kind_label, inbox_status_label, remote_action_status_label,
-    source_kind_label,
+    RemoteActionRequestView, ViewChangeSummary, action_kind_label, delivery_status_hint,
+    inbox_status_hint, inbox_status_label, notification_status_hint, remote_action_status_hint,
+    remote_action_status_label, source_kind_label, summarize_delivery_page_change,
+    summarize_inbox_page_change, summarize_notification_page_change,
+    summarize_remote_action_request_change,
 };
 
 pub fn mount_app() {
@@ -296,6 +299,8 @@ fn InboxRoute() -> impl IntoView {
         .expect("settings context should be provided");
     let refresh_epoch = RwSignal::new(0u64);
     let watch_error = RwSignal::new(None::<String>);
+    let previous_page = RwSignal::new(None::<InboxPageView>);
+    let change_summary = RwSignal::new(None::<ViewChangeSummary>);
     let settings_value = move || settings.get_untracked();
     let inbox = LocalResource::new(move || {
         let settings = settings_value();
@@ -370,12 +375,28 @@ fn InboxRoute() -> impl IntoView {
         }
     });
 
+    Effect::new({
+        let inbox = inbox.clone();
+        let previous_page = previous_page.clone();
+        let change_summary = change_summary.clone();
+        move |_| match inbox.get() {
+            Some(Ok(page)) => {
+                let change =
+                    summarize_inbox_page_change(previous_page.get_untracked().as_ref(), &page);
+                previous_page.set(Some(page));
+                change_summary.set(change);
+            }
+            Some(Err(_)) | None => change_summary.set(None),
+        }
+    });
+
     view! {
         <PageFrame title="Actionable inbox" subtitle="Derived mirrored work that needs operator attention">
             <div class="toolbar">
                 <button class="refresh-button" on:click=move |_| inbox.refetch()>"Refresh"</button>
                 <span class="muted">"Auto-refreshes on server checkpoint changes while this view is open."</span>
             </div>
+            {move || render_change_banner(change_summary.get())}
             {move || match watch_error.get() {
                 Some(error) => view! { <ErrorPanel error=format!("Live refresh paused: {error}") /> }.into_any(),
                 None => view! {}.into_any(),
@@ -421,6 +442,8 @@ fn NotificationsRoute() -> impl IntoView {
     let refresh_epoch = RwSignal::new(0u64);
     let watch_error = RwSignal::new(None::<String>);
     let watch_started = RwSignal::new(false);
+    let previous_page = RwSignal::new(None::<NotificationPageView>);
+    let change_summary = RwSignal::new(None::<ViewChangeSummary>);
     let notifications = LocalResource::new(move || {
         let settings = settings.get();
         let _refresh_epoch = refresh_epoch.get();
@@ -491,12 +514,30 @@ fn NotificationsRoute() -> impl IntoView {
         }
     });
 
+    Effect::new({
+        let notifications = notifications.clone();
+        let previous_page = previous_page.clone();
+        let change_summary = change_summary.clone();
+        move |_| match notifications.get() {
+            Some(Ok(page)) => {
+                let change = summarize_notification_page_change(
+                    previous_page.get_untracked().as_ref(),
+                    &page,
+                );
+                previous_page.set(Some(page));
+                change_summary.set(change);
+            }
+            Some(Err(_)) | None => change_summary.set(None),
+        }
+    });
+
     view! {
         <PageFrame title="Notifications" subtitle="Server-side notification readiness">
             <div class="toolbar">
                 <button class="refresh-button" on:click=move |_| notifications.refetch()>"Refresh"</button>
                 <span class="muted">"Auto-refreshes on server notification checkpoint changes while this view is open."</span>
             </div>
+            {move || render_change_banner(change_summary.get())}
             {move || match watch_error.get() {
                 Some(error) => view! { <ErrorPanel error=format!("Live refresh paused: {error}") /> }.into_any(),
                 None => view! {}.into_any(),
@@ -517,6 +558,8 @@ fn DeliveriesRoute() -> impl IntoView {
     let refresh_epoch = RwSignal::new(0u64);
     let watch_error = RwSignal::new(None::<String>);
     let watch_started = RwSignal::new(false);
+    let previous_page = RwSignal::new(None::<DeliveryPageView>);
+    let change_summary = RwSignal::new(None::<ViewChangeSummary>);
     let deliveries = LocalResource::new(move || {
         let settings = settings.get();
         let _refresh_epoch = refresh_epoch.get();
@@ -587,12 +630,28 @@ fn DeliveriesRoute() -> impl IntoView {
         }
     });
 
+    Effect::new({
+        let deliveries = deliveries.clone();
+        let previous_page = previous_page.clone();
+        let change_summary = change_summary.clone();
+        move |_| match deliveries.get() {
+            Some(Ok(page)) => {
+                let change =
+                    summarize_delivery_page_change(previous_page.get_untracked().as_ref(), &page);
+                previous_page.set(Some(page));
+                change_summary.set(change);
+            }
+            Some(Err(_)) | None => change_summary.set(None),
+        }
+    });
+
     view! {
         <PageFrame title="Deliveries" subtitle="Notification delivery jobs and outcomes">
             <div class="toolbar">
                 <button class="refresh-button" on:click=move |_| deliveries.refetch()>"Refresh"</button>
                 <span class="muted">"Auto-refreshes on server delivery checkpoint changes while this view is open."</span>
             </div>
+            {move || render_change_banner(change_summary.get())}
             {move || match watch_error.get() {
                 Some(error) => view! { <ErrorPanel error=format!("Live refresh paused: {error}") /> }.into_any(),
                 None => view! {}.into_any(),
@@ -638,11 +697,30 @@ fn ActionRoute() -> impl IntoView {
     let watching = RwSignal::new(false);
     let watch_started = RwSignal::new(false);
     let watch_error = RwSignal::new(None::<String>);
+    let previous_request = RwSignal::new(None::<RemoteActionRequestView>);
+    let change_summary = RwSignal::new(None::<ViewChangeSummary>);
     let action_request = LocalResource::new(move || {
         let settings = settings.get();
         let request_id = request_id();
         let _refresh_epoch = refresh_epoch.get();
         async move { api::load_action_request(settings, request_id).await }
+    });
+
+    Effect::new({
+        let action_request = action_request.clone();
+        let previous_request = previous_request.clone();
+        let change_summary = change_summary.clone();
+        move |_| match action_request.get() {
+            Some(Ok(Some(request))) => {
+                let change = summarize_remote_action_request_change(
+                    previous_request.get_untracked().as_ref(),
+                    &request,
+                );
+                previous_request.set(Some(request));
+                change_summary.set(change);
+            }
+            Some(Ok(None)) | Some(Err(_)) | None => change_summary.set(None),
+        }
     });
 
     Effect::new(move |_| {
@@ -721,6 +799,7 @@ fn ActionRoute() -> impl IntoView {
         <PageFrame title="Action request" subtitle="Remote operator intent routed back through the daemon">
             <button class="refresh-button" on:click=move |_| action_request.refetch()>"Refresh"</button>
             <button class="primary-button" on:click=move |_| watching.set(true)>"Watch status"</button>
+            {move || render_change_banner(change_summary.get())}
             {move || match watch_error.get() {
                 Some(error) => view! { <ErrorPanel error=error /> }.into_any(),
                 None => view! {}.into_any(),
@@ -730,8 +809,12 @@ fn ActionRoute() -> impl IntoView {
                 Some(Err(error)) => view! { <ErrorPanel error=error /> }.into_any(),
                 Some(Ok(None)) => view! {
                     <div class="stack">
-                        {render_push_banner(push_context.clone())}
-                        <EmptyState title="Request not found" body="This remote action request does not exist or is no longer visible." />
+                        {render_push_banner(
+                            push_context.clone(),
+                            Some("remote action request".to_string()),
+                            Some(missing_remote_action_notice(push_context.is_some()).to_string()),
+                        )}
+                        <EmptyState title="Request not found" body={missing_remote_action_notice(push_context.is_some())} />
                     </div>
                 }.into_any(),
                 Some(Ok(Some(request))) => render_remote_action_page(request, move || watching.get()),
@@ -777,16 +860,64 @@ fn EmptyState(title: &'static str, body: &'static str) -> impl IntoView {
     }
 }
 
-fn render_push_banner(context: Option<push::PushOpenContext>) -> AnyView {
+fn render_push_banner(
+    context: Option<push::PushOpenContext>,
+    current_subject: Option<String>,
+    state_note: Option<String>,
+) -> AnyView {
     match context {
-        Some(context) => view! {
+        Some(context) => {
+            let presentation = push::push_open_context_presentation(&context);
+            view! {
             <div class="info-panel">
                 <strong>"Opened from browser notification"</strong>
                 <p>{push::push_context_summary(&context)}</p>
+                <p>{format!("{} · {}", presentation.route_label, presentation.subject_label)}</p>
+                <p>{presentation.reason}</p>
+                {move || match current_subject.clone() {
+                    Some(subject) => view! { <p>{format!("Current mirrored object: {subject}")}</p> }.into_any(),
+                    None => view! {}.into_any(),
+                }}
+                {move || match state_note.clone() {
+                    Some(note) => view! { <p>{note}</p> }.into_any(),
+                    None => view! {}.into_any(),
+                }}
+                <p>{presentation.next_step_hint}</p>
+            </div>
+            }
+            .into_any()
+        }
+        None => view! {}.into_any(),
+    }
+}
+
+fn render_change_banner(summary: Option<ViewChangeSummary>) -> AnyView {
+    match summary {
+        Some(summary) => view! {
+            <div class="info-panel">
+                <strong>"What changed"</strong>
+                <p>{summary.headline}</p>
+                <p>{summary.detail}</p>
             </div>
         }
         .into_any(),
         None => view! {}.into_any(),
+    }
+}
+
+fn missing_inbox_item_notice(push_context_present: bool) -> &'static str {
+    if push_context_present {
+        "The mirrored inbox item for this notification is missing or no longer actionable on the server."
+    } else {
+        "The mirrored inbox item is missing from the server."
+    }
+}
+
+fn missing_remote_action_notice(push_context_present: bool) -> &'static str {
+    if push_context_present {
+        "The remote action request for this notification is missing or no longer visible on the server."
+    } else {
+        "The remote action request is missing from the server."
     }
 }
 
@@ -842,6 +973,7 @@ fn render_inbox_card(item: InboxItemCardView) -> AnyView {
                 </div>
                 <a class="item-title" href=href>{item.title}</a>
                 <p class="item-summary">{item.summary}</p>
+                <p class="item-meta">{inbox_status_hint(item.status)}</p>
                 <p class="item-meta">
                     {format!("actions: {}", item.available_action_labels.join(", "))}
                 </p>
@@ -870,6 +1002,7 @@ fn render_inbox_detail_page(
         .map(|item| item.title.clone())
         .unwrap_or_else(|| "Missing inbox item".to_string());
     let item_id = item.as_ref().map(|item| item.id.clone());
+    let item_title = item.as_ref().map(|item| item.title.clone());
     let origin_node_id = page
         .notification_candidates
         .first()
@@ -890,23 +1023,28 @@ fn render_inbox_detail_page(
     let settings = use_context::<RwSignal<OperatorServerSettings>>()
         .expect("settings context should be provided");
     let push_context = push::current_push_open_context();
-    let missing_item_message = if push_context.is_some() {
-        "The mirrored inbox item for this notification is missing or no longer actionable on the server."
-            .to_string()
-    } else {
-        "No mirrored item payload available.".to_string()
-    };
+    let push_context_present = push_context.is_some();
+    let item_state_note = item
+        .as_ref()
+        .map(|item| {
+            format!(
+                "Current mirrored status: {} · {}",
+                item.status_label,
+                inbox_status_hint(item.status)
+            )
+        })
+        .or_else(|| Some(missing_inbox_item_notice(push_context_present).to_string()));
 
     view! {
         <div class="stack">
-            {render_push_banner(push_context)}
+            {render_push_banner(push_context.clone(), item_title, item_state_note)}
             <article class="card">
                 <p class="eyebrow">{item_id.unwrap_or_else(|| "unknown item".to_string())}</p>
                 <h3>{title}</h3>
                 <p class="item-summary">{summary}</p>
                 {move || match item.as_ref() {
                     Some(item) => render_item_details(item).into_any(),
-                    None => view! { <p class="muted">{missing_item_message.clone()}</p> }.into_any(),
+                    None => view! { <p class="muted">{missing_inbox_item_notice(push_context_present)}</p> }.into_any(),
                 }}
             </article>
 
@@ -991,6 +1129,7 @@ fn render_item_details(item: &InboxItemCardView) -> AnyView {
             <div><dt>"Work unit"</dt><dd>{item.work_unit_id.clone().unwrap_or_else(|| "none".to_string())}</dd></div>
             <div><dt>"Actions"</dt><dd>{item.available_action_labels.join(", ")}</dd></div>
         </dl>
+        <p class="item-meta">{inbox_status_hint(item.status)}</p>
     }
     .into_any()
 }
@@ -1000,7 +1139,14 @@ fn render_notification_page(page: NotificationPageView) -> AnyView {
     if page.candidates.is_empty() {
         return view! {
             <div class="stack">
-                {render_push_banner(push_context)}
+                {render_push_banner(
+                    push_context,
+                    Some("notification readiness".to_string()),
+                    Some(format!(
+                        "No mirrored notification candidates are currently ready for origin `{}`.",
+                        page.origin_node_id
+                    )),
+                )}
                 <EmptyState title="No notification candidates" body="No mirrored inbox item is currently ready for operator notification." />
             </div>
         }
@@ -1008,7 +1154,18 @@ fn render_notification_page(page: NotificationPageView) -> AnyView {
     }
     view! {
         <div class="stack">
-            {render_push_banner(push_context)}
+            {render_push_banner(
+                push_context,
+                Some(format!(
+                    "{} candidates mirrored for origin `{}`",
+                    page.candidates.len(),
+                    page.origin_node_id
+                )),
+                Some(format!(
+                    "{} notification candidates are currently mirrored for this origin.",
+                    page.candidates.len()
+                )),
+            )}
             <p class="muted">{format!("{} candidates from origin `{}`", page.candidates.len(), page.origin_node_id)}</p>
             {render_notification_candidates(page.candidates)}
         </div>
@@ -1033,6 +1190,7 @@ fn render_notification_candidates(candidates: Vec<NotificationCandidateView>) ->
                             </div>
                             <a class="item-title" href=href>{candidate.title.clone()}</a>
                             <p class="item-summary">{candidate.summary.clone()}</p>
+                            <p class="item-meta">{notification_status_hint(candidate.status)}</p>
                         </div>
                     </li>
                 }
@@ -1047,7 +1205,11 @@ fn render_delivery_page(page: DeliveryPageView) -> AnyView {
     if page.jobs.is_empty() {
         return view! {
             <div class="stack">
-                {render_push_banner(push_context)}
+                {render_push_banner(
+                    push_context,
+                    Some("delivery jobs".to_string()),
+                    Some("No mirrored delivery jobs are currently queued.".to_string()),
+                )}
                 <EmptyState title="No deliveries yet" body="Delivery jobs will appear once notification readiness triggers delivery work." />
             </div>
         }
@@ -1055,7 +1217,14 @@ fn render_delivery_page(page: DeliveryPageView) -> AnyView {
     }
     view! {
         <div class="stack">
-            {render_push_banner(push_context)}
+            {render_push_banner(
+                push_context,
+                Some(format!("{} delivery jobs mirrored", page.jobs.len())),
+                Some(format!(
+                    "{} delivery jobs are currently mirrored on the server.",
+                    page.jobs.len()
+                )),
+            )}
             {render_delivery_jobs(page.jobs)}
         </div>
     }
@@ -1078,6 +1247,7 @@ fn render_delivery_jobs(jobs: Vec<DeliveryJobView>) -> AnyView {
                             </div>
                             <p class="item-title">{job.job_id.clone()}</p>
                             <p class="item-summary">{job.summary.clone()}</p>
+                            <p class="item-meta">{delivery_status_hint(job.status)}</p>
                             <p class="item-meta">
                                 {format!("candidate {} · subscription {}", job.candidate_id, job.subscription_id)}
                             </p>
@@ -1116,11 +1286,58 @@ fn render_remote_action_page(
     watching: impl Fn() -> bool + 'static,
 ) -> AnyView {
     let status_label = remote_action_status_label(request.status);
+    let status_hint = remote_action_status_hint(request.status);
     let is_active = watching();
     let push_context = push::current_push_open_context();
+    let terminal_panel: Option<(bool, &'static str, String)> = match request.status {
+        OperatorRemoteActionRequestStatus::Completed => Some((
+            false,
+            "Action completed",
+            "The daemon completed the request. Related mirrored inbox, notification, or delivery state may also have changed.".to_string(),
+        )),
+        OperatorRemoteActionRequestStatus::Failed => Some((
+            true,
+            "Action failed",
+            request.error.clone().unwrap_or_else(|| {
+                "The daemon reported a failure but did not return an error summary.".to_string()
+            }),
+        )),
+        OperatorRemoteActionRequestStatus::Canceled => Some((
+            false,
+            "Action canceled",
+            "This request was canceled on the server before completion.".to_string(),
+        )),
+        OperatorRemoteActionRequestStatus::Stale => Some((
+            false,
+            "Action became stale",
+            "The server marked this request stale. Review mirrored inbox state for a newer request if one exists.".to_string(),
+        )),
+        _ => None,
+    };
     view! {
         <div class="stack">
-            {render_push_banner(push_context)}
+            {render_push_banner(
+                push_context,
+                Some(format!("remote action request {}", request.request_id)),
+                Some(format!("Current mirrored status: {} · {}", request.status_label, status_hint)),
+            )}
+            {move || match terminal_panel.as_ref() {
+                Some((is_error, title, body)) if *is_error => view! {
+                    <div class="error-panel">
+                        <strong>{*title}</strong>
+                        <p>{body.clone()}</p>
+                    </div>
+                }
+                .into_any(),
+                Some((_is_error, title, body)) => view! {
+                    <div class="info-panel">
+                        <strong>{*title}</strong>
+                        <p>{body.clone()}</p>
+                    </div>
+                }
+                .into_any(),
+                None => view! {}.into_any(),
+            }}
             <article class="card">
                 <div class="item-card-topline">
                     <span class="status-pill">{status_label}</span>
@@ -1128,6 +1345,7 @@ fn render_remote_action_page(
                 </div>
                 <h3>{request.request_id.clone()}</h3>
                 <p class="item-summary">{request.summary.clone()}</p>
+                <p class="item-meta">{status_hint}</p>
                 <dl class="detail-grid">
                     <div><dt>"Status"</dt><dd>{status_label}</dd></div>
                     <div><dt>"Claimed by"</dt><dd>{request.claimed_by.clone().unwrap_or_else(|| "none".to_string())}</dd></div>
@@ -1135,11 +1353,21 @@ fn render_remote_action_page(
                     <div><dt>"Failed at"</dt><dd>{request.failed_at.map(|time| time.to_rfc3339()).unwrap_or_else(|| "none".to_string())}</dd></div>
                 </dl>
                 {move || match request.result.clone() {
-                    Some(result) => view! { <pre class="code-block">{serde_json::to_string_pretty(&result).unwrap_or_default()}</pre> }.into_any(),
+                    Some(result) => view! {
+                        <article class="card">
+                            <h4>"Result"</h4>
+                            <pre class="code-block">{serde_json::to_string_pretty(&result).unwrap_or_default()}</pre>
+                        </article>
+                    }.into_any(),
                     None => view! {}.into_any(),
                 }}
                 {move || match request.error.clone() {
-                    Some(error) => view! { <ErrorPanel error=error /> }.into_any(),
+                    Some(error) => view! {
+                        <article class="card">
+                            <h4>"Failure summary"</h4>
+                            <ErrorPanel error=error />
+                        </article>
+                    }.into_any(),
                     None => view! {}.into_any(),
                 }}
                 <p class="muted">
@@ -1174,17 +1402,18 @@ fn render_remote_action_requests(
                 let href = format!("/actions/{}", request.request_id);
                 view! {
                     <li class="item-card">
-                        <div class="item-card-main">
-                            <div class="item-card-topline">
-                                <span class="status-pill">{request.status_label}</span>
-                                <span class="muted">{request.action_label}</span>
-                            </div>
-                            <a class="item-title" href=href>{request.request_id.clone()}</a>
-                            <p class="item-summary">{request.summary.clone()}</p>
-                            <p class="item-meta">
-                                {format!(
-                                    "claimed by {} · completed {} · failed {}",
-                                    request.claimed_by.clone().unwrap_or_else(|| "none".to_string()),
+                <div class="item-card-main">
+                    <div class="item-card-topline">
+                        <span class="status-pill">{request.status_label}</span>
+                        <span class="muted">{request.action_label}</span>
+                    </div>
+                    <a class="item-title" href=href>{request.request_id.clone()}</a>
+                    <p class="item-summary">{request.summary.clone()}</p>
+                    <p class="item-meta">{remote_action_status_hint(request.status)}</p>
+                    <p class="item-meta">
+                        {format!(
+                            "claimed by {} · completed {} · failed {}",
+                            request.claimed_by.clone().unwrap_or_else(|| "none".to_string()),
                                     request.completed_at
                                         .map(|time| time.to_rfc3339())
                                         .unwrap_or_else(|| "none".to_string()),
@@ -1216,4 +1445,33 @@ fn NotFoundPage() -> impl IntoView {
 fn watch_error_or_log(error: String) {
     #[cfg(target_arch = "wasm32")]
     web_sys::console::error_1(&error.into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_inbox_item_notice_distinguishes_push_opened_routes() {
+        assert!(
+            missing_inbox_item_notice(true).contains("missing or no longer actionable"),
+            "push-opened routes should explain why the inbox item is missing"
+        );
+        assert!(
+            missing_inbox_item_notice(false).contains("missing from the server"),
+            "non push-opened routes should still be honest about mirrored state"
+        );
+    }
+
+    #[test]
+    fn missing_remote_action_notice_distinguishes_push_opened_routes() {
+        assert!(
+            missing_remote_action_notice(true).contains("missing or no longer visible"),
+            "push-opened routes should explain why the request is missing"
+        );
+        assert!(
+            missing_remote_action_notice(false).contains("missing from the server"),
+            "non push-opened routes should still be honest about mirrored state"
+        );
+    }
 }
