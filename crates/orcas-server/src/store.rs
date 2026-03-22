@@ -2135,11 +2135,7 @@ impl InboxMirrorStore {
                 "remote action request origin mismatch".to_string(),
             ));
         }
-        if existing
-            .claim_token
-            .as_deref()
-            .is_some_and(|token| token != request.claim_token.as_str())
-        {
+        if existing.claim_token.as_deref() != Some(request.claim_token.as_str()) {
             return Err(OrcasError::Store(
                 "remote action request claim token mismatch".to_string(),
             ));
@@ -2207,11 +2203,7 @@ impl InboxMirrorStore {
                 "remote action request origin mismatch".to_string(),
             ));
         }
-        if existing
-            .claim_token
-            .as_deref()
-            .is_some_and(|token| token != request.claim_token.as_str())
-        {
+        if existing.claim_token.as_deref() != Some(request.claim_token.as_str()) {
             return Err(OrcasError::Store(
                 "remote action request claim token mismatch".to_string(),
             ));
@@ -3947,6 +3939,58 @@ mod tests {
             .expect("request");
         assert_eq!(request.status, OperatorRemoteActionRequestStatus::Completed);
         assert_eq!(request.result, Some(json!({"status": "ok"})));
+    }
+
+    #[test]
+    fn pending_remote_action_requests_require_a_claim_token_to_complete_or_fail() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("server.db");
+        let origin = "origin-a";
+        let store = InboxMirrorStore::open(&path).expect("store");
+        store
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+        let created = store
+            .create_remote_action_request(&remote_action_create_request(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+            ))
+            .expect("create");
+
+        let complete_result = store.complete_remote_action_request(&remote_action_complete_request(
+            origin,
+            created.request.request_id.as_str(),
+            "wrong-token",
+        ));
+        assert!(complete_result.is_err());
+
+        let fail_result = store.fail_remote_action_request(&remote_action_fail_request(
+            origin,
+            created.request.request_id.as_str(),
+            "wrong-token",
+            "not allowed",
+        ));
+        assert!(fail_result.is_err());
+
+        let request = store
+            .get_remote_action_request(&remote_action_get_request(
+                origin,
+                created.request.request_id.as_str(),
+            ))
+            .expect("get")
+            .request
+            .expect("request");
+        assert_eq!(request.status, OperatorRemoteActionRequestStatus::Pending);
+        assert_eq!(request.claim_token, None);
     }
 
     #[test]
