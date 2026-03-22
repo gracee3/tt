@@ -1,15 +1,19 @@
 pub mod authority;
 pub mod collaboration;
 pub mod communication;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod config;
 pub mod error;
 pub mod events;
 pub mod ipc;
 pub mod jsonrpc;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod logging;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod paths;
 pub mod planning;
 pub mod session;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod supervisor;
 
@@ -38,6 +42,7 @@ pub use communication::{
     TrackedThreadWorkspaceOperationStatus, WorkerReportContract, WorkerReportEnvelope,
     WorkerReportModePayload, WorkerReportValidation, WorkerWorkspaceReport,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use config::{
     AppConfig, CodexConnectionMode, CodexDaemonConfig, ReconnectPolicy, SupervisorConfig,
     SupervisorProposalConfig,
@@ -49,9 +54,12 @@ pub use jsonrpc::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, RequestId,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use logging::init_file_logger;
+#[cfg(not(target_arch = "wasm32"))]
 pub use paths::AppPaths;
 pub use planning::*;
 pub use session::{ThreadDescriptor, ThreadMetadata, ThreadRegistry, TurnDescriptor};
+#[cfg(not(target_arch = "wasm32"))]
 pub use store::{JsonSessionStore, OrcasSessionStore, StoredState};
 pub use supervisor::*;

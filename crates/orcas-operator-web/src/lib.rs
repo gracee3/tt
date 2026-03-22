@@ -11,6 +11,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use leptos::mount::mount_to_body;
+#[cfg(target_arch = "wasm32")]
+use leptos::task::spawn_local;
 use leptos_router::components::{A, Route, Router, Routes};
 use leptos_router::hooks::{use_navigate, use_params_map};
 use leptos_router::path;
@@ -32,7 +36,7 @@ pub fn mount_app() {
     {
         console_error_panic_hook::set_once();
         pwa::register_service_worker();
-        leptos::mount_to_body(App);
+        mount_to_body(App);
     }
 }
 
@@ -304,7 +308,7 @@ fn PushRegistrationPanel() -> impl IntoView {
                         let _error = error.clone();
                         let _working = working.clone();
                         #[cfg(target_arch = "wasm32")]
-                        leptos::spawn_local(async move {
+                        spawn_local(async move {
                             let result = api::register_browser_push_subscription(_settings).await;
                             _working.set(false);
                             match result {
@@ -327,7 +331,7 @@ fn PushRegistrationPanel() -> impl IntoView {
                         let _error = error.clone();
                         let _working = working.clone();
                         #[cfg(target_arch = "wasm32")]
-                        leptos::spawn_local(async move {
+                        spawn_local(async move {
                             let result = api::disable_browser_push_subscription(_settings).await;
                             _working.set(false);
                             match result {
@@ -439,14 +443,14 @@ fn InboxRoute() -> impl IntoView {
                 let refresh_epoch = _refresh_epoch.clone();
                 let watch_error = _watch_error.clone();
                 let alive = alive.clone();
-                leptos::spawn_local(async move {
+                spawn_local(async move {
                     let current_settings = settings.get_untracked();
                     if !storage::settings_ready(&current_settings) {
                         return;
                     }
                     let mut after_sequence =
                         match api::inbox_checkpoint(current_settings.clone()).await {
-                            Ok(response) => response.checkpoint.sequence,
+                            Ok(response) => response.checkpoint.current_sequence,
                             Err(error) => {
                                 watch_error.set(Some(error));
                                 return;
@@ -632,7 +636,7 @@ fn NotificationsRoute() -> impl IntoView {
                 });
                 let refresh_epoch = refresh_epoch.clone();
                 let watch_error = watch_error.clone();
-                leptos::spawn_local(async move {
+                spawn_local(async move {
                     let initial_checkpoint =
                         match api::load_notification_checkpoint(current_settings.clone()).await {
                             Ok(checkpoint) => checkpoint,
@@ -654,7 +658,7 @@ fn NotificationsRoute() -> impl IntoView {
                                     timeout_ms,
                                 )
                                 .await
-                                .map(|next| next.map(|checkpoint| (checkpoint, ())))
+                                .map(|next| next.map(|checkpoint| (Some(checkpoint), ())))
                             }
                         },
                         move |_| {
@@ -755,7 +759,7 @@ fn DeliveriesRoute() -> impl IntoView {
                 });
                 let refresh_epoch = refresh_epoch.clone();
                 let watch_error = watch_error.clone();
-                leptos::spawn_local(async move {
+                spawn_local(async move {
                     let initial_checkpoint =
                         match api::load_delivery_checkpoint(current_settings.clone()).await {
                             Ok(checkpoint) => checkpoint,
@@ -777,7 +781,7 @@ fn DeliveriesRoute() -> impl IntoView {
                                     timeout_ms,
                                 )
                                 .await
-                                .map(|next| next.map(|checkpoint| (checkpoint, ())))
+                                .map(|next| next.map(|checkpoint| (Some(checkpoint), ())))
                             }
                         },
                         move |_| {
@@ -959,7 +963,7 @@ fn ActionRoute() -> impl IntoView {
             let watch_error = watch_error.clone();
             let watching = watching.clone();
             let watch_started = watch_started.clone();
-            leptos::spawn_local(async move {
+            spawn_local(async move {
                 let result = watch::run_change_watch_loop(
                     alive,
                     request.updated_at,
@@ -1304,6 +1308,7 @@ fn render_inbox_detail_page(
                             let note = note.clone();
                             let settings = settings.clone();
                             let navigate = navigate_action.clone();
+                            let item_id_value = item_id.clone();
                             view! {
                                 <button
                                     class="primary-button"
@@ -1313,11 +1318,12 @@ fn render_inbox_detail_page(
                                         let _note_value = note.get();
                                         let _settings_value = settings.get();
                                         let _navigate = navigate.clone();
+                                        let item_id_value = item_id_value.clone();
                                         #[cfg(target_arch = "wasm32")]
-                                        leptos::spawn_local(async move {
+                                        spawn_local(async move {
                                             let result = api::submit_remote_action(
                                                 _settings_value,
-                                                item_id.clone().unwrap_or_default(),
+                                                item_id_value.clone().unwrap_or_default(),
                                                 action_kind,
                                                 Some("web-operator".to_string()),
                                                 if _note_value.trim().is_empty() { None } else { Some(_note_value) },

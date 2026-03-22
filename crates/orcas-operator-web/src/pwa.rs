@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowserNotificationPermission {
     Default,
@@ -38,18 +41,13 @@ pub fn register_service_worker() {
 pub async fn ensure_service_worker_registration() -> Result<bool, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        let Some(window) = web_sys::window() else {
-            return Err("browser window is unavailable".to_string());
-        };
+        let window = web_sys::window().ok_or_else(|| "browser window is unavailable".to_string())?;
         let navigator = window.navigator();
-        let Some(service_worker) = navigator.service_worker() else {
-            return Ok(false);
-        };
+        let service_worker = navigator.service_worker();
         let registration = wasm_bindgen_futures::JsFuture::from(service_worker.register("/sw.js"))
             .await
-            .map_err(|error| error.to_string())?;
-        let registered = !registration.is_undefined() && !registration.is_null();
-        return Ok(registered);
+            .map_err(js_error)?;
+        return Ok(!registration.is_undefined() && !registration.is_null());
     }
 
     Err("service worker registration is only available in the browser".to_string())
@@ -58,53 +56,34 @@ pub async fn ensure_service_worker_registration() -> Result<bool, String> {
 pub async fn inspect_browser_push_state() -> Result<BrowserPushState, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        let Some(window) = web_sys::window() else {
-            return Err("browser window is unavailable".to_string());
-        };
+        let window = web_sys::window().ok_or_else(|| "browser window is unavailable".to_string())?;
         let navigator = window.navigator();
-        let permission = match web_sys::Notification::permission() {
-            web_sys::NotificationPermission::Default => BrowserNotificationPermission::Default,
-            web_sys::NotificationPermission::Denied => BrowserNotificationPermission::Denied,
-            web_sys::NotificationPermission::Granted => BrowserNotificationPermission::Granted,
-        };
-        let Some(service_worker) = navigator.service_worker() else {
-            return Ok(BrowserPushState {
-                service_worker_registered: false,
-                notification_permission: permission,
-                subscription: None,
-            });
-        };
-        let document_url = window
-            .location()
-            .href()
-            .map_err(|error| error.to_string())?;
-        let registration_value = wasm_bindgen_futures::JsFuture::from(
+        let permission = browser_notification_permission();
+        let service_worker = navigator.service_worker();
+        let document_url = window.location().href().map_err(js_error)?;
+        let registration_value: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
             service_worker.get_registration_with_document_url(&document_url),
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(js_error)?;
         let service_worker_registered =
             !registration_value.is_undefined() && !registration_value.is_null();
         let subscription = if service_worker_registered {
             let registration: web_sys::ServiceWorkerRegistration = registration_value
                 .dyn_into::<web_sys::ServiceWorkerRegistration>()
-                .map_err(|error| error.to_string())?;
-            let push_manager = registration
-                .push_manager()
-                .map_err(|error| error.to_string())?;
-            let subscription_value = wasm_bindgen_futures::JsFuture::from(
-                push_manager
-                    .get_subscription()
-                    .map_err(|error| error.to_string())?,
+                .map_err(js_error)?;
+            let push_manager = registration.push_manager().map_err(js_error)?;
+            let subscription_value: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
+                push_manager.get_subscription().map_err(js_error)?,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(js_error)?;
             if subscription_value.is_undefined() || subscription_value.is_null() {
                 None
             } else {
                 let subscription: web_sys::PushSubscription = subscription_value
                     .dyn_into()
-                    .map_err(|error| error.to_string())?;
+                    .map_err(js_error)?;
                 Some(push_subscription_snapshot(&subscription)?)
             }
         } else {
@@ -122,37 +101,33 @@ pub async fn inspect_browser_push_state() -> Result<BrowserPushState, String> {
 }
 
 pub async fn register_browser_push_subscription(
-    _application_server_key: Option<String>,
+    application_server_key: Option<String>,
 ) -> Result<BrowserPushState, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        let Some(window) = web_sys::window() else {
-            return Err("browser window is unavailable".to_string());
-        };
+        let window = web_sys::window().ok_or_else(|| "browser window is unavailable".to_string())?;
         let navigator = window.navigator();
-        let Some(service_worker) = navigator.service_worker() else {
-            return Err("service workers are unavailable in this browser".to_string());
-        };
+        let service_worker = navigator.service_worker();
         let _ = wasm_bindgen_futures::JsFuture::from(service_worker.register("/sw.js"))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(js_error)?;
 
         let permission = match web_sys::Notification::permission() {
             web_sys::NotificationPermission::Granted => BrowserNotificationPermission::Granted,
             web_sys::NotificationPermission::Denied => BrowserNotificationPermission::Denied,
             web_sys::NotificationPermission::Default => {
                 let value = wasm_bindgen_futures::JsFuture::from(
-                    web_sys::Notification::request_permission()
-                        .map_err(|error| error.to_string())?,
+                    web_sys::Notification::request_permission().map_err(js_error)?,
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(js_error)?;
                 match value.as_string().as_deref() {
                     Some("granted") => BrowserNotificationPermission::Granted,
                     Some("denied") => BrowserNotificationPermission::Denied,
                     _ => BrowserNotificationPermission::Default,
                 }
             }
+            _ => BrowserNotificationPermission::Default,
         };
 
         if !matches!(permission, BrowserNotificationPermission::Granted) {
@@ -163,31 +138,22 @@ pub async fn register_browser_push_subscription(
             });
         }
 
-        let registration_value = wasm_bindgen_futures::JsFuture::from(
-            service_worker.get_registration_with_document_url(
-                &window
-                    .location()
-                    .href()
-                    .map_err(|error| error.to_string())?,
-            ),
+        let registration_value: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
+            service_worker.get_registration_with_document_url(&window.location().href().map_err(js_error)?),
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(js_error)?;
         let registration: web_sys::ServiceWorkerRegistration = registration_value
             .dyn_into::<web_sys::ServiceWorkerRegistration>()
-            .map_err(|error| error.to_string())?;
-        let push_manager = registration
-            .push_manager()
-            .map_err(|error| error.to_string())?;
-        let existing = wasm_bindgen_futures::JsFuture::from(
-            push_manager
-                .get_subscription()
-                .map_err(|error| error.to_string())?,
+            .map_err(js_error)?;
+        let push_manager = registration.push_manager().map_err(js_error)?;
+        let existing: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
+            push_manager.get_subscription().map_err(js_error)?,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(js_error)?;
         let subscription = if existing.is_undefined() || existing.is_null() {
-            let Some(application_server_key) = _application_server_key.as_deref() else {
+            let Some(application_server_key) = application_server_key.as_deref() else {
                 return Err(
                     "an application server key is required to create a browser push subscription"
                         .to_string(),
@@ -196,21 +162,21 @@ pub async fn register_browser_push_subscription(
             let options = web_sys::PushSubscriptionOptionsInit::new();
             options.set_user_visible_only(true);
             options.set_application_server_key_opt_str(Some(application_server_key));
-            let subscription_value = wasm_bindgen_futures::JsFuture::from(
+            let subscription_value: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
                 push_manager
                     .subscribe_with_options(&options)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(js_error)?,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(js_error)?;
             let subscription: web_sys::PushSubscription = subscription_value
                 .dyn_into::<web_sys::PushSubscription>()
-                .map_err(|error| error.to_string())?;
+                .map_err(js_error)?;
             Some(push_subscription_snapshot(&subscription)?)
         } else {
             let subscription: web_sys::PushSubscription = existing
                 .dyn_into::<web_sys::PushSubscription>()
-                .map_err(|error| error.to_string())?;
+                .map_err(js_error)?;
             Some(push_subscription_snapshot(&subscription)?)
         };
 
@@ -227,65 +193,38 @@ pub async fn register_browser_push_subscription(
 pub async fn disable_browser_push_subscription() -> Result<BrowserPushState, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        let Some(window) = web_sys::window() else {
-            return Err("browser window is unavailable".to_string());
-        };
+        let window = web_sys::window().ok_or_else(|| "browser window is unavailable".to_string())?;
         let navigator = window.navigator();
-        let Some(service_worker) = navigator.service_worker() else {
-            return Err("service workers are unavailable in this browser".to_string());
-        };
-        let registration_value = wasm_bindgen_futures::JsFuture::from(
-            service_worker.get_registration_with_document_url(
-                &window
-                    .location()
-                    .href()
-                    .map_err(|error| error.to_string())?,
-            ),
+        let service_worker = navigator.service_worker();
+        let registration_value: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
+            service_worker.get_registration_with_document_url(&window.location().href().map_err(js_error)?),
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(js_error)?;
         if registration_value.is_undefined() || registration_value.is_null() {
             return Ok(BrowserPushState {
                 service_worker_registered: false,
-                notification_permission: match web_sys::Notification::permission() {
-                    web_sys::NotificationPermission::Default => {
-                        BrowserNotificationPermission::Default
-                    }
-                    web_sys::NotificationPermission::Denied => {
-                        BrowserNotificationPermission::Denied
-                    }
-                    web_sys::NotificationPermission::Granted => {
-                        BrowserNotificationPermission::Granted
-                    }
-                },
+                notification_permission: browser_notification_permission(),
                 subscription: None,
             });
         }
 
         let registration: web_sys::ServiceWorkerRegistration = registration_value
             .dyn_into::<web_sys::ServiceWorkerRegistration>()
-            .map_err(|error| error.to_string())?;
-        let push_manager = registration
-            .push_manager()
-            .map_err(|error| error.to_string())?;
-        let existing = wasm_bindgen_futures::JsFuture::from(
-            push_manager
-                .get_subscription()
-                .map_err(|error| error.to_string())?,
+            .map_err(js_error)?;
+        let push_manager = registration.push_manager().map_err(js_error)?;
+        let existing: wasm_bindgen::JsValue = wasm_bindgen_futures::JsFuture::from(
+            push_manager.get_subscription().map_err(js_error)?,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(js_error)?;
         if !existing.is_undefined() && !existing.is_null() {
             let subscription: web_sys::PushSubscription = existing
                 .dyn_into::<web_sys::PushSubscription>()
-                .map_err(|error| error.to_string())?;
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                subscription
-                    .unsubscribe()
-                    .map_err(|error| error.to_string())?,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+                .map_err(js_error)?;
+            let _ = wasm_bindgen_futures::JsFuture::from(subscription.unsubscribe().map_err(js_error)?)
+                .await
+                .map_err(js_error)?;
         }
 
         return inspect_browser_push_state().await;
@@ -305,26 +244,37 @@ pub fn browser_notification_permission_label(
 }
 
 #[cfg(target_arch = "wasm32")]
+fn browser_notification_permission() -> BrowserNotificationPermission {
+    match web_sys::Notification::permission() {
+        web_sys::NotificationPermission::Default => BrowserNotificationPermission::Default,
+        web_sys::NotificationPermission::Denied => BrowserNotificationPermission::Denied,
+        web_sys::NotificationPermission::Granted => BrowserNotificationPermission::Granted,
+        _ => BrowserNotificationPermission::Default,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_error(error: impl core::fmt::Debug) -> String {
+    format!("{error:?}")
+}
+
+#[cfg(target_arch = "wasm32")]
 fn push_subscription_snapshot(
     subscription: &web_sys::PushSubscription,
 ) -> Result<BrowserPushSubscriptionSnapshot, String> {
     let endpoint = subscription.endpoint();
     let auth_buffer = subscription
         .get_key(web_sys::PushEncryptionKeyName::Auth)
-        .map_err(|error| error.to_string())?
+        .map_err(js_error)?
         .ok_or_else(|| "push subscription missing auth key".to_string())?;
     let p256dh_buffer = subscription
         .get_key(web_sys::PushEncryptionKeyName::P256dh)
-        .map_err(|error| error.to_string())?
+        .map_err(js_error)?
         .ok_or_else(|| "push subscription missing p256dh key".to_string())?;
     Ok(BrowserPushSubscriptionSnapshot {
         endpoint,
-        auth: Some(base64_url_encode(
-            &js_sys::Uint8Array::new(&auth_buffer).to_vec(),
-        )),
-        p256dh: Some(base64_url_encode(
-            &js_sys::Uint8Array::new(&p256dh_buffer).to_vec(),
-        )),
+        auth: Some(base64_url_encode(&js_sys::Uint8Array::new(&auth_buffer).to_vec())),
+        p256dh: Some(base64_url_encode(&js_sys::Uint8Array::new(&p256dh_buffer).to_vec())),
     })
 }
 
@@ -362,7 +312,7 @@ fn base64_url_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::base64_url_encode;
 
     #[test]
     fn base64_url_encode_matches_expected_output() {
