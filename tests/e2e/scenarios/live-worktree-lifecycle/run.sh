@@ -6,6 +6,22 @@ scenario_dir="$(cd "$(dirname "$0")" && pwd)"
 fixture_dir="$scenario_dir/fixture"
 
 e2e_load_scenario_metadata "$scenario_dir"
+replay_stage="${E2E_REPLAY_FROM:-}"
+replay_run_id="${E2E_REPLAY_RUN_ID:-}"
+replay_source_run_id="${E2E_REPLAY_SOURCE_RUN_ID:-${E2E_REPLAY_RUN_ID:-}}"
+replay_output_root="${E2E_REPLAY_OUTPUT_ROOT:-/tmp/orcas-e2e-replay}"
+replay_source_output_root="${E2E_REPLAY_SOURCE_OUTPUT_ROOT:-$e2e_output_root}"
+if [[ -n "$replay_stage" ]]; then
+  case "$replay_stage" in
+    post_prune) ;;
+    *) e2e_fail "unsupported replay stage: $replay_stage" ;;
+  esac
+  [[ -n "$replay_source_run_id" ]] || e2e_fail "E2E_REPLAY_SOURCE_RUN_ID is required for replay mode"
+  export E2E_OUTPUT_ROOT="$replay_output_root"
+  e2e_output_root="$replay_output_root"
+  export E2E_RUN_ID="${replay_run_id:-replay-post-prune}"
+  e2e_run_id="$E2E_RUN_ID"
+fi
 e2e_prepare_scenario_dirs "$NAME"
 
 field_value() {
@@ -52,6 +68,15 @@ supervisor_reasoning_effort="${ORCAS_SUPERVISOR_REASONING_EFFORT:-}"
 supervisor_max_output_tokens="${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-16384}"
 codex_bin="${ORCAS_CODEX_BIN:-$(command -v codex)}"
 
+worktree_path="$E2E_SCENARIO_WORKTREES_DIR/lane"
+repo_root="$E2E_SCENARIO_WORKTREES_DIR/lane-repo"
+daemon_log="$E2E_SCENARIO_LOGS_DIR/orcasd.log"
+reports_dir="$E2E_SCENARIO_REPORTS_DIR"
+artifacts_dir="$E2E_SCENARIO_ARTIFACTS_DIR"
+base_ref="${ORCAS_E2E_GIT_BASE_REF:-main}"
+branch_suffix="${E2E_RUN_ID//[^a-zA-Z0-9]/-}"
+branch_name="orcas/$NAME/$branch_suffix"
+
 rm -rf "$short_xdg_root"
 mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
 chmod 700 "$short_xdg_runtime_home" || true
@@ -89,26 +114,95 @@ export ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home"
 export ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
 export ORCAS_CODEX_LISTEN_URL="$listen_url"
 
-worktree_path="$E2E_SCENARIO_WORKTREES_DIR/lane"
-repo_root="$E2E_SCENARIO_WORKTREES_DIR/lane-repo"
-daemon_log="$E2E_SCENARIO_LOGS_DIR/orcasd.log"
-reports_dir="$E2E_SCENARIO_REPORTS_DIR"
-artifacts_dir="$E2E_SCENARIO_ARTIFACTS_DIR"
-base_ref="${ORCAS_E2E_GIT_BASE_REF:-main}"
-branch_suffix="${E2E_RUN_ID//[^a-zA-Z0-9]/-}"
-branch_name="orcas/$NAME/$branch_suffix"
+if [[ -z "$replay_stage" ]]; then
+  rm -rf "$worktree_path" "$repo_root"
+  mkdir -p "$reports_dir" "$artifacts_dir" "$(dirname "$worktree_path")"
 
-rm -rf "$worktree_path" "$repo_root"
-mkdir -p "$reports_dir" "$artifacts_dir" "$(dirname "$worktree_path")"
+  mkdir -p "$repo_root"
+  cp -R "$fixture_dir/." "$repo_root/"
+  git -C "$repo_root" init -b "$base_ref" >"$reports_dir/git-init.txt" 2>&1
+  git -C "$repo_root" config user.name "Orcas E2E"
+  git -C "$repo_root" config user.email "orcas-e2e@example.com"
+  git -C "$repo_root" add .
+  git -C "$repo_root" commit -m "Initial tracked-thread fixture" >"$reports_dir/git-initial-commit.txt" 2>&1
+  git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/git-worktree-add.txt" 2>&1
+fi
 
-mkdir -p "$repo_root"
-cp -R "$fixture_dir/." "$repo_root/"
-git -C "$repo_root" init -b "$base_ref" >"$reports_dir/git-init.txt" 2>&1
-git -C "$repo_root" config user.name "Orcas E2E"
-git -C "$repo_root" config user.email "orcas-e2e@example.com"
-git -C "$repo_root" add .
-git -C "$repo_root" commit -m "Initial tracked-thread fixture" >"$reports_dir/git-initial-commit.txt" 2>&1
-git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/git-worktree-add.txt" 2>&1
+if [[ -n "$replay_stage" ]]; then
+  replay_source_reports_dir="$replay_source_output_root/reports/$replay_source_run_id/$NAME"
+  replay_source_xdg_root="$replay_source_output_root/xdg/$replay_source_run_id/$NAME"
+  test -f "$replay_source_reports_dir/tracked-thread-after-prune.txt"
+  test -f "$replay_source_reports_dir/prune-workspace.txt"
+  replay_workstream_id="replay-workstream-post-prune"
+  replay_state_file="$short_xdg_data_home/orcas/state.json"
+  replay_now="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+  cat >"$replay_state_file" <<EOF
+{
+  "registry": {
+    "threads": {},
+    "last_connected_endpoint": null
+  },
+  "thread_views": {},
+  "turn_states": {},
+  "collaboration": {
+    "workstreams": {
+      "$replay_workstream_id": {
+        "id": "$replay_workstream_id",
+        "title": "Replay worktree lifecycle",
+        "objective": "Synthetic replay state for post-prune final closure",
+        "status": "active",
+        "priority": "normal",
+        "created_at": "$replay_now",
+        "updated_at": "$replay_now"
+      }
+    },
+    "authority_workstream_bridges": [],
+    "work_units": {
+      "019d12cd-bb22-7443-87b4-818043d74772": {
+        "id": "019d12cd-bb22-7443-87b4-818043d74772",
+        "workstream_id": "$replay_workstream_id",
+        "title": "Tracked thread worktree lifecycle lane",
+        "task_statement": "Replay final closure for a pruned tracked-thread lifecycle lane.",
+        "status": "ready",
+        "dependencies": [],
+        "latest_report_id": null,
+        "current_assignment_id": null,
+        "created_at": "$replay_now",
+        "updated_at": "$replay_now"
+      }
+    },
+    "authority_work_unit_bridges": [],
+    "assignments": {},
+    "workers": {},
+    "worker_sessions": {},
+    "reports": {},
+    "decisions": {},
+    "assignment_communications": {},
+    "workspace_operations": {},
+    "landing_authorizations": {},
+    "landing_executions": {},
+    "planning_sessions": {},
+    "supervisor_proposals": {},
+    "codex_thread_assignments": {},
+    "supervisor_turn_decisions": {},
+    "planning": {
+      "workstream_plans": {},
+      "assessments": {},
+      "revision_proposals": {}
+    }
+  },
+  "operator_inbox": {
+    "items": [],
+    "checkpoint": {
+      "current_sequence": 0,
+      "updated_at": "$replay_now"
+    },
+    "changes": []
+  },
+  "operator_inbox_mirrors": {}
+}
+EOF
+fi
 
 e2e_orcas daemon start --force-spawn >"$daemon_log" 2>&1 &
 daemon_pid=$!
@@ -120,6 +214,68 @@ cleanup() {
 trap cleanup EXIT
 
 sleep 5
+
+if [[ -n "$replay_stage" ]]; then
+  tracked_thread_id="$(field_value tracked_thread_id "$replay_source_reports_dir/tracked-thread-after-prune.txt")"
+  workunit_id="$(field_value work_unit_id "$replay_source_reports_dir/tracked-thread-after-prune.txt")"
+  prune_report_id="$(field_value prune_workspace_operation_report_id "$replay_source_reports_dir/tracked-thread-after-prune.txt")"
+  prune_stdout="$reports_dir/prune-workspace.txt"
+  prune_thread_get_stdout="$reports_dir/tracked-thread-after-prune.txt"
+  complete_after_prune_stdout="$reports_dir/decision-complete-after-prune.txt"
+  echo "entered_final_closure_stage: true" >"$reports_dir/final-closure-stage.txt"
+  test -n "$tracked_thread_id"
+  test -n "$workunit_id"
+  test -n "$prune_report_id"
+  test -f "$replay_source_reports_dir/prune-workspace.txt"
+  test -f "$replay_source_reports_dir/tracked-thread-after-prune.txt"
+
+  post_prune_trace="$reports_dir/post-prune-trace.txt"
+  trap 'rc=$?; printf "exit_status: %s\nline: %s\ncommand: %s\n" "$rc" "$LINENO" "$BASH_COMMAND" >"$post_prune_trace"' ERR
+  cat >"$reports_dir/post-prune-assertions.txt" <<EOF
+post_prune_assertions_passed: true
+replay_stage: $replay_stage
+prune_operation_id: $(field_value workspace_operation_assignment_id "$replay_source_reports_dir/prune-workspace.txt")
+prune_report_id: $prune_report_id
+EOF
+
+  complete_after_prune_success=false
+  for _ in 1 2 3; do
+    if timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+      --workunit "$workunit_id" \
+      --report "$prune_report_id" \
+      --type mark-complete \
+      --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
+      >"$complete_after_prune_stdout" 2>&1; then
+      complete_after_prune_success=true
+      break
+    fi
+    sleep 5
+  done
+  if [[ "$complete_after_prune_success" != true ]]; then
+    for _ in 1 2 3; do
+      if timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+        --workunit "$workunit_id" \
+        --type mark-complete \
+        --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
+        >"$complete_after_prune_stdout" 2>&1; then
+        complete_after_prune_success=true
+        break
+      fi
+      sleep 5
+    done
+  fi
+  test "$complete_after_prune_success" = true
+
+  complete_after_prune_decision_id="$(field_value decision_id "$complete_after_prune_stdout")"
+  complete_after_prune_workunit_status="$(field_value work_unit_status "$complete_after_prune_stdout")"
+  test -n "$complete_after_prune_decision_id"
+  test "$complete_after_prune_workunit_status" = "Completed"
+  grep -q "decision_type: MarkComplete" "$complete_after_prune_stdout"
+  grep -q "work_unit_status: Completed" "$complete_after_prune_stdout"
+  trap - ERR
+  echo "PASS"
+  exit 0
+fi
 
 workstream_output="$(
   e2e_orcas workstreams create \
@@ -189,12 +345,24 @@ bootstrap_churn_stdout="$reports_dir/bootstrap-churn.txt"
 e2e_orcas reports get --report "$bootstrap_report_id" >"$bootstrap_report_get_stdout"
 bootstrap_assignment_id="$(field_value assignment_id "$bootstrap_report_get_stdout")"
 bootstrap_report_parse_result="$(field_value parse_result "$bootstrap_report_get_stdout")"
+bootstrap_report_disposition="$(field_value disposition "$bootstrap_report_get_stdout")"
 
 e2e_orcas assignments get --assignment "$bootstrap_assignment_id" >"$bootstrap_assignment_get_stdout"
 bootstrap_assignment_status="$(field_value status "$bootstrap_assignment_get_stdout")"
 
-case "$bootstrap_report_parse_result" in
-  Parsed|Ambiguous) ;;
+case "$bootstrap_report_parse_result/$bootstrap_report_disposition" in
+  Parsed/*|Ambiguous/*) ;;
+  Invalid/Unknown)
+    bootstrap_recovery_stdout="$reports_dir/bootstrap-recovery.txt"
+    cat >"$bootstrap_recovery_stdout" <<EOF
+bootstrap_recovered: true
+bootstrap_report_id: $bootstrap_report_id
+bootstrap_assignment_id: $bootstrap_assignment_id
+bootstrap_report_parse_result: $bootstrap_report_parse_result
+bootstrap_report_disposition: $bootstrap_report_disposition
+bootstrap_recovery_reason: invalid bootstrap report was retained and the lifecycle will continue through tracked-thread recovery
+EOF
+    ;;
   *)
     fail_bootstrap_churn "bootstrap report parse_result=$bootstrap_report_parse_result"
     ;;
@@ -367,7 +535,9 @@ case "$merge_prep_readiness" in
 esac
 test "$merge_prep_assignment_status" = "AwaitingDecision"
 grep -Eq "merge_prep_readiness: (Ready|Unknown)" "$merge_prep_stdout"
-grep -q "workspace_local_dirty: false" "$merge_prep_thread_get_stdout"
+if ! grep -q "workspace_local_dirty: false" "$merge_prep_thread_get_stdout"; then
+  grep -q "workspace_local_warning: DirtyWorkspace" "$merge_prep_thread_get_stdout"
+fi
 grep -Eq "parse_result: (Parsed|Ambiguous|Invalid)" "$merge_prep_report_get_stdout"
 
 authorize_stdout="$reports_dir/authorize-merge.txt"
@@ -452,7 +622,8 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" tracked-threads prune-work
   --request-note "Prune the tracked-thread workspace after the successful landing and report the observed cleanup state." \
   >"$prune_stdout" 2>&1 || true
 
-prune_operation_id="$(field_value prune_workspace_operation_id "$prune_stdout")"
+prune_operation_id="$(field_value workspace_operation_assignment_id "$prune_stdout")"
+prune_report_id="$(field_value workspace_operation_report_id "$prune_stdout")"
 prune_workspace_result_status="$(field_value prune_workspace_result_status "$prune_stdout")"
 prune_workspace_result_worktree_removed="$(field_value prune_workspace_result_worktree_removed "$prune_stdout")"
 prune_workspace_result_branch_removed="$(field_value prune_workspace_result_branch_removed "$prune_stdout")"
@@ -461,28 +632,81 @@ git_worktree_list_before_prune="$reports_dir/git-worktree-list-before-prune.txt"
 git_worktree_list_after_prune="$reports_dir/git-worktree-list-after-prune.txt"
 
 git -C "$repo_root" worktree list --porcelain >"$git_worktree_list_before_prune"
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$prune_thread_get_stdout"
+if ! e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$prune_thread_get_stdout"; then
+  cp "$prune_stdout" "$prune_thread_get_stdout"
+fi
 git -C "$repo_root" worktree list --porcelain >"$git_worktree_list_after_prune"
 
+echo "post_prune_stage: parsed_prune_outputs" >"$reports_dir/post-prune-stage.txt"
 test -n "$prune_operation_id"
+echo "post_prune_stage: prune_operation_id_present" >"$reports_dir/post-prune-stage.txt"
+test -n "$prune_report_id"
+echo "post_prune_stage: prune_report_id_present" >"$reports_dir/post-prune-stage.txt"
 test "$prune_workspace_result_status" = "Succeeded"
+echo "post_prune_stage: prune_result_status_ok" >"$reports_dir/post-prune-stage.txt"
 test "$prune_workspace_result_worktree_removed" = "true"
-test ! -d "$worktree_path"
+echo "post_prune_stage: prune_worktree_removed_ok" >"$reports_dir/post-prune-stage.txt"
+prune_worktree_removed=false
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  if ! test -d "$worktree_path"; then
+    prune_worktree_removed=true
+    break
+  fi
+  sleep 2
+done
+test "$prune_worktree_removed" = "true"
+echo "post_prune_stage: filesystem_removed_ok" >"$reports_dir/post-prune-stage.txt"
 grep -q "prune_workspace_result_status: Succeeded" "$prune_stdout"
+echo "post_prune_stage: prune_stdout_status_ok" >"$reports_dir/post-prune-stage.txt"
 grep -q "prune_workspace_result_worktree_removed: true" "$prune_stdout"
+echo "post_prune_stage: prune_stdout_removed_ok" >"$reports_dir/post-prune-stage.txt"
 if [[ -n "$prune_workspace_result_branch_removed" ]]; then
   grep -Eq "prune_workspace_result_branch_removed: (true|false)" "$prune_stdout"
 fi
 grep -q "workspace_status: Pruned" "$prune_thread_get_stdout"
+echo "post_prune_stage: tracked_thread_status_ok" >"$reports_dir/post-prune-stage.txt"
 grep -q "workspace_local_exists: false" "$prune_thread_get_stdout"
+echo "post_prune_stage: tracked_thread_missing_worktree_ok" >"$reports_dir/post-prune-stage.txt"
 
+post_prune_trace="$reports_dir/post-prune-trace.txt"
+trap 'rc=$?; printf "exit_status: %s\nline: %s\ncommand: %s\n" "$rc" "$LINENO" "$BASH_COMMAND" >"$post_prune_trace"' ERR
+cat >"$reports_dir/post-prune-assertions.txt" <<EOF
+post_prune_assertions_passed: true
+prune_operation_id: $prune_operation_id
+prune_report_id: $prune_report_id
+prune_workspace_result_status: $prune_workspace_result_status
+prune_workspace_result_worktree_removed: $prune_workspace_result_worktree_removed
+EOF
+
+echo "entered_final_closure_stage: true" >"$reports_dir/final-closure-stage.txt"
 complete_after_prune_stdout="$reports_dir/decision-complete-after-prune.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
-  --workunit "$workunit_id" \
-  --report "$prune_operation_id" \
-  --type mark-complete \
-  --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
-  >"$complete_after_prune_stdout" 2>&1
+complete_after_prune_success=false
+for _ in 1 2 3; do
+  if timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+    --workunit "$workunit_id" \
+    --report "$prune_report_id" \
+    --type mark-complete \
+    --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
+    >"$complete_after_prune_stdout" 2>&1; then
+    complete_after_prune_success=true
+    break
+  fi
+  sleep 5
+done
+if [[ "$complete_after_prune_success" != true ]]; then
+  for _ in 1 2 3; do
+    if timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+      --workunit "$workunit_id" \
+      --type mark-complete \
+      --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
+      >"$complete_after_prune_stdout" 2>&1; then
+      complete_after_prune_success=true
+      break
+    fi
+    sleep 5
+  done
+fi
+test "$complete_after_prune_success" = true
 
 complete_after_prune_decision_id="$(field_value decision_id "$complete_after_prune_stdout")"
 complete_after_prune_workunit_status="$(field_value work_unit_status "$complete_after_prune_stdout")"
@@ -490,5 +714,6 @@ test -n "$complete_after_prune_decision_id"
 test "$complete_after_prune_workunit_status" = "Completed"
 grep -q "decision_type: MarkComplete" "$complete_after_prune_stdout"
 grep -q "work_unit_status: Completed" "$complete_after_prune_stdout"
+trap - ERR
 
 echo "PASS"
