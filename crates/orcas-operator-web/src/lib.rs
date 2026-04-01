@@ -1387,6 +1387,8 @@ fn WorkUnitCard(
     let start_cwd = RwSignal::new(String::new());
     let start_model = RwSignal::new(String::new());
     let start_instructions = RwSignal::new(String::new());
+    let auto_bind_tracked_thread =
+        StoredValue::new((tracked_threads.len() == 1).then(|| tracked_threads[0].clone()));
 
     view! {
         <article class="card">
@@ -1588,6 +1590,7 @@ fn WorkUnitCard(
                                 on:click=move |_| {
                                     let settings = settings.get_untracked();
                                     let work_unit_id = start_work_unit_id.clone();
+                                    let auto_bind_tracked_thread = auto_bind_tracked_thread.get_value();
                                     let worker_id = start_worker_id.get_untracked();
                                     let cwd = start_cwd.get_untracked();
                                     let model = start_model.get_untracked();
@@ -1596,6 +1599,8 @@ fn WorkUnitCard(
                                     action_error.set(None);
                                     #[cfg(target_arch = "wasm32")]
                                     spawn_local(async move {
+                                        let start_settings = settings.clone();
+                                        let start_cwd_value = cwd.clone();
                                         match api::assignment_start(
                                             settings,
                                             work_unit_id.to_string(),
@@ -1607,6 +1612,30 @@ fn WorkUnitCard(
                                         .await
                                         {
                                             Ok(response) => {
+                                                if let (Some(live_thread_id), Some(tracked_thread)) = (
+                                                    response.worker_session.thread_id.clone(),
+                                                    auto_bind_tracked_thread.clone(),
+                                                ) {
+                                                    if tracked_thread.upstream_thread_id.as_deref()
+                                                        != Some(live_thread_id.as_str())
+                                                    {
+                                                        if let Err(error) = api::bind_tracked_thread(
+                                                            start_settings,
+                                                            tracked_thread.id.clone(),
+                                                            tracked_thread.revision,
+                                                            live_thread_id,
+                                                            if start_cwd_value.trim().is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(start_cwd_value)
+                                                            },
+                                                        )
+                                                        .await
+                                                        {
+                                                            action_error.set(Some(error));
+                                                        }
+                                                    }
+                                                }
                                                 action_message.set(Some(format!(
                                                     "Started assignment {}.",
                                                     response.assignment.id
@@ -1856,6 +1885,53 @@ fn TrackedThreadCard(
                         </a>
                     }.into_any(),
                     None => view! {}.into_any(),
+                }}
+                {match (
+                    latest_report.clone(),
+                    work_unit_proposal.clone(),
+                    actionable_inbox_item.clone(),
+                ) {
+                    (Some(report), None, None) if report.needs_supervisor_review => {
+                        let work_unit_id = thread.work_unit_id.to_string();
+                        let report_id = report.id.clone();
+                        view! {
+                            <button
+                                class="refresh-button"
+                                disabled=move || working.get()
+                                on:click=move |_| {
+                                    let settings = settings.get_untracked();
+                                    let work_unit_id = work_unit_id.clone();
+                                    let report_id = report_id.clone();
+                                    working.set(true);
+                                    action_error.set(None);
+                                    #[cfg(target_arch = "wasm32")]
+                                    spawn_local(async move {
+                                        match api::proposal_create(
+                                            settings,
+                                            work_unit_id.clone(),
+                                            Some(report_id.clone()),
+                                            Some("Created from workstreams dashboard".to_string()),
+                                        )
+                                        .await
+                                        {
+                                            Ok(response) => {
+                                                action_message.set(Some(format!(
+                                                    "Created supervisor proposal {}.",
+                                                    response.proposal.id
+                                                )));
+                                                refresh_epoch.update(|value| *value += 1);
+                                            }
+                                            Err(error) => action_error.set(Some(error)),
+                                        }
+                                        working.set(false);
+                                    });
+                                }
+                            >
+                                "Create proposal"
+                            </button>
+                        }.into_any()
+                    }
+                    _ => view! {}.into_any(),
                 }}
                 <button class="refresh-button" on:click=move |_| showing_detail.update(|value| *value = !*value)>
                     {move || if showing_detail.get() { "Hide detail" } else { "Show detail" }}

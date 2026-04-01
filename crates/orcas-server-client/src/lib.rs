@@ -36,8 +36,8 @@ use orcas_core::ipc::{
     OperatorRemoteActionCreateResponse, OperatorRemoteActionFailRequest,
     OperatorRemoteActionFailResponse, OperatorRemoteActionGetRequest,
     OperatorRemoteActionGetResponse, OperatorRemoteActionListRequest,
-    OperatorRemoteActionListResponse, OperatorRemoteActionWaitRequest,
-    OperatorRemoteActionWaitResponse, StateGetRequest, StateGetResponse,
+    OperatorRemoteActionListResponse, OperatorRemoteActionWaitRequest, ProposalCreateRequest,
+    ProposalCreateResponse, OperatorRemoteActionWaitResponse, StateGetRequest, StateGetResponse,
     ThreadGetRequest, ThreadGetResponse, CodexAssignmentPauseRequest,
     CodexAssignmentPauseResponse, CodexAssignmentResumeRequest, CodexAssignmentResumeResponse,
 };
@@ -417,6 +417,14 @@ impl OrcasServerClient {
         request: &AssignmentStartRequest,
     ) -> OrcasResult<AssignmentStartResponse> {
         self.post_json("operator-runtime/assignments/start", request)
+            .await
+    }
+
+    pub async fn proposal_create(
+        &self,
+        request: &ProposalCreateRequest,
+    ) -> OrcasResult<ProposalCreateResponse> {
+        self.post_json("operator-runtime/proposals/create", request)
             .await
     }
 

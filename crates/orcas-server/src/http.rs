@@ -56,9 +56,10 @@ use orcas_core::ipc::{
     OperatorRemoteActionFailRequest, OperatorRemoteActionFailResponse,
     OperatorRemoteActionGetRequest, OperatorRemoteActionGetResponse,
     OperatorRemoteActionListRequest, OperatorRemoteActionListResponse,
-    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse, StateGetRequest,
-    StateGetResponse, ThreadGetRequest, ThreadGetResponse, CodexAssignmentPauseRequest,
-    CodexAssignmentPauseResponse, CodexAssignmentResumeRequest, CodexAssignmentResumeResponse,
+    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse, ProposalCreateRequest,
+    ProposalCreateResponse, StateGetRequest, StateGetResponse, ThreadGetRequest, ThreadGetResponse,
+    CodexAssignmentPauseRequest, CodexAssignmentPauseResponse, CodexAssignmentResumeRequest,
+    CodexAssignmentResumeResponse,
 };
 use orcas_core::jsonrpc::{JsonRpcMessage, JsonRpcRequest, RequestId};
 use orcas_core::{AppPaths, OrcasResult};
@@ -271,6 +272,7 @@ impl InboxMirrorServer {
             .route("/operator-actions/fail", post(fail_remote_action_request))
             .route("/operator-runtime/state/get", post(state_get))
             .route("/operator-runtime/assignments/start", post(assignment_start))
+            .route("/operator-runtime/proposals/create", post(proposal_create))
             .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
             .route("/operator-authority/delete-plan", post(authority_delete_plan))
             .route(
@@ -818,6 +820,15 @@ async fn assignment_start(
 ) -> Result<Json<AssignmentStartResponse>, String> {
     Ok(Json(
         daemon_request(&state, orcas_core::ipc::methods::ASSIGNMENT_START, &request).await?,
+    ))
+}
+
+async fn proposal_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalCreateRequest>,
+) -> Result<Json<ProposalCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::PROPOSAL_CREATE, &request).await?,
     ))
 }
 

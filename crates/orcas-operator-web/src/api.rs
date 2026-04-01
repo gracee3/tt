@@ -17,7 +17,7 @@ use orcas_core::ipc::{
     OperatorNotificationListRequest, OperatorReadModelCheckpointQueryRequest,
     OperatorReadModelWaitForCheckpointRequest, OperatorRemoteActionCreateRequest,
     OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
-    OperatorRemoteActionWaitRequest,
+    OperatorRemoteActionWaitRequest, ProposalCreateRequest, ProposalCreateResponse,
 };
 use orcas_operator_core::{
     DeliveryPageView, InboxDetailPageView, InboxPageView, NotificationPageView,
@@ -530,6 +530,25 @@ pub async fn assignment_start(
             plan_item_id: None,
             execution_kind: orcas_core::planning::PlanExecutionKind::DirectExecution,
             alignment_rationale: None,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn proposal_create(
+    settings: OperatorServerSettings,
+    work_unit_id: String,
+    source_report_id: Option<String>,
+    note: Option<String>,
+) -> Result<ProposalCreateResponse, String> {
+    let client = client_from_settings(&settings)?;
+    client
+        .proposal_create(&ProposalCreateRequest {
+            work_unit_id,
+            source_report_id,
+            requested_by: Some("operator_web".to_string()),
+            note: note.filter(|value| !value.trim().is_empty()),
+            supersede_open: false,
         })
         .await
         .map_err(|error| error.to_string())
