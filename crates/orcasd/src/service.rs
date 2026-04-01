@@ -5044,6 +5044,12 @@ impl OrcasDaemonService {
         report_suggests_success || inspection_suggests_success
     }
 
+    fn workspace_operation_recovery_suggests_success(
+        workspace_report: Option<&WorkerWorkspaceReport>,
+    ) -> bool {
+        workspace_report.is_some()
+    }
+
     fn prune_workspace_inspection_allows_prune(
         inspection: Option<&ipc::TrackedThreadWorkspaceInspection>,
         workspace_retired: bool,
@@ -6064,14 +6070,24 @@ impl OrcasDaemonService {
                 }
             }
             _ => {
-                if plan.parsed_report.validation.parse_result != ReportParseResult::Invalid
+                if (plan.parsed_report.validation.parse_result != ReportParseResult::Invalid
                     && plan.workspace_report.is_some()
-                    && plan.parsed_report.disposition == ReportDisposition::Completed
+                    && plan.parsed_report.disposition == ReportDisposition::Completed)
+                    || Self::workspace_operation_recovery_suggests_success(
+                        plan.workspace_report.as_ref(),
+                    )
                 {
+                    let completed_disposition =
+                        if plan.parsed_report.validation.parse_result == ReportParseResult::Invalid
+                        {
+                            Some(ReportDisposition::Completed)
+                        } else {
+                            Some(plan.parsed_report.disposition)
+                        };
                     self.mark_workspace_operation_completed(
                         &plan.assignment_id,
                         Some(core.report.id.clone()),
-                        Some(plan.parsed_report.disposition),
+                        completed_disposition,
                         Some(plan.parsed_report.summary.clone()),
                         None,
                         None,
@@ -15690,6 +15706,33 @@ worker epilogue"#;
         assert_eq!(
             recovered.workspace_status,
             orcas_core::authority::TrackedThreadWorkspaceStatus::Ready
+        );
+    }
+
+    #[test]
+    fn workspace_operation_recovery_suggests_success_when_workspace_report_was_recovered() {
+        let workspace_report = orcas_core::WorkerWorkspaceReport {
+            tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("tt-prepare")
+                .expect("tracked thread id"),
+            repository_root: "/repo".to_string(),
+            worktree_path: "/repo/worktrees/tt-prepare".to_string(),
+            branch_name: "orcas/tt-prepare".to_string(),
+            base_ref: "main".to_string(),
+            base_commit: Some("base-123".to_string()),
+            head_commit: Some("head-456".to_string()),
+            workspace_status: orcas_core::authority::TrackedThreadWorkspaceStatus::Ready,
+            worktree_created: Some(false),
+            worktree_reused: Some(true),
+            workspace_dirty: Some(true),
+            rebase_attempted: Some(false),
+            rebase_succeeded: Some(false),
+        };
+
+        assert!(OrcasDaemonService::workspace_operation_recovery_suggests_success(
+            Some(&workspace_report)
+        ));
+        assert!(
+            !OrcasDaemonService::workspace_operation_recovery_suggests_success(None)
         );
     }
 
