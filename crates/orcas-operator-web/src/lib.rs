@@ -894,8 +894,10 @@ fn WorkUnitCard(
     let delete_work_unit_id = work_unit_id.clone();
     let edit_work_unit_root_id = work_unit_id.clone();
     let add_thread_root_work_unit_id = work_unit_id.clone();
+    let start_work_unit_id = work_unit_id.clone();
     let editing = RwSignal::new(false);
     let adding_thread = RwSignal::new(false);
+    let starting = RwSignal::new(false);
     let working = RwSignal::new(false);
     let edit_title = RwSignal::new(work_unit_title_display.clone());
     let edit_task = RwSignal::new(String::new());
@@ -904,6 +906,10 @@ fn WorkUnitCard(
     let thread_title = RwSignal::new(String::new());
     let thread_upstream = RwSignal::new(String::new());
     let thread_notes = RwSignal::new(String::new());
+    let start_worker_id = RwSignal::new("codex-worker".to_string());
+    let start_cwd = RwSignal::new(String::new());
+    let start_model = RwSignal::new(String::new());
+    let start_instructions = RwSignal::new(String::new());
 
     view! {
         <article class="card">
@@ -943,6 +949,9 @@ fn WorkUnitCard(
                     </button>
                     <button class="refresh-button" on:click=move |_| adding_thread.update(|value| *value = !*value)>
                         {move || if adding_thread.get() { "Close thread form" } else { "Add Codex thread" }}
+                    </button>
+                    <button class="refresh-button" on:click=move |_| starting.update(|value| *value = !*value)>
+                        {move || if starting.get() { "Close start form" } else { "Start Codex run" }}
                     </button>
                     <button
                         class="refresh-button"
@@ -1044,6 +1053,97 @@ fn WorkUnitCard(
                                 }
                             >
                                 "Save work unit"
+                            </button>
+                        </div>
+                    </div>
+                    }.into_any()
+                } else {
+                    view! {}.into_any()
+                }
+            }}
+            {move || {
+                let start_work_unit_id = start_work_unit_id.clone();
+                if starting.get() {
+                    view! {
+                    <div class="action-form">
+                        <label class="field">
+                            <span>"Working directory"</span>
+                            <input
+                                type="text"
+                                placeholder="/home/emmy/openai/orcas"
+                                prop:value=move || start_cwd.get()
+                                on:input=move |ev| start_cwd.set(event_target_value(&ev))
+                            />
+                        </label>
+                        <div class="section-grid">
+                            <label class="field">
+                                <span>"Model"</span>
+                                <input
+                                    type="text"
+                                    placeholder="gpt-5.4"
+                                    prop:value=move || start_model.get()
+                                    on:input=move |ev| start_model.set(event_target_value(&ev))
+                                />
+                            </label>
+                            <label class="field">
+                                <span>"Worker id"</span>
+                                <input
+                                    type="text"
+                                    placeholder="codex-worker"
+                                    prop:value=move || start_worker_id.get()
+                                    on:input=move |ev| start_worker_id.set(event_target_value(&ev))
+                                />
+                            </label>
+                        </div>
+                        <label class="field">
+                            <span>"Instructions override"</span>
+                            <textarea
+                                rows="3"
+                                placeholder="Optional assignment instructions override"
+                                prop:value=move || start_instructions.get()
+                                on:input=move |ev| start_instructions.set(event_target_value(&ev))
+                            ></textarea>
+                        </label>
+                        <div class="action-buttons">
+                            <button
+                                class="primary-button"
+                                disabled=move || working.get()
+                                on:click=move |_| {
+                                    let settings = settings.get_untracked();
+                                    let work_unit_id = start_work_unit_id.clone();
+                                    let worker_id = start_worker_id.get_untracked();
+                                    let cwd = start_cwd.get_untracked();
+                                    let model = start_model.get_untracked();
+                                    let instructions = start_instructions.get_untracked();
+                                    working.set(true);
+                                    action_error.set(None);
+                                    #[cfg(target_arch = "wasm32")]
+                                    spawn_local(async move {
+                                        match api::assignment_start(
+                                            settings,
+                                            work_unit_id.to_string(),
+                                            worker_id,
+                                            Some(cwd),
+                                            Some(model),
+                                            Some(instructions),
+                                        )
+                                        .await
+                                        {
+                                            Ok(response) => {
+                                                action_message.set(Some(format!(
+                                                    "Started assignment {}.",
+                                                    response.assignment.id
+                                                )));
+                                                refresh_epoch.update(|value| *value += 1);
+                                                starting.set(false);
+                                            }
+                                            Err(error) => action_error.set(Some(error)),
+                                        }
+                                        working.set(false);
+                                    });
+                                }
+                            >
+                                "Start work unit"
                             </button>
                         </div>
                     </div>

@@ -19,6 +19,7 @@ use tracing::info;
 use crate::delivery::WebPushNotificationDeliveryTransport;
 use crate::delivery::{LogNotificationDeliveryTransport, MockNotificationDeliveryTransport};
 use orcas_core::ipc::{
+    AssignmentStartRequest, AssignmentStartResponse,
     AuthorityDeletePlanRequest, AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest,
     AuthorityHierarchyGetResponse, AuthorityTrackedThreadCreateRequest,
     AuthorityTrackedThreadCreateResponse, AuthorityTrackedThreadDeleteRequest,
@@ -267,6 +268,7 @@ impl InboxMirrorServer {
             )
             .route("/operator-actions/fail", post(fail_remote_action_request))
             .route("/operator-runtime/state/get", post(state_get))
+            .route("/operator-runtime/assignments/start", post(assignment_start))
             .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
             .route("/operator-authority/delete-plan", post(authority_delete_plan))
             .route(
@@ -795,6 +797,15 @@ async fn state_get(
     ))
 }
 
+async fn assignment_start(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AssignmentStartRequest>,
+) -> Result<Json<AssignmentStartResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::ASSIGNMENT_START, &request).await?,
+    ))
+}
+
 async fn authority_hierarchy_get(
     State(state): State<Arc<InboxMirrorServerState>>,
     Json(request): Json<AuthorityHierarchyGetRequest>,
@@ -1039,6 +1050,7 @@ pub fn app_with_operator_api_token(
         )
         .route("/operator-actions/fail", post(fail_remote_action_request))
         .route("/operator-runtime/state/get", post(state_get))
+        .route("/operator-runtime/assignments/start", post(assignment_start))
         .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
         .route("/operator-authority/delete-plan", post(authority_delete_plan))
         .route(

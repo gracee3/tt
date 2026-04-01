@@ -1,6 +1,7 @@
 use tracing::debug;
 
 use orcas_core::ipc::{
+    AssignmentStartRequest, AssignmentStartResponse,
     AuthorityDeletePlanRequest, AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest,
     AuthorityHierarchyGetResponse, AuthorityTrackedThreadCreateRequest,
     AuthorityTrackedThreadCreateResponse, AuthorityTrackedThreadDeleteRequest,
@@ -406,6 +407,14 @@ impl OrcasServerClient {
 
     pub async fn state_get(&self, request: &StateGetRequest) -> OrcasResult<StateGetResponse> {
         self.post_json("operator-runtime/state/get", request).await
+    }
+
+    pub async fn assignment_start(
+        &self,
+        request: &AssignmentStartRequest,
+    ) -> OrcasResult<AssignmentStartResponse> {
+        self.post_json("operator-runtime/assignments/start", request)
+            .await
     }
 
     pub async fn authority_hierarchy_get(

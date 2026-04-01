@@ -2,6 +2,7 @@
 
 use orcas_core::authority;
 use orcas_core::ipc::{
+    AssignmentStartRequest, AssignmentStartResponse,
     AuthorityDeletePlanRequest, AuthorityHierarchyGetRequest,
     AuthorityTrackedThreadCreateRequest, AuthorityTrackedThreadDeleteRequest,
     AuthorityWorkstreamCreateRequest, AuthorityWorkstreamEditRequest,
@@ -470,6 +471,33 @@ pub async fn create_tracked_thread(
         .await
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+pub async fn assignment_start(
+    settings: OperatorServerSettings,
+    work_unit_id: String,
+    worker_id: String,
+    cwd: Option<String>,
+    model: Option<String>,
+    instructions: Option<String>,
+) -> Result<AssignmentStartResponse, String> {
+    let client = client_from_settings(&settings)?;
+    client
+        .assignment_start(&AssignmentStartRequest {
+            work_unit_id,
+            worker_id,
+            worker_kind: Some("codex".to_string()),
+            instructions: instructions.filter(|value| !value.trim().is_empty()),
+            model: model.filter(|value| !value.trim().is_empty()),
+            cwd: cwd.filter(|value| !value.trim().is_empty()),
+            plan_id: None,
+            plan_version: None,
+            plan_item_id: None,
+            execution_kind: orcas_core::planning::PlanExecutionKind::DirectExecution,
+            alignment_rationale: None,
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub async fn delete_tracked_thread(
