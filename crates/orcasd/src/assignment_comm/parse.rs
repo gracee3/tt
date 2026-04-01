@@ -275,11 +275,18 @@ pub fn parse_worker_report(
 }
 
 fn looks_like_malformed_worker_report_envelope(json_payload: &str) -> bool {
-    json_payload.contains("\"schema_version\":")
-        && json_payload.contains("worker_report_envelope.v1")
-        && json_payload.contains("\"assignment_id\":")
-        && json_payload.contains("\"review_signal\":")
+    let has_schema = json_payload.contains("\"schema_version\":")
+        && json_payload.contains("worker_report_envelope.v1");
+    let has_report_shape = json_payload.contains("\"review_signal\":")
         && json_payload.contains("\"mode_payload\":")
+        && (json_payload.contains("\"task_mode\":")
+            || json_payload.contains("\"triggered_stop_condition_ids\":"));
+    let has_identity_or_summary = json_payload.contains("\"assignment_id\":")
+        || json_payload.contains("\"packet_id\":")
+        || json_payload.contains("\"disposition\":")
+        || json_payload.contains("\"summary\":");
+
+    has_schema && has_report_shape && has_identity_or_summary
 }
 
 fn recovered_report(
@@ -1175,6 +1182,26 @@ mod tests {
         assert!(parsed.validation.needs_supervisor_review);
         let envelope = parsed.envelope.expect("envelope");
         assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        assert_eq!(envelope.assignment_id, assignment.id);
+        assert_eq!(envelope.packet_id, record.packet.packet_id);
+        assert!(parsed
+            .validation
+            .structural_issues
+            .iter()
+            .any(|issue| issue.contains("recovered a minimal envelope")));
+    }
+
+    #[test]
+    fn parse_worker_report_recovers_when_live_worker_corrupts_identity_line() {
+        let assignment = sample_assignment();
+        let record = sample_record(&assignment);
+        let raw = "worker preamble\nORCAS_REPORT_BEGIN\n{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"180\",\n-assignment9688f4efc79045b1808e53f1c9826192\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Updated main.c to print \\\"Hello, Orcas!\\\" (added missing exclamation) so tests pass.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [\"stop_1\"],\n  \"touched_files\": [\"main.c\"],\n  \"commands_run\": [\"make test -j1 V=1\"],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  },\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {\n    \"kind\": \"implement\",\n    \"semantic_changes\": [\n      {\n        \"path\": \"main.c\",\n        \"description\": \"Replaced string literal in puts() from \\\"Hello, Orcas\\\" to \\\"Hello, Orcas!\\\".\"\n      }\n    ],\n    \"tests_run\": [\n      {\n        \"name\": \"tests/test.sh\",\n        \"result\": \"pass\"\n      }\n    ],\n    \"rough_edges\": []\n  }\n}\nORCAS_REPORT_END";
+
+        let parsed = parse_worker_report(raw, &assignment, &record);
+
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert!(parsed.validation.needs_supervisor_review);
+        let envelope = parsed.envelope.expect("envelope");
         assert_eq!(envelope.assignment_id, assignment.id);
         assert_eq!(envelope.packet_id, record.packet.packet_id);
         assert!(parsed
