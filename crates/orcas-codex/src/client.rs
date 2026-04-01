@@ -10,8 +10,10 @@ use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
+use orcas_core::ipc::{ThreadTokenUsageView, TurnPlanStepView, TurnPlanView};
 use orcas_core::{
-    ConnectionState, EventEnvelope, OrcasError, OrcasEvent, OrcasResult, ReconnectPolicy,
+    CodexItemEvent, CodexTurnEvent, ConnectionState, EventEnvelope, OrcasError, OrcasEvent,
+    OrcasResult, ReconnectPolicy,
 };
 
 use crate::approval::{ApprovalDecision, ApprovalRouter, RejectingApprovalRouter};
@@ -26,6 +28,93 @@ pub type EventSubscription = broadcast::Receiver<EventEnvelope>;
 pub type CodexClientHandle = Arc<CodexClient>;
 
 type PendingResponse = oneshot::Sender<OrcasResult<Value>>;
+
+fn item_to_event(item: types::ThreadItem) -> CodexItemEvent {
+    let detail_kind = Some(item.detail_kind());
+    let detail = item.detail_json();
+    let payload = detail.clone();
+    let text = item.display_text();
+    let item_type = item.normalized_item_type();
+    let status = item.item_status();
+    let summary = text
+        .as_ref()
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|value| !value.is_empty())
+        .map(|mut value| {
+            if value.chars().count() > 160 {
+                value = value.chars().take(160).collect::<String>();
+                value.push_str("...");
+            }
+            value
+        })
+        .or_else(|| {
+            payload.as_ref().and_then(|value| match value {
+                Value::Object(map) if map.is_empty() => Some("empty payload".to_string()),
+                Value::Object(map) => Some(format!(
+                    "payload keys: {}",
+                    map.keys().take(4).cloned().collect::<Vec<_>>().join(", ")
+                )),
+                Value::Array(values) => Some(format!("payload array ({} items)", values.len())),
+                other => Some(other.to_string()),
+            })
+        });
+    CodexItemEvent {
+        id: item.id,
+        item_type,
+        status,
+        text,
+        summary,
+        payload,
+        detail_kind,
+        detail,
+    }
+}
+
+fn turn_plan_to_view(plan: types::TurnPlanUpdatedNotification) -> TurnPlanView {
+    TurnPlanView {
+        explanation: plan.explanation,
+        plan: plan
+            .plan
+            .into_iter()
+            .map(|step| TurnPlanStepView {
+                step: step.step,
+                status: types::normalize_label(&step.status),
+            })
+            .collect(),
+    }
+}
+
+fn token_usage_to_view(token_usage: types::ThreadTokenUsage) -> ThreadTokenUsageView {
+    ThreadTokenUsageView {
+        total_tokens: token_usage.total_tokens,
+        input_tokens: token_usage.input_tokens,
+        cached_input_tokens: token_usage.cached_input_tokens,
+        output_tokens: token_usage.output_tokens,
+        reasoning_output_tokens: token_usage.reasoning_output_tokens,
+    }
+}
+
+fn turn_to_event(turn: types::Turn) -> CodexTurnEvent {
+    let error_summary = turn.error.as_ref().map(|error| {
+        error
+            .additional_details
+            .as_ref()
+            .map(|details| format!("{} ({details})", error.message))
+            .unwrap_or_else(|| error.message.clone())
+    });
+    CodexTurnEvent {
+        id: turn.id,
+        status: turn.status.label().to_string(),
+        error_message: turn.error.as_ref().map(|error| error.message.clone()),
+        error_summary,
+        latest_diff: None,
+        latest_plan_snapshot: None,
+        token_usage_snapshot: None,
+        latest_plan: None,
+        token_usage: None,
+        items: turn.items.into_iter().map(item_to_event).collect(),
+    }
+}
 
 pub struct CodexClient {
     transport: Arc<dyn CodexTransport>,
@@ -582,7 +671,7 @@ impl CodexClient {
                         self.transport.endpoint(),
                         OrcasEvent::TurnStarted {
                             thread_id: event.thread_id,
-                            turn_id: event.turn.id,
+                            turn: turn_to_event(event.turn),
                         },
                     ));
                 }
@@ -596,8 +685,7 @@ impl CodexClient {
                         self.transport.endpoint(),
                         OrcasEvent::TurnCompleted {
                             thread_id: event.thread_id,
-                            turn_id: event.turn.id,
-                            status: event.turn.status.label().to_string(),
+                            turn: turn_to_event(event.turn),
                         },
                     ));
                 }
@@ -612,8 +700,7 @@ impl CodexClient {
                         OrcasEvent::ItemStarted {
                             thread_id: event.thread_id,
                             turn_id: event.turn_id,
-                            item_id: event.item.id,
-                            item_type: event.item.item_type,
+                            item: item_to_event(event.item),
                         },
                     ));
                 }
@@ -628,8 +715,7 @@ impl CodexClient {
                         OrcasEvent::ItemCompleted {
                             thread_id: event.thread_id,
                             turn_id: event.turn_id,
-                            item_id: event.item.id,
-                            item_type: event.item.item_type,
+                            item: item_to_event(event.item),
                         },
                     ));
                 }
@@ -646,6 +732,169 @@ impl CodexClient {
                             turn_id: event.turn_id,
                             item_id: event.item_id,
                             delta: event.delta,
+                        },
+                    ));
+                }
+            }
+            methods::PLAN_DELTA => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::PlanDeltaNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::PlanDelta {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            delta: event.delta,
+                        },
+                    ));
+                }
+            }
+            methods::REASONING_SUMMARY_TEXT_DELTA => {
+                if let Some(params) = notification.params
+                    && let Ok(event) = serde_json::from_value::<
+                        types::ReasoningSummaryTextDeltaNotification,
+                    >(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::ReasoningSummaryTextDelta {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            delta: event.delta,
+                            summary_index: event.summary_index,
+                        },
+                    ));
+                }
+            }
+            methods::REASONING_SUMMARY_PART_ADDED => {
+                if let Some(params) = notification.params
+                    && let Ok(event) = serde_json::from_value::<
+                        types::ReasoningSummaryPartAddedNotification,
+                    >(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::ReasoningSummaryPartAdded {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            summary_index: event.summary_index,
+                        },
+                    ));
+                }
+            }
+            methods::REASONING_TEXT_DELTA => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::ReasoningTextDeltaNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::ReasoningTextDelta {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            delta: event.delta,
+                            content_index: event.content_index,
+                        },
+                    ));
+                }
+            }
+            methods::COMMAND_EXECUTION_OUTPUT_DELTA => {
+                if let Some(params) = notification.params
+                    && let Ok(event) = serde_json::from_value::<
+                        types::CommandExecutionOutputDeltaNotification,
+                    >(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::CommandExecutionOutputDelta {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            delta: event.delta,
+                        },
+                    ));
+                }
+            }
+            methods::FILE_CHANGE_OUTPUT_DELTA => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::FileChangeOutputDeltaNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::FileChangeOutputDelta {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            delta: event.delta,
+                        },
+                    ));
+                }
+            }
+            methods::MCP_TOOL_CALL_PROGRESS => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::McpToolCallProgressNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::McpToolCallProgress {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            item_id: event.item_id,
+                            message: event.message,
+                        },
+                    ));
+                }
+            }
+            methods::TURN_DIFF_UPDATED => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::TurnDiffUpdatedNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::TurnDiffUpdated {
+                            thread_id: event.thread_id,
+                            turn_id: event.turn_id,
+                            diff: event.diff,
+                        },
+                    ));
+                }
+            }
+            methods::TURN_PLAN_UPDATED => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::TurnPlanUpdatedNotification>(params)
+                {
+                    let thread_id = event.thread_id.clone();
+                    let turn_id = event.turn_id.clone();
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::TurnPlanUpdated {
+                            thread_id,
+                            turn_id,
+                            plan: turn_plan_to_view(event),
+                        },
+                    ));
+                }
+            }
+            methods::THREAD_TOKEN_USAGE_UPDATED => {
+                if let Some(params) = notification.params
+                    && let Ok(event) =
+                        serde_json::from_value::<types::ThreadTokenUsageUpdatedNotification>(params)
+                {
+                    self.emit(EventEnvelope::new(
+                        self.transport.endpoint(),
+                        OrcasEvent::ThreadTokenUsageUpdated {
+                            thread_id: event.thread_id,
+                            token_usage: token_usage_to_view(event.token_usage),
                         },
                     ));
                 }

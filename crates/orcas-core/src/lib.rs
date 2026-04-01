@@ -48,7 +48,7 @@ pub use config::{
     SupervisorProposalConfig,
 };
 pub use error::{OrcasError, OrcasResult};
-pub use events::{ConnectionState, EventEnvelope, OrcasEvent};
+pub use events::{CodexItemEvent, CodexTurnEvent, ConnectionState, EventEnvelope, OrcasEvent};
 pub use ipc::*;
 pub use jsonrpc::{
     JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,

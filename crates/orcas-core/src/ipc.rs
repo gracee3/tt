@@ -1364,6 +1364,20 @@ pub enum DaemonEvent {
         item_id: String,
         delta: String,
     },
+    TurnDiffUpdated {
+        thread_id: String,
+        turn_id: String,
+        diff: String,
+    },
+    TurnPlanUpdated {
+        thread_id: String,
+        turn_id: String,
+        plan: TurnPlanView,
+    },
+    ThreadTokenUsageUpdated {
+        thread_id: String,
+        token_usage: ThreadTokenUsageView,
+    },
     WorkstreamLifecycle {
         action: CollaborationLifecycleAction,
         workstream: WorkstreamSummary,
@@ -2021,7 +2035,34 @@ pub struct TurnView {
     pub latest_plan_snapshot: Option<Value>,
     #[serde(default)]
     pub token_usage_snapshot: Option<Value>,
+    #[serde(default)]
+    pub latest_plan: Option<TurnPlanView>,
+    #[serde(default)]
+    pub token_usage: Option<ThreadTokenUsageView>,
     pub items: Vec<ItemView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnPlanView {
+    #[serde(default)]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub plan: Vec<TurnPlanStepView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnPlanStepView {
+    pub step: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadTokenUsageView {
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2068,6 +2109,10 @@ pub struct ItemView {
     pub summary: Option<String>,
     #[serde(default)]
     pub payload: Option<Value>,
+    #[serde(default)]
+    pub detail_kind: Option<String>,
+    #[serde(default)]
+    pub detail: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
