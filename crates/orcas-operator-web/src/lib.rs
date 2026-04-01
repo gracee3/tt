@@ -1626,6 +1626,7 @@ fn TrackedThreadCard(
     let runtime = tracked_thread_runtime_status(&thread, &dashboard);
     let working = RwSignal::new(false);
     let binding = RwSignal::new(false);
+    let showing_detail = RwSignal::new(false);
     let bind_thread_id = RwSignal::new(String::new());
     let available_threads = dashboard
         .snapshot
@@ -1644,6 +1645,33 @@ fn TrackedThreadCard(
         .collect::<Vec<_>>();
     let available_threads_for_bind = available_threads.clone();
     let tracked_thread_id_for_bind = thread.id.clone();
+    let latest_report = runtime.assignment_id.as_ref().and_then(|assignment_id| {
+        dashboard
+            .snapshot
+            .collaboration
+            .reports
+            .iter()
+            .filter(|report| report.assignment_id == *assignment_id)
+            .max_by_key(|report| report.created_at)
+            .cloned()
+    });
+    let latest_decision = latest_report.as_ref().and_then(|report| {
+        dashboard
+            .snapshot
+            .collaboration
+            .decisions
+            .iter()
+            .filter(|decision| decision.report_id.as_deref() == Some(report.id.as_str()))
+            .max_by_key(|decision| decision.created_at)
+            .cloned()
+    });
+    let work_unit_proposal = dashboard
+        .snapshot
+        .collaboration
+        .work_units
+        .iter()
+        .find(|work_unit| work_unit.id == thread.work_unit_id.as_str())
+        .and_then(|work_unit| work_unit.proposal.clone());
 
     view! {
         <div class="item-card">
@@ -1688,6 +1716,16 @@ fn TrackedThreadCard(
                 None => view! {}.into_any(),
             }}
             <div class="action-buttons">
+                {move || match thread.upstream_thread_id.clone() {
+                    Some(codex_thread_id) => view! {
+                        <a class="refresh-button" href="/threads">"Open in Threads"</a>
+                        <span class="muted">{codex_thread_id}</span>
+                    }.into_any(),
+                    None => view! {}.into_any(),
+                }}
+                <button class="refresh-button" on:click=move |_| showing_detail.update(|value| *value = !*value)>
+                    {move || if showing_detail.get() { "Hide detail" } else { "Show detail" }}
+                </button>
                 {move || {
                     if matches!(
                         thread.binding_state,
@@ -1730,6 +1768,95 @@ fn TrackedThreadCard(
                     "Remove"
                 </button>
             </div>
+            {move || {
+                if showing_detail.get() {
+                    view! {
+                        <div class="detail-panel">
+                            {match latest_report.clone() {
+                                Some(report) => view! {
+                                    <div class="detail-block">
+                                        <p class="eyebrow">"Latest report"</p>
+                                        <p class="item-meta">{format!(
+                                            "{} · {} · supervisor_review={}",
+                                            humanize_snake_case(
+                                                serde_json::to_string(&report.disposition)
+                                                    .unwrap_or_default()
+                                                    .trim_matches('"')
+                                            ),
+                                            humanize_snake_case(
+                                                serde_json::to_string(&report.parse_result)
+                                                    .unwrap_or_default()
+                                                    .trim_matches('"')
+                                            ),
+                                            report.needs_supervisor_review
+                                        )}</p>
+                                        <p class="item-summary">{report.summary.clone()}</p>
+                                    </div>
+                                }.into_any(),
+                                None => view! {
+                                    <div class="detail-block">
+                                        <p class="eyebrow">"Latest report"</p>
+                                        <p class="item-meta">"No report recorded yet"</p>
+                                    </div>
+                                }.into_any(),
+                            }}
+                            {match work_unit_proposal.clone() {
+                                Some(proposal) => view! {
+                                    <div class="detail-block">
+                                        <p class="eyebrow">"Supervisor proposal"</p>
+                                        <p class="item-meta">{format!(
+                                            "{}{}",
+                                            humanize_snake_case(
+                                                serde_json::to_string(&proposal.latest_status)
+                                                    .unwrap_or_default()
+                                                    .trim_matches('"')
+                                            ),
+                                            proposal
+                                                .latest_proposed_decision_type
+                                                .as_ref()
+                                                .map(|decision| format!(
+                                                    " · {}",
+                                                    humanize_snake_case(
+                                                        serde_json::to_string(decision)
+                                                            .unwrap_or_default()
+                                                            .trim_matches('"')
+                                                    )
+                                                ))
+                                                .unwrap_or_default()
+                                        )}</p>
+                                        <p class="item-meta">{format!(
+                                            "proposal {} · open={}",
+                                            proposal.latest_proposal_id,
+                                            proposal.has_open_proposal
+                                        )}</p>
+                                    </div>
+                                }.into_any(),
+                                None => view! {}.into_any(),
+                            }}
+                            {match latest_decision.clone() {
+                                Some(decision) => view! {
+                                    <div class="detail-block">
+                                        <p class="eyebrow">"Latest decision"</p>
+                                        <p class="item-meta">{format!(
+                                            "{} · {}",
+                                            decision.id,
+                                            humanize_snake_case(
+                                                serde_json::to_string(&decision.decision_type)
+                                                    .unwrap_or_default()
+                                                    .trim_matches('"')
+                                            )
+                                        )}</p>
+                                        <p class="item-summary">{decision.rationale.clone()}</p>
+                                    </div>
+                                }.into_any(),
+                                None => view! {}.into_any(),
+                            }}
+                        </div>
+                    }.into_any()
+                } else {
+                    view! {}.into_any()
+                }
+            }}
             {move || {
                 if binding.get() {
                     let available_threads_for_bind = available_threads_for_bind.clone();

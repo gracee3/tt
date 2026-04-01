@@ -13,6 +13,7 @@ pub struct TrackedThreadRuntimeStatusView {
     pub detail: String,
     pub assignment_id: Option<String>,
     pub codex_thread_id: Option<String>,
+    pub supervisor_waiting: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -171,8 +172,17 @@ pub fn tracked_thread_runtime_status(
             )
         ));
     }
+    let supervisor_waiting = assignment
+        .as_ref()
+        .is_some_and(|assignment| assignment.status == orcas_core::AssignmentStatus::AwaitingDecision)
+        || open_decision.is_some();
+
     if let Some(live_thread) = live_thread.as_ref() {
-        detail_parts.push(format!("thread {}", live_thread.status));
+        if supervisor_waiting && live_thread.status == "idle" {
+            detail_parts.push("report submitted".to_string());
+        } else {
+            detail_parts.push(format!("thread {}", live_thread.status));
+        }
         if live_thread.turn_in_flight {
             detail_parts.push("turn in flight".to_string());
         }
@@ -223,6 +233,7 @@ pub fn tracked_thread_runtime_status(
         detail: detail_parts.join(" · "),
         assignment_id: assignment.map(|assignment| assignment.id),
         codex_thread_id: codex_assignment.map(|assignment| assignment.codex_thread_id),
+        supervisor_waiting,
     }
 }
 
