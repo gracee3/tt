@@ -7,10 +7,9 @@ e2e_load_scenario_metadata "$scenario_dir"
 e2e_prepare_scenario_dirs "$NAME"
 
 daemon_log="$E2E_SCENARIO_LOGS_DIR/orcasd.log"
-e2e_orcas daemon start --force-spawn >"$daemon_log" 2>&1 &
-daemon_pid=$!
+e2e_start_managed_daemon "$daemon_log"
 cleanup() {
-  kill "$daemon_pid" >/dev/null 2>&1 || true
+  e2e_stop_managed_daemon
 }
 trap cleanup EXIT
 

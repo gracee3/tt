@@ -18,6 +18,8 @@ export E2E_SUITE="$e2e_suite"
 export E2E_TAG="$e2e_tag_filter"
 export E2E_SCENARIO="$e2e_requested_scenario"
 
+e2e_daemon_pid=""
+
 e2e_fail() {
   echo "e2e: $*" >&2
   exit 2
@@ -151,10 +153,21 @@ e2e_prepare_scenario_dirs() {
   E2E_SCENARIO_REPORTS_DIR="$e2e_output_root/reports/$e2e_run_id/$scenario_name"
   E2E_SCENARIO_ARTIFACTS_DIR="$e2e_output_root/artifacts/$e2e_run_id/$scenario_name"
   E2E_SCENARIO_WORKTREES_DIR="$e2e_output_root/worktrees/$e2e_run_id/$scenario_name"
-  E2E_SCENARIO_XDG_DIR="$e2e_output_root/xdg/$e2e_run_id/$scenario_name"
-  E2E_SCENARIO_XDG_DATA_HOME="$E2E_SCENARIO_XDG_DIR/data"
-  E2E_SCENARIO_XDG_CONFIG_HOME="$E2E_SCENARIO_XDG_DIR/config"
-  E2E_SCENARIO_XDG_RUNTIME_HOME="$E2E_SCENARIO_XDG_DIR/runtime"
+  if e2e_is_true "${ORCAS_E2E_REUSE_CURRENT_XDG:-false}"; then
+    [[ -n "${ORCAS_E2E_SHARED_XDG_DIR:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_DIR is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
+    [[ -n "${ORCAS_E2E_SHARED_XDG_DATA_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_DATA_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
+    [[ -n "${ORCAS_E2E_SHARED_XDG_CONFIG_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_CONFIG_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
+    [[ -n "${ORCAS_E2E_SHARED_XDG_RUNTIME_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_RUNTIME_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
+    E2E_SCENARIO_XDG_DIR="$ORCAS_E2E_SHARED_XDG_DIR"
+    E2E_SCENARIO_XDG_DATA_HOME="$ORCAS_E2E_SHARED_XDG_DATA_HOME"
+    E2E_SCENARIO_XDG_CONFIG_HOME="$ORCAS_E2E_SHARED_XDG_CONFIG_HOME"
+    E2E_SCENARIO_XDG_RUNTIME_HOME="$ORCAS_E2E_SHARED_XDG_RUNTIME_HOME"
+  else
+    E2E_SCENARIO_XDG_DIR="$e2e_output_root/xdg/$e2e_run_id/$scenario_name"
+    E2E_SCENARIO_XDG_DATA_HOME="$E2E_SCENARIO_XDG_DIR/data"
+    E2E_SCENARIO_XDG_CONFIG_HOME="$E2E_SCENARIO_XDG_DIR/config"
+    E2E_SCENARIO_XDG_RUNTIME_HOME="$E2E_SCENARIO_XDG_DIR/runtime"
+  fi
 
   export E2E_SCENARIO_NAME \
     E2E_SCENARIO_DIR \
@@ -180,6 +193,34 @@ e2e_prepare_scenario_dirs() {
     "$E2E_SCENARIO_XDG_CONFIG_HOME/orcas" \
     "$E2E_SCENARIO_XDG_RUNTIME_HOME/orcas"
   chmod 700 "$E2E_SCENARIO_XDG_RUNTIME_HOME" || true
+}
+
+e2e_using_shared_lab() {
+  e2e_is_true "${ORCAS_E2E_REUSE_CURRENT_XDG:-false}"
+}
+
+e2e_start_managed_daemon() {
+  local daemon_log="$1"
+  if e2e_is_true "${ORCAS_E2E_REUSE_CURRENT_DAEMON:-false}"; then
+    [[ -n "${ORCAS_E2E_SHARED_SOCKET_FILE:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_SOCKET_FILE is required when ORCAS_E2E_REUSE_CURRENT_DAEMON=true"
+    e2e_orcas daemon status >"$daemon_log" 2>&1 || e2e_fail "shared lab daemon is not responsive"
+    printf 'shared lab daemon reused via %s\n' "$ORCAS_E2E_SHARED_SOCKET_FILE" >>"$daemon_log"
+    e2e_daemon_pid=""
+    return 0
+  fi
+  e2e_orcas daemon start --force-spawn >"$daemon_log" 2>&1 &
+  e2e_daemon_pid=$!
+}
+
+e2e_stop_managed_daemon() {
+  if e2e_is_true "${ORCAS_E2E_REUSE_CURRENT_DAEMON:-false}"; then
+    return 0
+  fi
+  if [[ -n "$e2e_daemon_pid" ]]; then
+    kill "$e2e_daemon_pid" >/dev/null 2>&1 || true
+    wait "$e2e_daemon_pid" >/dev/null 2>&1 || true
+    e2e_daemon_pid=""
+  fi
 }
 
 e2e_require_clean_git() {
