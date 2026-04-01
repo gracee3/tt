@@ -24,6 +24,16 @@ A common pattern is to open a new workstream for an objective, create one or mor
 
 The CLI remains close at hand for scripted flows, quick checks, and direct operator actions, including authored steer creation, replacement, review, approve/send, reject, record-no-action, manual-refresh, and a cross-thread Codex decision queue/history surface for supervised threads.
 
+## Current Operator Surface
+
+The strongest checked-in operator surfaces today are the CLI and the daemon IPC contract.
+
+- `orcasd` is the durable local control plane
+- `orcas` is the primary checked-in operator client
+- the repo does not currently contain a primary UI surface to "resume"
+
+That matters for planning work. Orcas is currently best understood and operated through CLI flows, daemon-backed state inspection, and the checked-in integration/E2E harnesses rather than through a separate frontend.
+
 ## Quick start
 
 On Linux, the easiest install path is a `.deb` package. If you are working from a release archive, the tarball layout is equally simple.
@@ -61,6 +71,19 @@ End-to-end operator workflows are available as an opt-in lane under `tests/e2e/`
 - `make clean-e2e`
 
 Generated E2E output is kept under `target/e2e/` so it is easy to inspect and easy to remove.
+
+Current harness contract:
+
+- `make test-e2e` is the daily deterministic confidence lane and should work from a normal dirty checkout
+- scenarios that require a clean git tree are opt-in and must not be default-enabled
+- the default deterministic lane remains model-free
+- proposal-bearing live supervisor scenarios may use an explicit local OpenAI-compatible endpoint, but that support is test scaffolding only and not a default product dependency
+
+Recent progress that is now on `main`:
+
+- recover malformed live worker report envelopes to supervisor-reviewable `Ambiguous` state instead of hard-failing every damaged envelope
+- preserve assignment communication context across turn ingestion so redirected or successor assignments keep the intended execution `cwd`
+- restore a trustworthy dirty-checkout deterministic E2E lane
 
 ## Implementation
 
@@ -131,6 +154,15 @@ Two runtime-mode overrides are worth calling out explicitly:
 - `ORCAS_CONNECTION_MODE=spawn_always` forces spawn mode
 
 If `ORCAS_CONNECTION_MODE` is unset, Orcas keeps the configured or default `spawn_if_needed` behavior. The CLI and daemon flags `--connect-only` and `--force-spawn` are mutually exclusive one-shot overrides for the same setting.
+
+## Branch And Worktree Hygiene
+
+Use bounded integration branches when merging validated repair stacks back toward `main`.
+
+- keep active dirty lanes intentionally, not accidentally
+- remove temporary integration worktrees after the validated merge lands
+- delete local branches only when they are fully merged or otherwise clearly superseded
+- preserve unmerged or dirty debug branches until their state is intentionally archived or discarded
 
 ## Read more
 

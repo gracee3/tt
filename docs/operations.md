@@ -38,6 +38,12 @@ orcas doctor
 
 The doctor command reports the config path, `state.json`, `state.db`, runtime directory, socket path, daemon log path, and current Codex endpoint.
 
+The current checked-in operator surface is CLI-first:
+
+- `orcasd` is the durable local daemon and IPC boundary
+- `orcas` is the strongest checked-in operator surface
+- there is not currently a primary checked-in UI to resume
+
 ## Logs
 
 Use `journalctl --user` for unit lifecycle events and startup failures.
@@ -139,3 +145,12 @@ If the unit file changed, reload systemd before restarting.
 systemctl --user daemon-reload
 systemctl --user restart orcas-daemon.service
 ```
+
+## Repo Hygiene
+
+For repository maintenance around Orcas itself, prefer bounded integration branches and disposable temporary worktrees over long-lived ad hoc merge state.
+
+- land validated repair stacks onto `main` in small bounded batches
+- remove temporary integration worktrees after the merge is validated
+- keep active dirty feature lanes intentionally preserved until they are merged, archived, or explicitly discarded
+- do not assume an unmerged dirty branch is stale just because `main` now contains equivalent cherry-picked fixes

@@ -58,6 +58,14 @@ Use it for scenario-style operator workflows that need real CLI/daemon behavior 
 
 The harness writes generated state only under `target/e2e/`, which keeps scenario artifacts easy to inspect and easy to remove.
 
+Current lane contract:
+
+- `make test-e2e` is the daily deterministic lane and should stay usable from a normal dirty developer checkout
+- clean-git scenarios are opt-in, not default
+- the default deterministic lane remains model-free
+- proposal-bearing live supervisor scenarios may use an explicit local OpenAI-compatible endpoint, but only as opt-in test scaffolding
+- seeded-state proposal scenarios should remain model-free
+
 The main entrypoints are:
 
 - `make test-e2e`
@@ -114,6 +122,8 @@ cargo test -p orcasd --lib
 cargo test -p orcasd --test real_socket -- --nocapture
 cargo test -p orcas --test cli_socket -- --nocapture
 cargo test -p orcas-codex --lib
+cargo test -p orcasd parse_worker_report_recovers_when_live_worker_corrupts_identity_line -- --nocapture
+cargo test -p orcasd assignment_start_refreshes_persisted_packet_when_cwd_changes -- --nocapture
 ```
 
 Coverage:
@@ -145,5 +155,8 @@ Recent testing work substantially improved:
 - client/protocol boundary coverage
 - real daemon/socket integration coverage
 - real CLI and operator workflow coverage
+- recovery of malformed live worker report envelopes
+- preservation of assignment execution context across redirected or successor turn ingestion
+- reliability of the default deterministic E2E lane from a normal dirty checkout
 
 The workspace is in a good stopping state. Future test work should be selective and driven by new features, regressions, or specific cold spots rather than broad expansion.
