@@ -166,6 +166,23 @@ pub fn parse_worker_report(
         record,
         extraction.surrounding_text,
     ) else {
+        if looks_like_malformed_worker_report_envelope(&json_payload) {
+            warn!(
+                assignment_id = %assignment.id,
+                packet_id = %record.packet.packet_id,
+                stage = "decode_envelope",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "worker report envelope decode failed but payload looked recoverable; falling back to minimal recovered envelope"
+            );
+            return recovered_report(
+                Some(
+                    "worker report envelope JSON could not be decoded; recovered a minimal envelope for supervisor review"
+                        .to_string(),
+                ),
+                assignment,
+                record,
+            );
+        }
         warn!(
             assignment_id = %assignment.id,
             packet_id = %record.packet.packet_id,
@@ -255,6 +272,14 @@ pub fn parse_worker_report(
         );
     }
     parsed
+}
+
+fn looks_like_malformed_worker_report_envelope(json_payload: &str) -> bool {
+    json_payload.contains("\"schema_version\":")
+        && json_payload.contains("worker_report_envelope.v1")
+        && json_payload.contains("\"assignment_id\":")
+        && json_payload.contains("\"review_signal\":")
+        && json_payload.contains("\"mode_payload\":")
 }
 
 fn recovered_report(
@@ -637,38 +662,6 @@ fn repair_stray_report_field_prefix(json_payload: &mut String, field: &str) -> b
     true
 }
 
-fn repair_json_string_field(json_payload: &mut String, field: &str, value: &str) -> bool {
-    let needle = format!("\"{field}\":");
-    let Some(field_index) = json_payload.find(&needle) else {
-        return false;
-    };
-    let line_start = json_payload[..field_index]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let line_end = json_payload[field_index..]
-        .find('\n')
-        .map(|offset| field_index + offset)
-        .unwrap_or(json_payload.len());
-    let line = &json_payload[line_start..line_end];
-    let Some(colon_index) = line.find(':') else {
-        return false;
-    };
-    let value_segment = &line[colon_index + 1..];
-    if value_segment.trim_start().starts_with('"') {
-        return false;
-    }
-    let Some(comma_index) = value_segment.find(',') else {
-        return false;
-    };
-    let prefix = &line[..colon_index + 1];
-    let suffix = &value_segment[comma_index..];
-    let quoted_value = serde_json::to_string(value).expect("string value can be serialized");
-    let replacement = format!("{prefix} {quoted_value}{suffix}");
-    json_payload.replace_range(line_start..line_end, &replacement);
-    true
-}
-
 fn extract_envelope(raw_output: &str) -> EnvelopeExtraction {
     let Some((prefix, after_begin)) = raw_output.split_once(REPORT_MARKER_BEGIN) else {
         return EnvelopeExtraction {
@@ -703,7 +696,7 @@ mod tests {
         Assignment, AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentTaskMode,
         ImplementModePayload, ImplementModeSpec, ReportConfidence, ReportDisposition,
         ReportParseResult, ReviewSignal, ReviewSignalLevel, WorkUnit, WorkUnitStatus,
-        WorkerReportEnvelope, WorkerReportModePayload, Workstream, WorkstreamStatus, ipc,
+        WorkerReportModePayload, Workstream, WorkstreamStatus, ipc,
     };
 
     use super::{extract_envelope, parse_worker_report, parse_worker_report_for_turn};
@@ -1166,6 +1159,29 @@ mod tests {
         assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
         assert!(parsed.envelope.is_some());
         assert_eq!(parsed.disposition, ReportDisposition::Completed);
+    }
+
+    #[test]
+    fn parse_worker_report_repairs_live_worker_header_collapsed_before_triggered_stop_conditions() {
+        let assignment = sample_assignment();
+        let record = sample_record(&assignment);
+        let raw = format!(
+            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"assignment-c43cc0c9a9ba0290 \"completed\",\n matches_results_1,2, commands }}\n   \"triggered_stop_condition_ids\": [\"stop_1\"],\n  \"touched_files\": [\"main.c\"],\n  \"commands_run\": [\n    \"ls -la\"\n  ],\n  \"artifacts\": [\n    {{\n      \"name\": \"main.c_after\",\n      \"mime_type\": \"text/x-c\",\n      \"content\": \"#include <stdio.h>\\n\\nint main(void) {{\\n    puts(\\\"Hello, Orcas!\\\");\\n    return 0;\\n}}\\n\"\n    }}\n  ],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [\n      {{\n        \"path\": \"main.c\",\n        \"change\": \"Replace greeting literal \\\"Hello, Orcas\\\" with \\\"Hello, Orcas!\\\".\"\n      }}\n    ],\n    \"tests_run\": [\n      {{\n        \"name\": \"tests/test.sh\",\n        \"result\": \"pass\"\n      }}\n    ],\n    \"rough_edges\": [\n      \"applypatch helper was unavailable; used sed for in-place edit.\"\n    ]\n  }}\n}}\nORCAS_REPORT_END",
+        );
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert!(parsed.validation.needs_supervisor_review);
+        let envelope = parsed.envelope.expect("envelope");
+        assert_eq!(parsed.disposition, ReportDisposition::Completed);
+        assert_eq!(envelope.assignment_id, assignment.id);
+        assert_eq!(envelope.packet_id, record.packet.packet_id);
+        assert!(parsed
+            .validation
+            .structural_issues
+            .iter()
+            .any(|issue| issue.contains("recovered a minimal envelope")));
     }
 
     #[test]
