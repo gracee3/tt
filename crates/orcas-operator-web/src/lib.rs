@@ -523,6 +523,64 @@ fn PlanningWorkflowBlock(session: orcas_core::PlanningSession) -> impl IntoView 
     }
 }
 
+fn planning_recommendation_line(
+    status: &orcas_core::PlanningSessionStatus,
+    summary: &orcas_core::PlanningSessionStructuredSummary,
+) -> (String, String) {
+    match status {
+        orcas_core::PlanningSessionStatus::AwaitingApproval => (
+            "Supervisor recommendation".to_string(),
+            "Review the draft plan and either approve it or send it back.".to_string(),
+        ),
+        orcas_core::PlanningSessionStatus::ResearchRequested => (
+            "Supervisor recommendation".to_string(),
+            "Run a bounded research pass before returning to the draft plan.".to_string(),
+        ),
+        orcas_core::PlanningSessionStatus::Approved => (
+            "Approved plan".to_string(),
+            "The supervisor approved this plan. Use it as the basis for the next execution step."
+                .to_string(),
+        ),
+        orcas_core::PlanningSessionStatus::Rejected => (
+            "Supervisor recommendation".to_string(),
+            "The plan was rejected. Refresh supervisor context or revise the draft before retrying."
+                .to_string(),
+        ),
+        _ if !summary.open_questions.is_empty() => (
+            "Supervisor recommendation".to_string(),
+            "Resolve the open questions or request bounded research before sending this for review."
+                .to_string(),
+        ),
+        _ => (
+            "Supervisor recommendation".to_string(),
+            "Keep the discussion pre-execution and turn the outcome into a reviewable plan."
+                .to_string(),
+        ),
+    }
+}
+
+#[component]
+fn PlanningRecommendationBlock(session: orcas_core::PlanningSession) -> impl IntoView {
+    let (headline, summary) =
+        planning_recommendation_line(&session.status, &session.latest_structured_summary);
+
+    view! {
+        <div class="detail-block">
+            <p class="eyebrow">"Supervisor recommendation"</p>
+            <div class="item-card-topline">
+                <span class="status-pill">{headline}</span>
+                <span class="muted">
+                    {match session.reviewed_at {
+                        Some(reviewed_at) => format!("reviewed {}", format_timestamp(reviewed_at)),
+                        None => format!("updated {}", format_timestamp(session.updated_at)),
+                    }}
+                </span>
+            </div>
+            <p class="item-summary">{summary}</p>
+        </div>
+    }
+}
+
 #[component]
 fn TurnPlanCard(plan: orcas_core::ipc::TurnPlanView) -> impl IntoView {
     let explanation = plan.explanation.clone();
@@ -823,6 +881,61 @@ fn ThreadMonitorBlock(detail: orcas_core::ipc::ThreadView) -> impl IntoView {
 }
 
 #[component]
+fn PlanningThreadMonitorBlock(
+    session: orcas_core::PlanningSession,
+    detail: orcas_core::ipc::ThreadView,
+) -> impl IntoView {
+    let turn_count = detail.turns.len();
+    let latest_turn = detail.turns.into_iter().rev().next();
+    let activity_summary = thread_activity_summary(&detail.summary);
+    let planning_summary = planning_summary_line(&session.status, &session.latest_structured_summary);
+
+    view! {
+        <div class="detail-block">
+            <p class="eyebrow">"Planning monitor"</p>
+            <div class="item-card-topline">
+                <span class="status-pill">{planning_headline(&session.status, &session.latest_structured_summary)}</span>
+                <span class="muted">
+                    {if turn_count == 1 {
+                        "1 recorded turn".to_string()
+                    } else {
+                        format!("{turn_count} recorded turns")
+                    }}
+                </span>
+            </div>
+            <p class="item-summary">{planning_summary}</p>
+            <div class="compact-grid">
+                <div class="mini-stat">
+                    <span class="mini-label">"Latest activity"</span>
+                    <strong>{activity_summary}</strong>
+                    <span class="muted">{format_unix_millis(detail.summary.updated_at)}</span>
+                </div>
+                <div class="mini-stat">
+                    <span class="mini-label">"Planning thread"</span>
+                    <strong>{detail.summary.id.clone()}</strong>
+                    <span class="muted">
+                        {if detail.summary.cwd.is_empty() {
+                            "No working directory".to_string()
+                        } else {
+                            detail.summary.cwd.clone()
+                        }}
+                    </span>
+                </div>
+            </div>
+            {latest_turn.map(|turn| view! { <ThreadTurnCard turn /> })}
+            {detail.summary.raw_summary.clone().map(|raw_summary| view! {
+                <div class="json-panel">
+                    <details>
+                        <summary>"Show raw planning thread summary"</summary>
+                        <JsonValueTree value=raw_summary />
+                    </details>
+                </div>
+            })}
+        </div>
+    }
+}
+
+#[component]
 fn WorkspaceLifecycleBlock(thread: authority::TrackedThreadSummary) -> impl IntoView {
     view! {
         <div class="detail-block">
@@ -1084,6 +1197,7 @@ fn PlanningSessionCard(
     let research_model = RwSignal::new(String::new());
     let research_cwd = RwSignal::new(String::new());
     let research_form_open = RwSignal::new(false);
+    let session_value = StoredValue::new(session.clone());
     let session_id = StoredValue::new(session.session_id.clone());
     let planning_thread_id = StoredValue::new(session.planning_thread_id.clone());
     let status = session.status;
@@ -1324,7 +1438,8 @@ fn PlanningSessionCard(
                     }
                     view! {
                         <div class="detail-panel">
-                            <PlanningWorkflowBlock session=session.clone() />
+                            <PlanningWorkflowBlock session=session_value.get_value() />
+                            <PlanningRecommendationBlock session=session_value.get_value() />
                             <div class="detail-block">
                                 <p class="eyebrow">"Planning lane"</p>
                                 <dl class="detail-grid">
@@ -1335,7 +1450,12 @@ fn PlanningSessionCard(
                                 </dl>
                             </div>
                             {move || match thread_detail.get() {
-                                Some(detail) => view! { <ThreadMonitorBlock detail /> }.into_any(),
+                                Some(detail) => view! {
+                                    <PlanningThreadMonitorBlock
+                                        session=session_value.get_value()
+                                        detail
+                                    />
+                                }.into_any(),
                                 None => {
                                     if loading_detail.get() {
                                         view! { <div class="detail-block"><p class="eyebrow">"Planning monitor"</p><p class="item-meta">"Loading planning thread detail…"</p></div> }.into_any()
