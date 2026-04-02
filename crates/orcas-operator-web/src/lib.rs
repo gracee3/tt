@@ -559,6 +559,16 @@ fn planning_recommendation_line(
     }
 }
 
+fn planning_session_is_terminal(status: orcas_core::PlanningSessionStatus) -> bool {
+    matches!(
+        status,
+        orcas_core::PlanningSessionStatus::Approved
+            | orcas_core::PlanningSessionStatus::Rejected
+            | orcas_core::PlanningSessionStatus::Superseded
+            | orcas_core::PlanningSessionStatus::Aborted
+    )
+}
+
 #[component]
 fn PlanningRecommendationBlock(session: orcas_core::PlanningSession) -> impl IntoView {
     let (headline, summary) =
@@ -1491,6 +1501,16 @@ fn PlanningSessionsPanel(
     let cwd = RwSignal::new(String::new());
     let mut sessions_sorted = sessions;
     sessions_sorted.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
+    let active_sessions = sessions_sorted
+        .iter()
+        .filter(|session| !planning_session_is_terminal(session.status))
+        .cloned()
+        .collect::<Vec<_>>();
+    let historical_sessions = sessions_sorted
+        .iter()
+        .filter(|session| planning_session_is_terminal(session.status))
+        .cloned()
+        .collect::<Vec<_>>();
 
     view! {
         <div class="detail-block">
@@ -1507,6 +1527,24 @@ fn PlanningSessionsPanel(
             <p class="item-meta">
                 "Use planning to work through the supervisor before starting execution."
             </p>
+            <div class="compact-grid">
+                <div class="mini-stat">
+                    <span class="mini-label">"Active"</span>
+                    <strong>{active_sessions.len().to_string()}</strong>
+                    <span class="muted">
+                        {if active_sessions.is_empty() {
+                            "No active planner".to_string()
+                        } else {
+                            "Needs operator attention".to_string()
+                        }}
+                    </span>
+                </div>
+                <div class="mini-stat">
+                    <span class="mini-label">"History"</span>
+                    <strong>{historical_sessions.len().to_string()}</strong>
+                    <span class="muted">"Reviewed sessions"</span>
+                </div>
+            </div>
             <div class="action-buttons">
                 <button class="refresh-button" on:click=move |_| create_open.update(|value| *value = !*value)>
                     {move || if create_open.get() { "Close planner" } else { "Open planning session" }}
@@ -1587,20 +1625,61 @@ fn PlanningSessionsPanel(
                     view! {}.into_any()
                 }
             }}
-            <div class="stack">
-                {sessions_sorted
-                    .into_iter()
-                    .map(|session| view! {
-                        <PlanningSessionCard
-                            session
-                            settings
-                            refresh_epoch
-                            action_message
-                            action_error
-                        />
-                    })
-                    .collect_view()}
-            </div>
+            {if active_sessions.is_empty() {
+                view! {
+                    <div class="detail-block">
+                        <p class="eyebrow">"Active planning"</p>
+                        <p class="item-meta">
+                            "No active planning session is open right now. Start one when you want to work through the supervisor before execution."
+                        </p>
+                    </div>
+                }.into_any()
+            } else {
+                view! {
+                    <div class="stack">
+                        {active_sessions
+                            .into_iter()
+                            .map(|session| view! {
+                                <PlanningSessionCard
+                                    session
+                                    settings
+                                    refresh_epoch
+                                    action_message
+                                    action_error
+                                />
+                            })
+                            .collect_view()}
+                    </div>
+                }.into_any()
+            }}
+            {if historical_sessions.is_empty() {
+                view! {}.into_any()
+            } else {
+                view! {
+                    <details class="json-panel">
+                        <summary>
+                            {format!(
+                                "Show planning history ({})",
+                                historical_sessions.len()
+                            )}
+                        </summary>
+                        <div class="stack">
+                            {historical_sessions
+                                .into_iter()
+                                .map(|session| view! {
+                                    <PlanningSessionCard
+                                        session
+                                        settings
+                                        refresh_epoch
+                                        action_message
+                                        action_error
+                                    />
+                                })
+                                .collect_view()}
+                        </div>
+                    </details>
+                }.into_any()
+            }}
         </div>
     }
 }
