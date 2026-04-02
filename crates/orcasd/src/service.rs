@@ -16560,6 +16560,42 @@ worker epilogue"#;
     }
 
     #[tokio::test]
+    async fn planning_session_list_includes_active_sessions_by_default() {
+        let service = test_service().await;
+        {
+            let mut state = service.state.write().await;
+            state.collaboration.planning_sessions.insert(
+                "ps-chatting".to_string(),
+                sample_planning_session("ps-chatting", "ws-test"),
+            );
+
+            let mut approved = sample_planning_session("ps-approved", "ws-test");
+            approved.status = orcas_core::collaboration::PlanningSessionStatus::Approved;
+            approved.latest_structured_summary.ready_for_review = true;
+            state
+                .collaboration
+                .planning_sessions
+                .insert("ps-approved".to_string(), approved);
+        }
+
+        let listed_default = service
+            .planning_session_list(ipc::PlanningSessionListRequest::default())
+            .await
+            .expect("default list");
+        assert_eq!(listed_default.sessions.len(), 1);
+        assert_eq!(listed_default.sessions[0].session_id, "ps-chatting");
+
+        let listed_all = service
+            .planning_session_list(ipc::PlanningSessionListRequest {
+                workstream_id: None,
+                include_closed: true,
+            })
+            .await
+            .expect("list all");
+        assert_eq!(listed_all.sessions.len(), 2);
+    }
+
+    #[tokio::test]
     async fn planning_session_update_summary_rejects_ready_for_review_smuggling() {
         let service = test_service().await;
         {

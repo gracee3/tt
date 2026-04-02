@@ -119,6 +119,28 @@ stop_lab() {
   kill_from_pid_file "$lab_daemon_pid_file"
 }
 
+wait_for_socket() {
+  local socket_path="$1"
+  local attempts="${2:-30}"
+  for _ in $(seq 1 "$attempts"); do
+    [[ -S "$socket_path" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_http() {
+  local url="$1"
+  local attempts="${2:-30}"
+  for _ in $(seq 1 "$attempts"); do
+    if curl -sf -H 'content-type: application/json' -d '{}' "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 reset_lab() {
   stop_lab
   rm -rf "$lab_root"
@@ -127,6 +149,7 @@ reset_lab() {
 }
 
 start_lab() {
+  stop_lab
   ensure_lab_dirs
   nohup env \
     XDG_CONFIG_HOME="$lab_config_home" \
@@ -135,7 +158,20 @@ start_lab() {
     "$repo_root/target/debug/orcasd" \
     >"$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_daemon_pid_file"
-  sleep 2
+  wait_for_socket "$lab_socket_file" || {
+    cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+    echo "shared UI lab daemon did not create $lab_socket_file" >&2
+    return 1
+  }
+  env \
+    XDG_CONFIG_HOME="$lab_config_home" \
+    XDG_DATA_HOME="$lab_data_home" \
+    XDG_RUNTIME_DIR="$lab_runtime_home" \
+    "$repo_root/target/debug/orcas" daemon status >/dev/null 2>&1 || {
+      cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+      echo "shared UI lab daemon is not responsive" >&2
+      return 1
+    }
   nohup env \
     XDG_CONFIG_HOME="$lab_config_home" \
     XDG_DATA_HOME="$lab_data_home" \
@@ -143,7 +179,11 @@ start_lab() {
     "$repo_root/target/debug/orcas-server" --bind "$lab_server_bind" \
     >"$lab_data_home/orcas/logs/ui-e2e-lab-orcas-server.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_server_pid_file"
-  sleep 2
+  wait_for_http "http://$lab_server_bind/operator-runtime/planning-sessions/list" || {
+    cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcas-server.stdout.log" >&2 || true
+    echo "shared UI lab server is not responding on $lab_server_bind" >&2
+    return 1
+  }
 }
 
 print_env() {
