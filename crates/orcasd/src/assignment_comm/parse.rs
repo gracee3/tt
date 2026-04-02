@@ -343,7 +343,15 @@ fn parse_worker_report_envelope(
     surrounding_text: bool,
 ) -> Option<WorkerReportEnvelope> {
     match serde_json::from_str::<WorkerReportEnvelope>(json_payload.trim()) {
-        Ok(envelope) => return Some(envelope),
+        Ok(mut envelope) => {
+            repair_decoded_report_identity_fields(
+                &mut envelope,
+                assignment,
+                record,
+                surrounding_text,
+            );
+            return Some(envelope);
+        }
         Err(error) => {
             debug!(
                 assignment_id = %assignment.id,
@@ -384,6 +392,29 @@ fn parse_worker_report_envelope(
         "worker report envelope decode repaired after a malformed identity field"
     );
     Some(envelope)
+}
+
+fn repair_decoded_report_identity_fields(
+    envelope: &mut WorkerReportEnvelope,
+    assignment: &Assignment,
+    record: &AssignmentCommunicationRecord,
+    surrounding_text: bool,
+) {
+    if !surrounding_text {
+        return;
+    }
+
+    if envelope.packet_id == record.packet.packet_id {
+        return;
+    }
+
+    if looks_like_corrupted_packet_identity(
+        &envelope.packet_id,
+        &record.packet.packet_id,
+        &assignment.id,
+    ) {
+        envelope.packet_id = record.packet.packet_id.clone();
+    }
 }
 
 fn repair_worker_report_envelope_payload(
@@ -471,6 +502,54 @@ fn repair_or_clear_json_array_field(
     let replacement = format!("\n{indent}\"{field}\": [],\n");
     json_payload.replace_range(line_start..next_line_start, &replacement);
     true
+}
+
+fn looks_like_corrupted_packet_identity(
+    observed: &str,
+    expected: &str,
+    assignment_id: &str,
+) -> bool {
+    if observed == expected {
+        return false;
+    }
+    if !observed.starts_with("packet-") || !expected.starts_with("packet-") {
+        return false;
+    }
+
+    let prefix_len = common_prefix_len(observed, expected);
+    let suffix_len = common_suffix_len(observed, expected);
+    if prefix_len >= 12
+        && suffix_len >= 8
+        && prefix_len + suffix_len + 8 >= expected.chars().count()
+    {
+        return true;
+    }
+
+    let Some(observed_suffix) = observed.strip_prefix("packet-") else {
+        return false;
+    };
+    if common_prefix_len(observed_suffix, assignment_id) < 12
+        || common_suffix_len(observed_suffix, assignment_id) < 8
+    {
+        return false;
+    }
+
+    observed_suffix.chars().count() + 8 >= assignment_id.chars().count()
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left_ch, right_ch)| left_ch == right_ch)
+        .count()
+}
+
+fn common_suffix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .rev()
+        .zip(right.chars().rev())
+        .take_while(|(left_ch, right_ch)| left_ch == right_ch)
+        .count()
 }
 
 fn repair_collapsed_report_header(json_payload: &mut String) -> bool {
@@ -1166,6 +1245,34 @@ mod tests {
         assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
         assert!(parsed.envelope.is_some());
         assert_eq!(parsed.disposition, ReportDisposition::Completed);
+    }
+
+    #[test]
+    fn parse_worker_report_repairs_decoded_but_corrupted_packet_identity_field() {
+        let mut assignment = sample_assignment();
+        assignment.id = "assignment-31e09de5573a4bdd8b9888b2f8690fe2".to_string();
+        let mut record = sample_record(&assignment);
+        record.packet.packet_id = format!("packet-{}", assignment.id);
+        let packet_id = &record.packet.packet_id;
+        let corrupted_packet_id = if packet_id.len() > 12 {
+            format!("{}{}", &packet_id[..packet_id.len() / 2], &packet_id[(packet_id.len() / 2) + 4..])
+        } else {
+            format!("{packet_id}-corrupt")
+        };
+        let raw = format!(
+            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"{assignment_id}\",\n  \"packet_id\": \"{packet_id}\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Completed the bounded change.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [],\n  \"touched_files\": [],\n  \"commands_run\": [],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [],\n    \"tests_run\": [],\n    \"rough_edges\": []\n  }}\n}}\nORCAS_REPORT_END\nworker epilogue",
+            assignment_id = assignment.id,
+            packet_id = corrupted_packet_id,
+        );
+
+        let parsed = parse_worker_report(&raw, &assignment, &record);
+
+        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
+        assert!(parsed.envelope.is_some());
+        assert_eq!(
+            parsed.envelope.as_ref().expect("envelope").packet_id,
+            record.packet.packet_id
+        );
     }
 
     #[test]

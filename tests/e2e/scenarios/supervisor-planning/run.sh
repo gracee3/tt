@@ -30,17 +30,36 @@ assignment_start_cleanup() {
 trap assignment_start_cleanup EXIT
 sleep 5
 report_id=""
+assignment_id=""
+assignment_status=""
+workunit_status=""
 
-if [[ -z "$report_id" ]]; then
-  for _ in $(seq 1 20); do
-    reports_output="$(e2e_orcas reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
-    report_id="$(printf '%s\n' "$reports_output" | awk -F'\t' '/^[0-9a-f]/ {print $1; exit}')"
-    [[ -n "$report_id" ]] && break
-    sleep 2
-  done
-fi
+normalize_status() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr '-' '_'
+}
 
-e2e_orcas workunits edit --workunit "$workunit_id" --status awaiting-decision >"$E2E_SCENARIO_REPORTS_DIR/workunit-edit.txt"
+for _ in $(seq 1 120); do
+  if [[ -s "$assignment_start_log" ]]; then
+    report_id="$(awk -F': ' '/^report_id:/ {print $2; exit}' "$assignment_start_log")"
+    assignment_id="$(awk -F': ' '/^assignment_id:/ {print $2; exit}' "$assignment_start_log")"
+    assignment_status="$(awk -F': ' '/^assignment_status:/ {print $2; exit}' "$assignment_start_log")"
+    [[ -n "$report_id" && -n "$assignment_id" ]] && break
+  fi
+  sleep 2
+done
+
+test -n "$report_id"
+e2e_orcas reports get --report "$report_id" >"$E2E_SCENARIO_REPORTS_DIR/report-get.txt"
+test -n "$assignment_id"
+workunit_output="$(e2e_orcas workunits get --workunit "$workunit_id" 2>/dev/null || true)"
+workunit_status="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^status:/ {print $2; exit}')"
+
+printf 'assignment_id: %s\nassignment_status: %s\nworkunit_status: %s\n' \
+  "$assignment_id" "$assignment_status" "$workunit_status" \
+  >"$E2E_SCENARIO_REPORTS_DIR/workunit-edit.txt"
+
+test "$(normalize_status "$assignment_status")" = "awaiting_decision"
+test -n "$(normalize_status "$workunit_status")"
 
 proposal_output="$(e2e_orcas proposals create --workunit "$workunit_id" --report "$report_id" --requested-by harness --note "Draft a two-step plan before execution.")"
 proposal_id="$(printf '%s\n' "$proposal_output" | awk -F': ' '/^proposal_id:/ {print $2; exit}')"
@@ -52,6 +71,7 @@ approved_decision_id="$(printf '%s\n' "$approve_output" | awk -F': ' '/^approved
 test -n "$workstream_id"
 test -n "$workunit_id"
 test -n "$report_id"
+test -n "$assignment_id"
 test -n "$proposal_id"
 test -n "$approved_decision_id"
 
