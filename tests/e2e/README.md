@@ -83,6 +83,41 @@ tests/e2e/run_all.sh
 tests/e2e/run_scenario.sh tests/e2e/scenarios/hello
 ```
 
+### Shared UI Lab For Live Scenarios
+
+If you want to launch live scenarios from the terminal and inspect them immediately in the operator web UI, use the shared UI lab instead of the default scenario-local XDG roots.
+
+The lab uses a dedicated Orcas state under `target/ui-e2e-lab/`, so it does not overwrite your normal `~/.local/share/orcas` state.
+
+Reset and start the lab:
+
+```bash
+tests/e2e/bin/ui_lab_live.sh restart
+```
+
+Run one supported live scenario into that shared lab:
+
+```bash
+tests/e2e/bin/ui_lab_live.sh run live-worker-direct-patch
+```
+
+Run the supported shared-lab suite sequentially:
+
+```bash
+tests/e2e/bin/ui_lab_live.sh run-all
+```
+
+Supported shared-lab scenarios:
+
+- `live-worker-direct-patch`
+- `live-supervisor-micro-proposal`
+- `live-reject-redirect`
+- `supervisor-planning`
+
+These scenarios reuse the existing lab daemon and lab XDG roots, so their workstreams, work units, assignments, reports, and bound threads appear in the UI immediately.
+
+Not every live scenario is suitable for the shared lab. Scenarios that intentionally restart or stop the daemon, such as `live-restart-resume`, should still be run in their normal isolated mode.
+
 ### Local Supervisor Models
 
 Only scenarios that actually generate a live supervisor proposal require a local OpenAI-compatible supervisor endpoint.

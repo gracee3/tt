@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use orcas_core::ipc::{
-    NotificationDeliveryJobGetRequest, NotificationDeliveryJobListRequest,
-    OperatorInboxActionKind, OperatorInboxItemStatus, OperatorInboxSourceKind,
-    OperatorNotificationAckRequest, OperatorNotificationCandidateStatus,
-    OperatorNotificationGetRequest, OperatorNotificationListRequest,
-    OperatorNotificationSuppressRequest, OperatorRemoteActionCreateRequest,
-    OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
-    OperatorRemoteActionRequestStatus, OperatorRemoteActionWaitRequest,
+    NotificationDeliveryJobGetRequest, NotificationDeliveryJobListRequest, OperatorInboxActionKind,
+    OperatorInboxItemStatus, OperatorInboxSourceKind, OperatorNotificationAckRequest,
+    OperatorNotificationCandidateStatus, OperatorNotificationGetRequest,
+    OperatorNotificationListRequest, OperatorNotificationSuppressRequest,
+    OperatorRemoteActionCreateRequest, OperatorRemoteActionGetRequest,
+    OperatorRemoteActionListRequest, OperatorRemoteActionRequestStatus,
+    OperatorRemoteActionWaitRequest,
 };
 use orcas_server_client::OrcasServerClient;
 use serde::Serialize;
@@ -291,7 +291,9 @@ fn notification_status(kind: RemoteNotificationStatusArg) -> OperatorNotificatio
     }
 }
 
-fn delivery_status(kind: RemoteDeliveryStatusArg) -> orcas_core::ipc::NotificationDeliveryJobStatus {
+fn delivery_status(
+    kind: RemoteDeliveryStatusArg,
+) -> orcas_core::ipc::NotificationDeliveryJobStatus {
     match kind {
         RemoteDeliveryStatusArg::Pending => orcas_core::ipc::NotificationDeliveryJobStatus::Pending,
         RemoteDeliveryStatusArg::Dispatched => {
@@ -305,7 +307,9 @@ fn delivery_status(kind: RemoteDeliveryStatusArg) -> orcas_core::ipc::Notificati
             orcas_core::ipc::NotificationDeliveryJobStatus::Suppressed
         }
         RemoteDeliveryStatusArg::Skipped => orcas_core::ipc::NotificationDeliveryJobStatus::Skipped,
-        RemoteDeliveryStatusArg::Obsolete => orcas_core::ipc::NotificationDeliveryJobStatus::Obsolete,
+        RemoteDeliveryStatusArg::Obsolete => {
+            orcas_core::ipc::NotificationDeliveryJobStatus::Obsolete
+        }
     }
 }
 
@@ -322,7 +326,9 @@ async fn watch_remote_action(
         })
         .await?
         .request
-        .with_context(|| format!("remote action `{request_id}` not found for origin `{origin_node_id}`"))?;
+        .with_context(|| {
+            format!("remote action `{request_id}` not found for origin `{origin_node_id}`")
+        })?;
     print_json(&current)?;
     while !matches!(
         current.status,
@@ -440,7 +446,9 @@ pub async fn run_remote(global: &super::GlobalOptions, command: RemoteCommand) -
             }
             RemoteDeliveryCommand::Get(args) => {
                 let response = client
-                    .delivery_job_get(&NotificationDeliveryJobGetRequest { job_id: args.job_id })
+                    .delivery_job_get(&NotificationDeliveryJobGetRequest {
+                        job_id: args.job_id,
+                    })
                     .await?;
                 print_json(&response)?;
             }
@@ -485,7 +493,9 @@ pub async fn run_remote(global: &super::GlobalOptions, command: RemoteCommand) -
                             RemoteActionStatusArg::Canceled => {
                                 OperatorRemoteActionRequestStatus::Canceled
                             }
-                            RemoteActionStatusArg::Stale => OperatorRemoteActionRequestStatus::Stale,
+                            RemoteActionStatusArg::Stale => {
+                                OperatorRemoteActionRequestStatus::Stale
+                            }
                         }),
                         pending_only: args.pending_only,
                         actionable_only: args.actionable_only,

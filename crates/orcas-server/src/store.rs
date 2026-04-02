@@ -18,18 +18,21 @@ use orcas_core::ipc::{
     OperatorNotificationCandidateStatus, OperatorNotificationGetRequest,
     OperatorNotificationListRequest, OperatorNotificationListResponse,
     OperatorNotificationSuppressRequest, OperatorNotificationSuppressResponse,
-    OperatorRemoteActionClaimRequest, OperatorRemoteActionClaimResponse,
-    OperatorRemoteActionClaimedRequest, OperatorRemoteActionCompleteRequest,
-    OperatorRemoteActionCompleteResponse, OperatorRemoteActionCreateRequest,
-    OperatorRemoteActionCreateResponse, OperatorRemoteActionFailRequest,
-    OperatorRemoteActionFailResponse, OperatorRemoteActionGetRequest,
-    OperatorRemoteActionGetResponse, OperatorRemoteActionListRequest,
-    OperatorRemoteActionListResponse, OperatorRemoteActionRequest,
+    OperatorReadModelCheckpoint, OperatorReadModelCheckpointQueryRequest,
+    OperatorReadModelCheckpointQueryResponse, OperatorReadModelWaitForCheckpointRequest,
+    OperatorReadModelWaitForCheckpointResponse, OperatorRemoteActionClaimRequest,
+    OperatorRemoteActionClaimResponse, OperatorRemoteActionClaimedRequest,
+    OperatorRemoteActionCompleteRequest, OperatorRemoteActionCompleteResponse,
+    OperatorRemoteActionCreateRequest, OperatorRemoteActionCreateResponse,
+    OperatorRemoteActionFailRequest, OperatorRemoteActionFailResponse,
+    OperatorRemoteActionGetRequest, OperatorRemoteActionGetResponse,
+    OperatorRemoteActionListRequest, OperatorRemoteActionListResponse, OperatorRemoteActionRequest,
     OperatorRemoteActionRequestStatus,
 };
 use orcas_core::{OrcasError, OrcasResult};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::delivery::{NotificationDeliveryContext, NotificationDeliveryTransport};
@@ -168,6 +171,7 @@ fn db_error(error: rusqlite::Error) -> OrcasError {
 #[derive(Debug)]
 pub struct InboxMirrorStore {
     connection: Mutex<Connection>,
+    checkpoint_events: broadcast::Sender<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,9 +186,19 @@ impl InboxMirrorStore {
     pub fn open(path: impl AsRef<Path>) -> OrcasResult<Self> {
         let connection = Connection::open(path).map_err(db_error)?;
         connection.execute_batch(INITIAL_SCHEMA).map_err(db_error)?;
+        let (checkpoint_events, _) = broadcast::channel(32);
         Ok(Self {
             connection: Mutex::new(connection),
+            checkpoint_events,
         })
+    }
+
+    pub fn subscribe_checkpoint_events(&self) -> broadcast::Receiver<()> {
+        self.checkpoint_events.subscribe()
+    }
+
+    fn notify_checkpoint_changed(&self) {
+        let _ = self.checkpoint_events.send(());
     }
 
     pub fn checkpoint(&self, origin_node_id: &str) -> OrcasResult<OperatorInboxCheckpoint> {
@@ -258,6 +272,210 @@ impl InboxMirrorStore {
                     )
                 })?,
         })
+    }
+
+    pub async fn wait_for_checkpoint(
+        &self,
+        request: &orcas_core::ipc::OperatorInboxWaitForCheckpointRequest,
+    ) -> OrcasResult<orcas_core::ipc::OperatorInboxWaitForCheckpointResponse> {
+        let timeout = tokio::time::Duration::from_millis(request.timeout_ms.unwrap_or(30_000));
+        let after_sequence = request.after_sequence.unwrap_or_default();
+        let mut checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+        if checkpoint.current_sequence > after_sequence {
+            return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                origin_node_id: request.origin_node_id.clone(),
+                checkpoint,
+                timed_out: false,
+            });
+        }
+
+        let mut events = self.subscribe_checkpoint_events();
+        let start = tokio::time::Instant::now();
+        loop {
+            let remaining = timeout.checked_sub(start.elapsed()).unwrap_or_default();
+            if remaining.is_zero() {
+                checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                    origin_node_id: request.origin_node_id.clone(),
+                    checkpoint,
+                    timed_out: true,
+                });
+            }
+
+            match tokio::time::timeout(remaining, events.recv()).await {
+                Ok(Ok(())) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                    if checkpoint.current_sequence > after_sequence {
+                        return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                            origin_node_id: request.origin_node_id.clone(),
+                            checkpoint,
+                            timed_out: false,
+                        });
+                    }
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => {
+                    checkpoint = self.checkpoint(request.origin_node_id.as_str())?;
+                    return Ok(orcas_core::ipc::OperatorInboxWaitForCheckpointResponse {
+                        origin_node_id: request.origin_node_id.clone(),
+                        checkpoint: checkpoint.clone(),
+                        timed_out: checkpoint.current_sequence <= after_sequence,
+                    });
+                }
+            }
+        }
+    }
+
+    fn read_model_checkpoint_from_table(
+        &self,
+        origin_node_id: &str,
+        table_name: &str,
+    ) -> OrcasResult<OperatorReadModelCheckpoint> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| OrcasError::Store("mirror store connection lock poisoned".to_string()))?;
+        let mut statement = connection
+            .prepare(&format!(
+                "select max(updated_at) from {table_name} where origin_node_id = ?1"
+            ))
+            .map_err(db_error)?;
+        let updated_at = statement
+            .query_row(params![origin_node_id], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .optional()
+            .map_err(db_error)?
+            .flatten()
+            .map(|value| {
+                DateTime::parse_from_rfc3339(&value)
+                    .map(|value| value.with_timezone(&Utc))
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+            })
+            .transpose()
+            .map_err(db_error)?;
+        Ok(OperatorReadModelCheckpoint { updated_at })
+    }
+
+    async fn wait_for_read_model_checkpoint(
+        &self,
+        origin_node_id: &str,
+        after_updated_at: Option<DateTime<Utc>>,
+        timeout_ms: Option<u64>,
+        table_name: &'static str,
+    ) -> OrcasResult<OperatorReadModelWaitForCheckpointResponse> {
+        let timeout = tokio::time::Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
+        let mut checkpoint = self.read_model_checkpoint_from_table(origin_node_id, table_name)?;
+        if checkpoint
+            .updated_at
+            .is_some_and(|updated_at| after_updated_at.is_none_or(|after| updated_at > after))
+        {
+            return Ok(OperatorReadModelWaitForCheckpointResponse {
+                origin_node_id: origin_node_id.to_string(),
+                checkpoint,
+                timed_out: false,
+            });
+        }
+
+        let mut events = self.subscribe_checkpoint_events();
+        let start = tokio::time::Instant::now();
+        loop {
+            let remaining = timeout.checked_sub(start.elapsed()).unwrap_or_default();
+            if remaining.is_zero() {
+                checkpoint = self.read_model_checkpoint_from_table(origin_node_id, table_name)?;
+                return Ok(OperatorReadModelWaitForCheckpointResponse {
+                    origin_node_id: origin_node_id.to_string(),
+                    checkpoint,
+                    timed_out: true,
+                });
+            }
+
+            match tokio::time::timeout(remaining, events.recv()).await {
+                Ok(Ok(())) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                    checkpoint =
+                        self.read_model_checkpoint_from_table(origin_node_id, table_name)?;
+                    if checkpoint.updated_at.is_some_and(|updated_at| {
+                        after_updated_at.is_none_or(|after| updated_at > after)
+                    }) {
+                        return Ok(OperatorReadModelWaitForCheckpointResponse {
+                            origin_node_id: origin_node_id.to_string(),
+                            checkpoint,
+                            timed_out: false,
+                        });
+                    }
+                }
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => {
+                    checkpoint =
+                        self.read_model_checkpoint_from_table(origin_node_id, table_name)?;
+                    return Ok(OperatorReadModelWaitForCheckpointResponse {
+                        origin_node_id: origin_node_id.to_string(),
+                        checkpoint: checkpoint.clone(),
+                        timed_out: checkpoint.updated_at.is_none_or(|updated_at| {
+                            after_updated_at.is_none_or(|after| updated_at <= after)
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn notification_checkpoint(
+        &self,
+        request: &OperatorReadModelCheckpointQueryRequest,
+    ) -> OrcasResult<OperatorReadModelCheckpointQueryResponse> {
+        let checkpoint = self.read_model_checkpoint_from_table(
+            request.origin_node_id.as_str(),
+            "mirrored_notification_candidates",
+        )?;
+        Ok(OperatorReadModelCheckpointQueryResponse {
+            origin_node_id: request.origin_node_id.clone(),
+            checkpoint,
+        })
+    }
+
+    pub async fn wait_for_notification_checkpoint(
+        &self,
+        request: &OperatorReadModelWaitForCheckpointRequest,
+    ) -> OrcasResult<OperatorReadModelWaitForCheckpointResponse> {
+        self.wait_for_read_model_checkpoint(
+            request.origin_node_id.as_str(),
+            request.after_updated_at,
+            request.timeout_ms,
+            "mirrored_notification_candidates",
+        )
+        .await
+    }
+
+    pub fn delivery_checkpoint(
+        &self,
+        request: &OperatorReadModelCheckpointQueryRequest,
+    ) -> OrcasResult<OperatorReadModelCheckpointQueryResponse> {
+        let checkpoint = self.read_model_checkpoint_from_table(
+            request.origin_node_id.as_str(),
+            "notification_delivery_jobs",
+        )?;
+        Ok(OperatorReadModelCheckpointQueryResponse {
+            origin_node_id: request.origin_node_id.clone(),
+            checkpoint,
+        })
+    }
+
+    pub async fn wait_for_delivery_checkpoint(
+        &self,
+        request: &OperatorReadModelWaitForCheckpointRequest,
+    ) -> OrcasResult<OperatorReadModelWaitForCheckpointResponse> {
+        self.wait_for_read_model_checkpoint(
+            request.origin_node_id.as_str(),
+            request.after_updated_at,
+            request.timeout_ms,
+            "notification_delivery_jobs",
+        )
+        .await
     }
 
     fn load_subscription_tx(
@@ -1423,6 +1641,7 @@ impl InboxMirrorStore {
             ],
         ).map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
+        let _ = self.checkpoint_events.send(());
 
         Ok(MirrorApplyResult {
             mirror_checkpoint: OperatorInboxMirrorCheckpoint {
@@ -1556,6 +1775,7 @@ impl InboxMirrorStore {
             next.updated_at,
         )?;
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorNotificationAckResponse { candidate: next })
     }
 
@@ -1604,6 +1824,7 @@ impl InboxMirrorStore {
             next.updated_at,
         )?;
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorNotificationSuppressResponse { candidate: next })
     }
 
@@ -1695,6 +1916,7 @@ impl InboxMirrorStore {
                 OrcasError::Store("remote action request disappeared after insert".to_string())
             })?;
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorRemoteActionCreateResponse { request })
     }
 
@@ -1889,6 +2111,7 @@ impl InboxMirrorStore {
             }
         }
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorRemoteActionClaimResponse {
             origin_node_id: request.origin_node_id.clone(),
             requests,
@@ -1912,11 +2135,7 @@ impl InboxMirrorStore {
                 "remote action request origin mismatch".to_string(),
             ));
         }
-        if existing
-            .claim_token
-            .as_deref()
-            .is_some_and(|token| token != request.claim_token.as_str())
-        {
+        if existing.claim_token.as_deref() != Some(request.claim_token.as_str()) {
             return Err(OrcasError::Store(
                 "remote action request claim token mismatch".to_string(),
             ));
@@ -1960,6 +2179,7 @@ impl InboxMirrorStore {
                     )
                 })?;
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorRemoteActionCompleteResponse {
             origin_node_id: request.origin_node_id.clone(),
             request: updated,
@@ -1983,11 +2203,7 @@ impl InboxMirrorStore {
                 "remote action request origin mismatch".to_string(),
             ));
         }
-        if existing
-            .claim_token
-            .as_deref()
-            .is_some_and(|token| token != request.claim_token.as_str())
-        {
+        if existing.claim_token.as_deref() != Some(request.claim_token.as_str()) {
             return Err(OrcasError::Store(
                 "remote action request claim token mismatch".to_string(),
             ));
@@ -2031,6 +2247,7 @@ impl InboxMirrorStore {
                     )
                 })?;
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(OperatorRemoteActionFailResponse {
             origin_node_id: request.origin_node_id.clone(),
             request: updated,
@@ -2078,6 +2295,7 @@ impl InboxMirrorStore {
             )?;
         }
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(NotificationRecipientUpsertResponse { recipient })
     }
 
@@ -2154,6 +2372,7 @@ impl InboxMirrorStore {
             )?;
         }
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(NotificationSubscriptionUpsertResponse { subscription })
     }
 
@@ -2226,6 +2445,7 @@ impl InboxMirrorStore {
             )?;
         }
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(NotificationSubscriptionSetEnabledResponse { subscription })
     }
 
@@ -2358,6 +2578,7 @@ impl InboxMirrorStore {
         drop(rows);
         drop(statement);
         transaction.commit().map_err(db_error)?;
+        self.notify_checkpoint_changed();
         Ok(NotificationDeliveryRunPendingResponse { jobs })
     }
 
@@ -2857,6 +3078,7 @@ impl InboxMirrorStore {
 mod tests {
     use chrono::{TimeZone, Utc};
     use serde_json::json;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     use super::*;
@@ -2866,10 +3088,12 @@ mod tests {
         NotificationRecipientUpsertRequest, NotificationSubscriptionUpsertRequest,
         NotificationTransportKind, OperatorInboxActionKind, OperatorInboxChange,
         OperatorInboxChangeKind, OperatorInboxItem, OperatorInboxItemStatus,
-        OperatorInboxSourceKind, OperatorRemoteActionClaimRequest,
-        OperatorRemoteActionCompleteRequest, OperatorRemoteActionCreateRequest,
-        OperatorRemoteActionFailRequest, OperatorRemoteActionGetRequest,
-        OperatorRemoteActionListRequest, OperatorRemoteActionRequestStatus,
+        OperatorInboxSourceKind, OperatorNotificationAckRequest,
+        OperatorReadModelCheckpointQueryRequest, OperatorReadModelWaitForCheckpointRequest,
+        OperatorRemoteActionClaimRequest, OperatorRemoteActionCompleteRequest,
+        OperatorRemoteActionCreateRequest, OperatorRemoteActionFailRequest,
+        OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
+        OperatorRemoteActionRequestStatus,
     };
 
     fn ts(offset: i64) -> chrono::DateTime<Utc> {
@@ -3179,6 +3403,121 @@ mod tests {
             result.checkpoint.current_sequence
         );
         assert_eq!(reopened.list(origin, None).expect("list").items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn notification_checkpoint_wait_resolves_after_candidate_change() {
+        let dir = tempdir().expect("tempdir");
+        let store = Arc::new(InboxMirrorStore::open(dir.path().join("server.db")).expect("store"));
+        let origin = "origin-a";
+        store
+            .as_ref()
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+
+        let current = store
+            .as_ref()
+            .notification_checkpoint(&OperatorReadModelCheckpointQueryRequest {
+                origin_node_id: origin.to_string(),
+            })
+            .expect("checkpoint");
+        let wait_store = store.clone();
+        let wait = tokio::spawn(async move {
+            wait_store
+                .wait_for_notification_checkpoint(&OperatorReadModelWaitForCheckpointRequest {
+                    origin_node_id: origin.to_string(),
+                    after_updated_at: current.checkpoint.updated_at,
+                    timeout_ms: Some(10_000),
+                })
+                .await
+        });
+
+        let candidate_id = format!("{origin}::proposal-1::1");
+        let updated = store
+            .as_ref()
+            .acknowledge_notification_candidate(&OperatorNotificationAckRequest {
+                origin_node_id: origin.to_string(),
+                candidate_id,
+            })
+            .expect("ack");
+        let waited = wait.await.expect("wait task").expect("wait result");
+        assert!(!waited.timed_out);
+        assert!(waited.checkpoint.updated_at.is_some());
+        assert!(updated.candidate.updated_at <= waited.checkpoint.updated_at.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delivery_checkpoint_wait_resolves_after_delivery_change() {
+        let dir = tempdir().expect("tempdir");
+        let store = Arc::new(InboxMirrorStore::open(dir.path().join("server.db")).expect("store"));
+        let origin = "origin-a";
+        store
+            .as_ref()
+            .upsert_notification_recipient(&NotificationRecipientUpsertRequest {
+                recipient_id: "recipient-1".to_string(),
+                display_name: "Recipient 1".to_string(),
+                enabled: true,
+            })
+            .expect("recipient");
+        store
+            .as_ref()
+            .upsert_notification_subscription(&NotificationSubscriptionUpsertRequest {
+                subscription_id: "subscription-1".to_string(),
+                recipient_id: "recipient-1".to_string(),
+                transport_kind: NotificationTransportKind::Mock,
+                endpoint: serde_json::json!({"endpoint": "https://example.invalid/subscription-1"}),
+                enabled: true,
+            })
+            .expect("subscription");
+        store
+            .as_ref()
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+
+        let current = store
+            .as_ref()
+            .delivery_checkpoint(&OperatorReadModelCheckpointQueryRequest {
+                origin_node_id: origin.to_string(),
+            })
+            .expect("checkpoint");
+        let wait_store = store.clone();
+        let wait = tokio::spawn(async move {
+            wait_store
+                .wait_for_delivery_checkpoint(&OperatorReadModelWaitForCheckpointRequest {
+                    origin_node_id: origin.to_string(),
+                    after_updated_at: current.checkpoint.updated_at,
+                    timeout_ms: Some(10_000),
+                })
+                .await
+        });
+
+        let result = store
+            .as_ref()
+            .dispatch_pending_notification_delivery_jobs(
+                &MockNotificationDeliveryTransport::default(),
+                Some(1),
+            )
+            .expect("dispatch");
+        assert_eq!(result.jobs.len(), 1);
+        let waited = wait.await.expect("wait task").expect("wait result");
+        assert!(!waited.timed_out);
+        assert!(waited.checkpoint.updated_at.is_some());
     }
 
     #[test]
@@ -3600,6 +3939,58 @@ mod tests {
             .expect("request");
         assert_eq!(request.status, OperatorRemoteActionRequestStatus::Completed);
         assert_eq!(request.result, Some(json!({"status": "ok"})));
+    }
+
+    #[test]
+    fn pending_remote_action_requests_require_a_claim_token_to_complete_or_fail() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("server.db");
+        let origin = "origin-a";
+        let store = InboxMirrorStore::open(&path).expect("store");
+        store
+            .apply_batch(
+                origin,
+                OperatorInboxCheckpoint::default(),
+                &[change(
+                    1,
+                    OperatorInboxChangeKind::Upsert,
+                    item("proposal-1", 1, "one", ts(1)),
+                )],
+            )
+            .expect("apply");
+        let created = store
+            .create_remote_action_request(&remote_action_create_request(
+                origin,
+                "proposal-1",
+                OperatorInboxActionKind::Approve,
+            ))
+            .expect("create");
+
+        let complete_result = store.complete_remote_action_request(&remote_action_complete_request(
+            origin,
+            created.request.request_id.as_str(),
+            "wrong-token",
+        ));
+        assert!(complete_result.is_err());
+
+        let fail_result = store.fail_remote_action_request(&remote_action_fail_request(
+            origin,
+            created.request.request_id.as_str(),
+            "wrong-token",
+            "not allowed",
+        ));
+        assert!(fail_result.is_err());
+
+        let request = store
+            .get_remote_action_request(&remote_action_get_request(
+                origin,
+                created.request.request_id.as_str(),
+            ))
+            .expect("get")
+            .request
+            .expect("request");
+        assert_eq!(request.status, OperatorRemoteActionRequestStatus::Pending);
+        assert_eq!(request.claim_token, None);
     }
 
     #[test]

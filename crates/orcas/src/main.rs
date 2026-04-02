@@ -1,5 +1,5 @@
-mod service;
 mod remote;
+mod service;
 mod streaming;
 
 use std::path::PathBuf;

@@ -7,6 +7,69 @@ fn default_persist_extended_history() -> bool {
     true
 }
 
+pub(crate) fn normalize_label(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len() + 8);
+    let mut previous_was_separator = false;
+    for ch in raw.chars() {
+        if ch == '-' || ch == ' ' {
+            if !normalized.is_empty() && !previous_was_separator {
+                normalized.push('_');
+            }
+            previous_was_separator = true;
+            continue;
+        }
+        if ch.is_uppercase() {
+            if !normalized.is_empty() && !previous_was_separator {
+                normalized.push('_');
+            }
+            for lower in ch.to_lowercase() {
+                normalized.push(lower);
+            }
+            previous_was_separator = false;
+            continue;
+        }
+        normalized.push(ch);
+        previous_was_separator = ch == '_';
+    }
+    normalized
+}
+
+fn map_string(map: &Map<String, Value>, key: &str) -> Option<String> {
+    map.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+fn map_string_vec(map: &Map<String, Value>, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn map_value_vec(map: &Map<String, Value>, key: &str) -> Vec<Value> {
+    map.get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn map_i64(map: &Map<String, Value>, key: &str) -> Option<i64> {
+    map.get(key).and_then(Value::as_i64)
+}
+
+fn map_i32(map: &Map<String, Value>, key: &str) -> Option<i32> {
+    map_i64(map, key).and_then(|value| i32::try_from(value).ok())
+}
+
+fn normalized_status(value: Option<&str>) -> Option<String> {
+    value.map(normalize_label)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
@@ -393,6 +456,114 @@ pub struct AgentMessageDeltaNotification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlanDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningSummaryTextDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
+    pub summary_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningSummaryPartAddedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub summary_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningTextDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
+    pub content_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecutionOutputDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangeOutputDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolCallProgressNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnDiffUpdatedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnPlanUpdatedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    #[serde(default)]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub plan: Vec<TurnPlanStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnPlanStep {
+    pub step: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTokenUsageUpdatedNotification {
+    pub thread_id: String,
+    pub token_usage: ThreadTokenUsage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTokenUsage {
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
     #[serde(default)]
@@ -442,6 +613,94 @@ pub struct TurnError {
     pub codex_error_info: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadItemDetail {
+    UserMessage {
+        content: Vec<Value>,
+    },
+    HookPrompt {
+        fragments: Vec<Value>,
+    },
+    AgentMessage {
+        text: String,
+        phase: Option<String>,
+        memory_citation: Option<Value>,
+    },
+    Plan {
+        text: String,
+    },
+    Reasoning {
+        summary: Vec<String>,
+        content: Vec<String>,
+    },
+    CommandExecution {
+        command: String,
+        cwd: String,
+        process_id: Option<String>,
+        source: Option<String>,
+        status: Option<String>,
+        command_actions: Vec<Value>,
+        aggregated_output: Option<String>,
+        exit_code: Option<i32>,
+        duration_ms: Option<i64>,
+    },
+    FileChange {
+        changes: Vec<Value>,
+        status: Option<String>,
+    },
+    McpToolCall {
+        server: String,
+        tool: String,
+        status: Option<String>,
+        arguments: Option<Value>,
+        result: Option<Value>,
+        error: Option<Value>,
+        duration_ms: Option<i64>,
+    },
+    DynamicToolCall {
+        tool: String,
+        arguments: Option<Value>,
+        status: Option<String>,
+        content_items: Vec<Value>,
+        success: Option<bool>,
+        duration_ms: Option<i64>,
+    },
+    CollabAgentToolCall {
+        tool: Option<String>,
+        status: Option<String>,
+        sender_thread_id: Option<String>,
+        receiver_thread_ids: Vec<String>,
+        prompt: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        agents_states: Option<Value>,
+    },
+    WebSearch {
+        query: String,
+        action: Option<Value>,
+    },
+    ImageView {
+        path: String,
+    },
+    ImageGeneration {
+        status: Option<String>,
+        revised_prompt: Option<String>,
+        result: Option<String>,
+        saved_path: Option<String>,
+    },
+    EnteredReviewMode {
+        review: String,
+    },
+    ExitedReviewMode {
+        review: String,
+    },
+    ContextCompaction,
+    Unknown {
+        raw: Value,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadItem {
@@ -455,6 +714,147 @@ pub struct ThreadItem {
 impl ThreadItem {
     pub fn text(&self) -> Option<&str> {
         self.extra.get("text").and_then(Value::as_str)
+    }
+
+    pub fn normalized_item_type(&self) -> String {
+        normalize_label(&self.item_type)
+    }
+
+    pub fn item_status(&self) -> Option<String> {
+        normalized_status(self.extra.get("status").and_then(Value::as_str))
+    }
+
+    pub fn parsed_detail(&self) -> ThreadItemDetail {
+        let kind = self.normalized_item_type();
+        match kind.as_str() {
+            "user_message" => ThreadItemDetail::UserMessage {
+                content: map_value_vec(&self.extra, "content"),
+            },
+            "hook_prompt" => ThreadItemDetail::HookPrompt {
+                fragments: map_value_vec(&self.extra, "fragments"),
+            },
+            "agent_message" => ThreadItemDetail::AgentMessage {
+                text: self.text().unwrap_or_default().to_string(),
+                phase: normalized_status(self.extra.get("phase").and_then(Value::as_str)),
+                memory_citation: self.extra.get("memoryCitation").cloned(),
+            },
+            "plan" => ThreadItemDetail::Plan {
+                text: self.text().unwrap_or_default().to_string(),
+            },
+            "reasoning" => ThreadItemDetail::Reasoning {
+                summary: map_string_vec(&self.extra, "summary"),
+                content: map_string_vec(&self.extra, "content"),
+            },
+            "command_execution" => ThreadItemDetail::CommandExecution {
+                command: map_string(&self.extra, "command").unwrap_or_default(),
+                cwd: map_string(&self.extra, "cwd").unwrap_or_default(),
+                process_id: map_string(&self.extra, "processId"),
+                source: normalized_status(self.extra.get("source").and_then(Value::as_str)),
+                status: self.item_status(),
+                command_actions: map_value_vec(&self.extra, "commandActions"),
+                aggregated_output: map_string(&self.extra, "aggregatedOutput"),
+                exit_code: map_i32(&self.extra, "exitCode"),
+                duration_ms: map_i64(&self.extra, "durationMs"),
+            },
+            "file_change" => ThreadItemDetail::FileChange {
+                changes: map_value_vec(&self.extra, "changes"),
+                status: self.item_status(),
+            },
+            "mcp_tool_call" => ThreadItemDetail::McpToolCall {
+                server: map_string(&self.extra, "server").unwrap_or_default(),
+                tool: map_string(&self.extra, "tool").unwrap_or_default(),
+                status: self.item_status(),
+                arguments: self.extra.get("arguments").cloned(),
+                result: self.extra.get("result").cloned(),
+                error: self.extra.get("error").cloned(),
+                duration_ms: map_i64(&self.extra, "durationMs"),
+            },
+            "dynamic_tool_call" => ThreadItemDetail::DynamicToolCall {
+                tool: map_string(&self.extra, "tool").unwrap_or_default(),
+                arguments: self.extra.get("arguments").cloned(),
+                status: self.item_status(),
+                content_items: map_value_vec(&self.extra, "contentItems"),
+                success: self.extra.get("success").and_then(Value::as_bool),
+                duration_ms: map_i64(&self.extra, "durationMs"),
+            },
+            "collab_agent_tool_call" => ThreadItemDetail::CollabAgentToolCall {
+                tool: map_string(&self.extra, "tool"),
+                status: self.item_status(),
+                sender_thread_id: map_string(&self.extra, "senderThreadId"),
+                receiver_thread_ids: map_string_vec(&self.extra, "receiverThreadIds"),
+                prompt: map_string(&self.extra, "prompt"),
+                model: map_string(&self.extra, "model"),
+                reasoning_effort: normalized_status(
+                    self.extra.get("reasoningEffort").and_then(Value::as_str),
+                ),
+                agents_states: self.extra.get("agentsStates").cloned(),
+            },
+            "web_search" => ThreadItemDetail::WebSearch {
+                query: map_string(&self.extra, "query").unwrap_or_default(),
+                action: self.extra.get("action").cloned(),
+            },
+            "image_view" => ThreadItemDetail::ImageView {
+                path: map_string(&self.extra, "path").unwrap_or_default(),
+            },
+            "image_generation" => ThreadItemDetail::ImageGeneration {
+                status: self.item_status(),
+                revised_prompt: map_string(&self.extra, "revisedPrompt"),
+                result: map_string(&self.extra, "result"),
+                saved_path: map_string(&self.extra, "savedPath"),
+            },
+            "entered_review_mode" => ThreadItemDetail::EnteredReviewMode {
+                review: map_string(&self.extra, "review").unwrap_or_default(),
+            },
+            "exited_review_mode" => ThreadItemDetail::ExitedReviewMode {
+                review: map_string(&self.extra, "review").unwrap_or_default(),
+            },
+            "context_compaction" => ThreadItemDetail::ContextCompaction,
+            _ => ThreadItemDetail::Unknown {
+                raw: Value::Object(self.extra.clone()),
+            },
+        }
+    }
+
+    pub fn detail_kind(&self) -> String {
+        self.normalized_item_type()
+    }
+
+    pub fn detail_json(&self) -> Option<Value> {
+        serde_json::to_value(self.parsed_detail()).ok()
+    }
+
+    pub fn display_text(&self) -> Option<String> {
+        match self.parsed_detail() {
+            ThreadItemDetail::AgentMessage { text, .. } | ThreadItemDetail::Plan { text } => {
+                (!text.trim().is_empty()).then_some(text)
+            }
+            ThreadItemDetail::Reasoning { summary, content } => {
+                let combined = summary
+                    .into_iter()
+                    .chain(content)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!combined.trim().is_empty()).then_some(combined)
+            }
+            ThreadItemDetail::CommandExecution {
+                aggregated_output,
+                command,
+                ..
+            } => aggregated_output
+                .filter(|output| !output.trim().is_empty())
+                .or_else(|| (!command.trim().is_empty()).then_some(command)),
+            ThreadItemDetail::EnteredReviewMode { review }
+            | ThreadItemDetail::ExitedReviewMode { review } => {
+                (!review.trim().is_empty()).then_some(review)
+            }
+            ThreadItemDetail::WebSearch { query, .. } => {
+                (!query.trim().is_empty()).then_some(query)
+            }
+            ThreadItemDetail::ImageGeneration { result, .. } => {
+                result.filter(|value| !value.trim().is_empty())
+            }
+            _ => self.text().map(ToOwned::to_owned),
+        }
     }
 }
 

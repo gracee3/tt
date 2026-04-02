@@ -1750,8 +1750,8 @@ impl SupervisorService {
                 request_note,
                 model,
                 cwd: cwd.map(|path| path.display().to_string()),
-        })
-        .await?;
+            })
+            .await?;
         print_planning_session(&response.session);
         println!(
             "planning_session_create_effect: draft_session_started; readiness must be set later with mark-ready-for-review"
@@ -1764,8 +1764,8 @@ impl SupervisorService {
         let response = client
             .planning_session_get(&ipc::PlanningSessionGetRequest {
                 session_id: session_id.to_string(),
-        })
-        .await?;
+            })
+            .await?;
         print_planning_session(&response.session);
         Ok(())
     }

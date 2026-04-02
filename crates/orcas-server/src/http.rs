@@ -8,11 +8,38 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::time::{Duration, Instant, sleep};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
+use crate::delivery::WebPushNotificationDeliveryTransport;
 use crate::delivery::{LogNotificationDeliveryTransport, MockNotificationDeliveryTransport};
 use orcas_core::ipc::{
+    AssignmentStartRequest, AssignmentStartResponse,
+    AuthorityDeletePlanRequest, AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest,
+    AuthorityHierarchyGetResponse, AuthorityTrackedThreadCreateRequest,
+    AuthorityTrackedThreadEditRequest, AuthorityTrackedThreadEditResponse,
+    AuthorityTrackedThreadCreateResponse, AuthorityTrackedThreadDeleteRequest,
+    AuthorityTrackedThreadDeleteResponse, AuthorityWorkstreamCreateRequest,
+    AuthorityWorkstreamCreateResponse, AuthorityWorkstreamDeleteRequest,
+    AuthorityWorkstreamDeleteResponse, AuthorityWorkstreamEditRequest,
+    AuthorityWorkstreamEditResponse, AuthorityWorkunitCreateRequest,
+    AuthorityWorkunitCreateResponse, AuthorityWorkunitDeleteRequest,
+    AuthorityWorkunitDeleteResponse, AuthorityWorkunitEditRequest,
+    AuthorityWorkunitEditResponse, AuthorityWorkunitGetRequest,
+    AuthorityWorkunitGetResponse, AuthorityTrackedThreadGetRequest,
+    AuthorityTrackedThreadGetResponse, PlanningSessionCreateRequest,
+    PlanningSessionCreateResponse, PlanningSessionRequestSupervisorContextRequest,
+    PlanningSessionRequestSupervisorContextResponse, PlanningSessionRequestResearchRequest,
+    PlanningSessionRequestResearchResponse, PlanningSessionMarkReadyForReviewRequest,
+    PlanningSessionMarkReadyForReviewResponse, PlanningSessionApproveRequest,
+    PlanningSessionApproveResponse, PlanningSessionRejectRequest,
+    PlanningSessionRejectResponse, PlanningSessionListRequest,
+    PlanningSessionListResponse,
     NotificationDeliveryJobGetRequest, NotificationDeliveryJobGetResponse,
     NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
     NotificationDeliveryRunPendingRequest, NotificationDeliveryRunPendingResponse,
@@ -24,18 +51,27 @@ use orcas_core::ipc::{
     NotificationTransportKind, OperatorInboxMirrorApplyRequest, OperatorInboxMirrorApplyResponse,
     OperatorInboxMirrorCheckpointQueryRequest, OperatorInboxMirrorCheckpointQueryResponse,
     OperatorInboxMirrorGetResponse, OperatorInboxMirrorListResponse,
+    OperatorInboxWaitForCheckpointRequest, OperatorInboxWaitForCheckpointResponse,
     OperatorNotificationAckRequest, OperatorNotificationAckResponse,
     OperatorNotificationGetRequest, OperatorNotificationGetResponse,
     OperatorNotificationListRequest, OperatorNotificationListResponse,
     OperatorNotificationSuppressRequest, OperatorNotificationSuppressResponse,
+    OperatorReadModelCheckpointQueryRequest, OperatorReadModelCheckpointQueryResponse,
+    OperatorReadModelWaitForCheckpointRequest, OperatorReadModelWaitForCheckpointResponse,
     OperatorRemoteActionClaimRequest, OperatorRemoteActionClaimResponse,
     OperatorRemoteActionCompleteRequest, OperatorRemoteActionCompleteResponse,
     OperatorRemoteActionCreateRequest, OperatorRemoteActionCreateResponse,
     OperatorRemoteActionFailRequest, OperatorRemoteActionFailResponse,
     OperatorRemoteActionGetRequest, OperatorRemoteActionGetResponse,
     OperatorRemoteActionListRequest, OperatorRemoteActionListResponse,
-    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse,
+    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse, ProposalApproveRequest,
+    ProposalApproveResponse, ProposalArtifactDetailGetRequest, ProposalArtifactDetailGetResponse,
+    ProposalCreateRequest, ProposalCreateResponse, ProposalGetRequest, ProposalGetResponse,
+    ProposalRejectRequest, ProposalRejectResponse, StateGetRequest, StateGetResponse, ThreadGetRequest,
+    ThreadGetResponse, CodexAssignmentPauseRequest, CodexAssignmentPauseResponse,
+    CodexAssignmentResumeRequest, CodexAssignmentResumeResponse,
 };
+use orcas_core::jsonrpc::{JsonRpcMessage, JsonRpcRequest, RequestId};
 use orcas_core::{AppPaths, OrcasResult};
 
 use crate::store::InboxMirrorStore;
@@ -44,13 +80,18 @@ use crate::store::InboxMirrorStore;
 pub struct InboxMirrorServerConfig {
     pub bind_addr: SocketAddr,
     pub data_dir: PathBuf,
+    pub daemon_socket_file: Option<PathBuf>,
     pub operator_api_token: Option<String>,
+    pub push_vapid_private_key_base64: Option<String>,
+    pub push_vapid_subject: Option<String>,
 }
 
 #[derive(Clone)]
 struct InboxMirrorServerState {
     store: Arc<InboxMirrorStore>,
+    daemon_socket_file: Option<PathBuf>,
     operator_api_token: Option<String>,
+    web_push_delivery: Option<WebPushNotificationDeliveryTransport>,
 }
 
 #[derive(Clone)]
@@ -60,17 +101,48 @@ pub struct InboxMirrorServer {
 
 impl InboxMirrorServer {
     pub fn new(store: InboxMirrorStore) -> Self {
-        Self::with_operator_api_token(store, None)
+        Self::with_operator_api_token_and_web_push(store, None, None)
+    }
+
+    pub fn from_config(store: InboxMirrorStore, config: InboxMirrorServerConfig) -> Self {
+        let web_push_delivery = match (
+            config.push_vapid_private_key_base64,
+            config.push_vapid_subject,
+        ) {
+            (Some(private_key), Some(subject)) => Some(WebPushNotificationDeliveryTransport::new(
+                private_key,
+                subject,
+            )),
+            _ => None,
+        };
+        Self {
+            state: Arc::new(InboxMirrorServerState {
+                store: Arc::new(store),
+                daemon_socket_file: config.daemon_socket_file,
+                operator_api_token: config.operator_api_token,
+                web_push_delivery,
+            }),
+        }
     }
 
     pub fn with_operator_api_token(
         store: InboxMirrorStore,
         operator_api_token: Option<String>,
     ) -> Self {
+        Self::with_operator_api_token_and_web_push(store, operator_api_token, None)
+    }
+
+    pub fn with_operator_api_token_and_web_push(
+        store: InboxMirrorStore,
+        operator_api_token: Option<String>,
+        web_push_delivery: Option<WebPushNotificationDeliveryTransport>,
+    ) -> Self {
         Self {
             state: Arc::new(InboxMirrorServerState {
                 store: Arc::new(store),
+                daemon_socket_file: None,
                 operator_api_token,
+                web_push_delivery,
             }),
         }
     }
@@ -82,6 +154,37 @@ impl InboxMirrorServer {
 
     pub async fn serve_with_listener(self, listener: tokio::net::TcpListener) -> OrcasResult<()> {
         let state = self.state.clone();
+        if let Some(transport) = state.web_push_delivery.clone() {
+            let store = state.store.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    let store = store.clone();
+                    let transport = transport.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        store.dispatch_pending_notification_delivery_jobs(&transport, Some(32))
+                    })
+                    .await
+                    {
+                        Ok(Ok(result)) => {
+                            if !result.jobs.is_empty() {
+                                info!(
+                                    jobs = result.jobs.len(),
+                                    "browser push delivery loop dispatched pending jobs"
+                                );
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "browser push delivery loop failed");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "browser push delivery loop join failed");
+                        }
+                    }
+                }
+            });
+        }
         let app = Router::new()
             .route("/operator-inbox/mirror/apply", post(apply))
             .route(
@@ -92,6 +195,18 @@ impl InboxMirrorServer {
             .route(
                 "/operator-inbox/{origin_node_id}/items/{item_id}",
                 get(get_item),
+            )
+            .route(
+                "/operator-inbox/wait_for_checkpoint",
+                post(wait_for_inbox_checkpoint),
+            )
+            .route(
+                "/operator-notifications/checkpoint",
+                post(notification_checkpoint),
+            )
+            .route(
+                "/operator-notifications/wait_for_checkpoint",
+                post(wait_for_notification_checkpoint),
             )
             .route(
                 "/operator-notifications/list",
@@ -138,6 +253,14 @@ impl InboxMirrorServer {
                 post(get_notification_delivery_job),
             )
             .route(
+                "/operator-notifications/delivery/checkpoint",
+                post(delivery_checkpoint),
+            )
+            .route(
+                "/operator-notifications/delivery/wait_for_checkpoint",
+                post(wait_for_delivery_checkpoint),
+            )
+            .route(
                 "/operator-notifications/delivery/run_pending",
                 post(run_pending_notification_delivery_jobs),
             )
@@ -157,6 +280,102 @@ impl InboxMirrorServer {
                 post(complete_remote_action_request),
             )
             .route("/operator-actions/fail", post(fail_remote_action_request))
+            .route("/operator-runtime/state/get", post(state_get))
+            .route("/operator-runtime/assignments/start", post(assignment_start))
+            .route("/operator-runtime/proposals/create", post(proposal_create))
+            .route("/operator-runtime/proposals/get", post(proposal_get))
+            .route(
+                "/operator-runtime/proposals/artifact-detail",
+                post(proposal_artifact_detail_get),
+            )
+            .route("/operator-runtime/proposals/approve", post(proposal_approve))
+            .route("/operator-runtime/proposals/reject", post(proposal_reject))
+            .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
+            .route("/operator-authority/delete-plan", post(authority_delete_plan))
+            .route(
+                "/operator-authority/workstreams/create",
+                post(authority_workstream_create),
+            )
+            .route(
+                "/operator-authority/workstreams/edit",
+                post(authority_workstream_edit),
+            )
+            .route(
+                "/operator-authority/workstreams/delete",
+                post(authority_workstream_delete),
+            )
+            .route(
+                "/operator-authority/workunits/get",
+                post(authority_workunit_get),
+            )
+            .route(
+                "/operator-authority/workunits/create",
+                post(authority_workunit_create),
+            )
+            .route(
+                "/operator-authority/workunits/edit",
+                post(authority_workunit_edit),
+            )
+            .route(
+                "/operator-authority/workunits/delete",
+                post(authority_workunit_delete),
+            )
+            .route(
+                "/operator-authority/tracked-threads/create",
+                post(authority_tracked_thread_create),
+            )
+            .route(
+                "/operator-authority/tracked-threads/edit",
+                post(authority_tracked_thread_edit),
+            )
+            .route(
+                "/operator-authority/tracked-threads/delete",
+                post(authority_tracked_thread_delete),
+            )
+            .route(
+                "/operator-authority/tracked-threads/get",
+                post(authority_tracked_thread_get),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/list",
+                post(planning_session_list),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/create",
+                post(planning_session_create),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/request-supervisor-context",
+                post(planning_session_request_supervisor_context),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/request-research",
+                post(planning_session_request_research),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/mark-ready",
+                post(planning_session_mark_ready_for_review),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/approve",
+                post(planning_session_approve),
+            )
+            .route(
+                "/operator-runtime/planning-sessions/reject",
+                post(planning_session_reject),
+            )
+            .route("/operator-runtime/threads/get", post(thread_get))
+            .route(
+                "/operator-runtime/codex-assignments/pause",
+                post(codex_assignment_pause),
+            )
+            .route(
+                "/operator-runtime/codex-assignments/resume",
+                post(codex_assignment_resume),
+            )
+            // Trunk serves the browser app from a different port during local
+            // development, so allow cross-origin operator requests.
+            .layer(CorsLayer::permissive())
             .layer(middleware::from_fn_with_state(state.clone(), operator_auth))
             .with_state(state);
         let bind_addr = listener.local_addr()?;
@@ -171,6 +390,9 @@ async fn operator_auth(
     request: Request<Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
+    if request.method() == axum::http::Method::OPTIONS {
+        return Ok(next.run(request).await);
+    }
     let Some(expected) = state.operator_api_token.as_deref() else {
         return Ok(next.run(request).await);
     };
@@ -184,6 +406,65 @@ async fn operator_auth(
         return Err(StatusCode::UNAUTHORIZED);
     }
     Ok(next.run(request).await)
+}
+
+async fn daemon_request<P, T>(
+    state: &InboxMirrorServerState,
+    method: &str,
+    params: &P,
+) -> Result<T, String>
+where
+    P: Serialize,
+    T: DeserializeOwned,
+{
+    let socket_path = state
+        .daemon_socket_file
+        .as_ref()
+        .ok_or_else(|| "daemon socket is not configured for this server".to_string())?;
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|error| format!("failed to connect to daemon socket {}: {error}", socket_path.display()))?;
+    let payload = serde_json::to_value(params).map_err(|error| error.to_string())?;
+    let request = JsonRpcRequest::new(
+        RequestId::Integer(1),
+        method,
+        Some(payload),
+    );
+    let mut line = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    stream
+        .write_all(&line)
+        .await
+        .map_err(|error| format!("failed to write daemon request: {error}"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|error| format!("failed to flush daemon request: {error}"))?;
+    let mut reader = BufReader::new(stream);
+    let mut response_line = String::new();
+    let bytes = reader
+        .read_line(&mut response_line)
+        .await
+        .map_err(|error| format!("failed to read daemon response: {error}"))?;
+    if bytes == 0 {
+        return Err("daemon closed the socket before sending a response".to_string());
+    }
+    let message: JsonRpcMessage =
+        serde_json::from_str(&response_line).map_err(|error| error.to_string())?;
+    match message {
+        JsonRpcMessage::Response(response) => {
+            serde_json::from_value(response.result).map_err(|error| error.to_string())
+        }
+        JsonRpcMessage::Error(error) => Err(error.error.message),
+        JsonRpcMessage::Notification(notification) => Err(format!(
+            "unexpected daemon notification `{}` while waiting for `{method}`",
+            notification.method
+        )),
+        JsonRpcMessage::Request(request) => Err(format!(
+            "unexpected daemon request `{}` while waiting for `{method}`",
+            request.method
+        )),
+    }
 }
 
 async fn apply(
@@ -246,6 +527,41 @@ async fn get_item(
         origin_node_id,
         item,
     }))
+}
+
+async fn wait_for_inbox_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorInboxWaitForCheckpointRequest>,
+) -> Result<Json<OperatorInboxWaitForCheckpointResponse>, String> {
+    let response = state
+        .store
+        .wait_for_checkpoint(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
+}
+
+async fn notification_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorReadModelCheckpointQueryRequest>,
+) -> Result<Json<OperatorReadModelCheckpointQueryResponse>, String> {
+    let response = state
+        .store
+        .notification_checkpoint(&request)
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
+}
+
+async fn wait_for_notification_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorReadModelWaitForCheckpointRequest>,
+) -> Result<Json<OperatorReadModelWaitForCheckpointResponse>, String> {
+    let response = state
+        .store
+        .wait_for_notification_checkpoint(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
 }
 
 async fn list_notification_candidates(
@@ -372,6 +688,29 @@ async fn get_notification_delivery_job(
     Ok(Json(NotificationDeliveryJobGetResponse { job }))
 }
 
+async fn delivery_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorReadModelCheckpointQueryRequest>,
+) -> Result<Json<OperatorReadModelCheckpointQueryResponse>, String> {
+    let response = state
+        .store
+        .delivery_checkpoint(&request)
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
+}
+
+async fn wait_for_delivery_checkpoint(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<OperatorReadModelWaitForCheckpointRequest>,
+) -> Result<Json<OperatorReadModelWaitForCheckpointResponse>, String> {
+    let response = state
+        .store
+        .wait_for_delivery_checkpoint(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Json(response))
+}
+
 async fn run_pending_notification_delivery_jobs(
     State(state): State<Arc<InboxMirrorServerState>>,
     Json(request): Json<NotificationDeliveryRunPendingRequest>,
@@ -394,6 +733,15 @@ async fn run_pending_notification_delivery_jobs(
                 request.limit,
             )
             .map_err(|error| error.to_string())?,
+        NotificationTransportKind::WebPush => {
+            let Some(transport) = state.web_push_delivery.as_ref() else {
+                return Err("browser push delivery is not configured on this server".to_string());
+            };
+            state
+                .store
+                .dispatch_pending_notification_delivery_jobs(transport, request.limit)
+                .map_err(|error| error.to_string())?
+        }
         other => {
             return Err(format!(
                 "notification delivery transport kind `{other:?}` is not supported by the local server"
@@ -506,6 +854,383 @@ async fn fail_remote_action_request(
     Ok(Json(response))
 }
 
+async fn state_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<StateGetRequest>,
+) -> Result<Json<StateGetResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::STATE_GET, &request).await?,
+    ))
+}
+
+async fn assignment_start(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AssignmentStartRequest>,
+) -> Result<Json<AssignmentStartResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::ASSIGNMENT_START, &request).await?,
+    ))
+}
+
+async fn proposal_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalCreateRequest>,
+) -> Result<Json<ProposalCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::PROPOSAL_CREATE, &request).await?,
+    ))
+}
+
+async fn proposal_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalGetRequest>,
+) -> Result<Json<ProposalGetResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::PROPOSAL_GET, &request).await?,
+    ))
+}
+
+async fn proposal_artifact_detail_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalArtifactDetailGetRequest>,
+) -> Result<Json<ProposalArtifactDetailGetResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PROPOSAL_ARTIFACT_DETAIL_GET,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn proposal_approve(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalApproveRequest>,
+) -> Result<Json<ProposalApproveResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::PROPOSAL_APPROVE, &request).await?,
+    ))
+}
+
+async fn proposal_reject(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ProposalRejectRequest>,
+) -> Result<Json<ProposalRejectResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::PROPOSAL_REJECT, &request).await?,
+    ))
+}
+
+async fn authority_hierarchy_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityHierarchyGetRequest>,
+) -> Result<Json<AuthorityHierarchyGetResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_HIERARCHY_GET,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_delete_plan(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityDeletePlanRequest>,
+) -> Result<Json<AuthorityDeletePlanResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_DELETE_PLAN,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workstream_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkstreamCreateRequest>,
+) -> Result<Json<AuthorityWorkstreamCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKSTREAM_CREATE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workstream_edit(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkstreamEditRequest>,
+) -> Result<Json<AuthorityWorkstreamEditResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKSTREAM_EDIT,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workstream_delete(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkstreamDeleteRequest>,
+) -> Result<Json<AuthorityWorkstreamDeleteResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKSTREAM_DELETE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workunit_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkunitGetRequest>,
+) -> Result<Json<AuthorityWorkunitGetResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKUNIT_GET,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workunit_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkunitCreateRequest>,
+) -> Result<Json<AuthorityWorkunitCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKUNIT_CREATE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workunit_edit(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkunitEditRequest>,
+) -> Result<Json<AuthorityWorkunitEditResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKUNIT_EDIT,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_workunit_delete(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityWorkunitDeleteRequest>,
+) -> Result<Json<AuthorityWorkunitDeleteResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_WORKUNIT_DELETE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_tracked_thread_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityTrackedThreadCreateRequest>,
+) -> Result<Json<AuthorityTrackedThreadCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_TRACKED_THREAD_CREATE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_tracked_thread_edit(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityTrackedThreadEditRequest>,
+) -> Result<Json<AuthorityTrackedThreadEditResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_TRACKED_THREAD_EDIT,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_tracked_thread_delete(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityTrackedThreadDeleteRequest>,
+) -> Result<Json<AuthorityTrackedThreadDeleteResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_TRACKED_THREAD_DELETE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn authority_tracked_thread_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<AuthorityTrackedThreadGetRequest>,
+) -> Result<Json<AuthorityTrackedThreadGetResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::AUTHORITY_TRACKED_THREAD_GET,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_create(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionCreateRequest>,
+) -> Result<Json<PlanningSessionCreateResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_CREATE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_list(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionListRequest>,
+) -> Result<Json<PlanningSessionListResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_LIST,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_request_supervisor_context(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionRequestSupervisorContextRequest>,
+) -> Result<Json<PlanningSessionRequestSupervisorContextResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_REQUEST_SUPERVISOR_CONTEXT,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_request_research(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionRequestResearchRequest>,
+) -> Result<Json<PlanningSessionRequestResearchResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_REQUEST_RESEARCH,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_mark_ready_for_review(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionMarkReadyForReviewRequest>,
+) -> Result<Json<PlanningSessionMarkReadyForReviewResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_MARK_READY_FOR_REVIEW,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_approve(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionApproveRequest>,
+) -> Result<Json<PlanningSessionApproveResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_APPROVE,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn planning_session_reject(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<PlanningSessionRejectRequest>,
+) -> Result<Json<PlanningSessionRejectResponse>, String> {
+    Ok(Json(
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::PLANNING_SESSION_REJECT,
+            &request,
+        )
+        .await?,
+    ))
+}
+
+async fn thread_get(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<ThreadGetRequest>,
+) -> Result<Json<ThreadGetResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::THREAD_GET, &request).await?,
+    ))
+}
+
+async fn codex_assignment_pause(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<CodexAssignmentPauseRequest>,
+) -> Result<Json<CodexAssignmentPauseResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::CODEX_ASSIGNMENT_PAUSE, &request)
+            .await?,
+    ))
+}
+
+async fn codex_assignment_resume(
+    State(state): State<Arc<InboxMirrorServerState>>,
+    Json(request): Json<CodexAssignmentResumeRequest>,
+) -> Result<Json<CodexAssignmentResumeResponse>, String> {
+    Ok(Json(
+        daemon_request(&state, orcas_core::ipc::methods::CODEX_ASSIGNMENT_RESUME, &request)
+            .await?,
+    ))
+}
+
 pub fn app(store: InboxMirrorStore) -> Router {
     app_with_operator_api_token(store, None)
 }
@@ -516,7 +1241,9 @@ pub fn app_with_operator_api_token(
 ) -> Router {
     let state = Arc::new(InboxMirrorServerState {
         store: Arc::new(store),
+        daemon_socket_file: None,
         operator_api_token,
+        web_push_delivery: None,
     });
     Router::new()
         .route("/operator-inbox/mirror/apply", post(apply))
@@ -593,6 +1320,94 @@ pub fn app_with_operator_api_token(
             post(complete_remote_action_request),
         )
         .route("/operator-actions/fail", post(fail_remote_action_request))
+        .route("/operator-runtime/state/get", post(state_get))
+        .route("/operator-runtime/assignments/start", post(assignment_start))
+        .route("/operator-runtime/proposals/create", post(proposal_create))
+        .route("/operator-runtime/proposals/approve", post(proposal_approve))
+        .route("/operator-runtime/proposals/reject", post(proposal_reject))
+        .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
+        .route("/operator-authority/delete-plan", post(authority_delete_plan))
+        .route(
+            "/operator-authority/workstreams/create",
+            post(authority_workstream_create),
+        )
+        .route(
+            "/operator-authority/workstreams/edit",
+            post(authority_workstream_edit),
+        )
+        .route(
+            "/operator-authority/workstreams/delete",
+            post(authority_workstream_delete),
+        )
+        .route(
+            "/operator-authority/workunits/get",
+            post(authority_workunit_get),
+        )
+        .route(
+            "/operator-authority/workunits/create",
+            post(authority_workunit_create),
+        )
+        .route(
+            "/operator-authority/workunits/edit",
+            post(authority_workunit_edit),
+        )
+        .route(
+            "/operator-authority/workunits/delete",
+            post(authority_workunit_delete),
+        )
+        .route(
+            "/operator-authority/tracked-threads/create",
+            post(authority_tracked_thread_create),
+        )
+        .route(
+            "/operator-authority/tracked-threads/edit",
+            post(authority_tracked_thread_edit),
+        )
+        .route(
+            "/operator-authority/tracked-threads/delete",
+            post(authority_tracked_thread_delete),
+        )
+        .route(
+            "/operator-authority/tracked-threads/get",
+            post(authority_tracked_thread_get),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/list",
+            post(planning_session_list),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/create",
+            post(planning_session_create),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/request-supervisor-context",
+            post(planning_session_request_supervisor_context),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/request-research",
+            post(planning_session_request_research),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/mark-ready",
+            post(planning_session_mark_ready_for_review),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/approve",
+            post(planning_session_approve),
+        )
+        .route(
+            "/operator-runtime/planning-sessions/reject",
+            post(planning_session_reject),
+        )
+        .route("/operator-runtime/threads/get", post(thread_get))
+        .route(
+            "/operator-runtime/codex-assignments/pause",
+            post(codex_assignment_pause),
+        )
+        .route(
+            "/operator-runtime/codex-assignments/resume",
+            post(codex_assignment_resume),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), operator_auth))
         .with_state(state)
 }

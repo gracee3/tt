@@ -627,7 +627,7 @@ pub fn render_supervisor_prompt(
     rendered_at: DateTime<Utc>,
 ) -> OrcasResult<SupervisorPromptRenderArtifact> {
     let context_pack_text = serde_json::to_string_pretty(pack)?;
-    let instructions_text = "You are the Orcas supervisor reasoner. Orcas state in the provided packet is the only source of truth. Use the canonical workstream plan, current focus item, exploration policy, and recent alignment assessments when deciding what to do next. Choose exactly one allowed decision for the primary work unit. Never invent ids, hidden context, or extra work units. Do not silently change the canonical plan; structural changes must be proposed for operator approval. Every assignment must be tied to a plan item or a narrow special activity kind. Keep all prose terse. Keep every string short and single-paragraph. Do not quote large report contents. If the decision is continue or redirect, return one bounded draft next assignment with exactly 2 instructions, exactly 2 acceptance criteria, exactly 2 stop conditions, exactly 2 expected report fields, and a concise boundedness note. Set plan_assessment and plan_revision_proposal to null unless explicitly required. Return JSON only, matching the requested schema.".to_string();
+    let instructions_text = "You are the Orcas supervisor reasoner. Orcas state in the provided packet is the only source of truth. Use the canonical workstream plan, current focus item, exploration policy, and recent alignment assessments when deciding what to do next. Choose exactly one allowed decision for the primary work unit. Never invent ids, hidden context, or extra work units. Do not silently change the canonical plan; structural changes must be proposed for operator approval. Every assignment must be tied to a plan item or a narrow special activity kind. Keep all prose terse. Keep every string short and single-paragraph. Do not quote large report contents. Use concrete Orcas ids for target fields and required context refs; if the packet shows helper labels like source_report or work_unit, translate them to the concrete ids from the packet. If the decision is continue or redirect, return one bounded draft next assignment with exactly 2 instructions, exactly 2 acceptance criteria, exactly 2 stop conditions, exactly 2 expected report fields, and a concise boundedness note. Set plan_assessment and plan_revision_proposal to null unless explicitly required. Return JSON only, matching the requested schema.".to_string();
     let user_content_text = format!(
         "Return a supervisor proposal JSON object for this Orcas decision point.\nThe packet already contains the allowed decision set and the canonical workstream state.\n\nSupervisorContextPack:\n{context_pack_text}"
     );
@@ -780,6 +780,12 @@ fn repair_supervisor_proposal_value(
     proposal_object
         .entry("open_questions".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
+    if !proposal_object.contains_key("proposed_decision")
+        && let Some(synthesized) =
+            synthesize_supervisor_proposed_decision_value(proposal_object, pack)
+    {
+        proposal_object.insert("proposed_decision".to_string(), synthesized);
+    }
     let decision_type = proposal_object
         .get("proposed_decision")
         .and_then(Value::as_object)
@@ -792,11 +798,25 @@ fn repair_supervisor_proposal_value(
             .get_mut("proposed_decision")
             .and_then(Value::as_object_mut)
         {
+            normalize_supervisor_context_ref_field(
+                proposed_decision,
+                "target_work_unit_id",
+                pack,
+            );
+            normalize_supervisor_context_ref_field(
+                proposed_decision,
+                "source_report_id",
+                pack,
+            );
             proposed_decision.insert(
                 "expected_work_unit_status".to_string(),
                 Value::String(
                     expected_work_unit_status_for_decision_label(decision_type).to_string(),
                 ),
+            );
+            proposed_decision.insert(
+                "requires_assignment".to_string(),
+                Value::Bool(requires_assignment),
             );
         }
         if requires_assignment {
@@ -814,9 +834,73 @@ fn repair_supervisor_proposal_value(
             {
                 repair_supervisor_draft_assignment_value(draft_object, pack, decision_type);
             }
+        } else {
+            proposal_object.insert("draft_next_assignment".to_string(), Value::Null);
+        }
+    }
+    if let Some(plan_revision_value) = proposal_object.get("plan_revision_proposal").cloned()
+        && !plan_revision_value.is_null()
+    {
+        let drop_revision = match serde_json::from_value::<orcas_core::planning::PlanRevisionProposal>(
+            plan_revision_value,
+        ) {
+            Ok(plan_revision) => validate_plan_revision_proposal(&plan_revision, pack).is_err(),
+            Err(_) => true,
+        };
+        if drop_revision {
+            proposal_object.insert("plan_revision_proposal".to_string(), Value::Null);
+        }
+    }
+    if let Some(plan_assessment_value) = proposal_object.get("plan_assessment").cloned()
+        && !plan_assessment_value.is_null()
+    {
+        let drop_assessment =
+            match serde_json::from_value::<orcas_core::planning::PlanAssessment>(
+                plan_assessment_value,
+            ) {
+                Ok(plan_assessment) => validate_plan_assessment(&plan_assessment, pack).is_err(),
+                Err(_) => true,
+            };
+        if drop_assessment {
+            proposal_object.insert("plan_assessment".to_string(), Value::Null);
         }
     }
     proposal_value
+}
+
+fn synthesize_supervisor_proposed_decision_value(
+    proposal_object: &serde_json::Map<String, Value>,
+    pack: &SupervisorContextPack,
+) -> Option<Value> {
+    let draft = proposal_object.get("draft_next_assignment")?.as_object()?;
+    let decision_type = draft
+        .get("derived_from_decision_type")
+        .and_then(Value::as_str)?;
+    let requires_assignment = decision_requires_assignment_label(decision_type);
+    let rationale = draft
+        .get("boundedness_note")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            draft
+                .get("objective")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or("synthesized from draft_next_assignment")
+        .trim()
+        .to_string();
+    Some(serde_json::json!({
+        "decision_type": decision_type,
+        "target_work_unit_id": draft
+            .get("target_work_unit_id")
+            .and_then(Value::as_str)
+            .unwrap_or(pack.primary_work_unit.id.as_str()),
+        "source_report_id": pack.source_report.id,
+        "rationale": rationale,
+        "expected_work_unit_status": expected_work_unit_status_for_decision_label(decision_type),
+        "requires_assignment": requires_assignment,
+    }))
 }
 
 fn ensure_required_draft_assignment(
@@ -992,6 +1076,42 @@ fn repair_supervisor_draft_assignment_value(
         .or_insert_with(|| {
             Value::String("Bounded to the current work unit and live report.".to_string())
         });
+    normalize_supervisor_context_ref_field(draft_object, "target_work_unit_id", pack);
+    normalize_supervisor_context_ref_field(draft_object, "predecessor_assignment_id", pack);
+    if let Some(required_context_refs) = draft_object
+        .get_mut("required_context_refs")
+        .and_then(Value::as_array_mut)
+    {
+        for context_ref in required_context_refs {
+            if let Some(raw_ref) = context_ref.as_str() {
+                *context_ref = Value::String(normalize_supervisor_context_ref(raw_ref, pack));
+            }
+        }
+    }
+}
+
+fn normalize_supervisor_context_ref_field(
+    object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    pack: &SupervisorContextPack,
+) {
+    let Some(value) = object.get_mut(field) else {
+        return;
+    };
+    let Some(raw_ref) = value.as_str() else {
+        return;
+    };
+    *value = Value::String(normalize_supervisor_context_ref(raw_ref, pack));
+}
+
+fn normalize_supervisor_context_ref(context_ref: &str, pack: &SupervisorContextPack) -> String {
+    match context_ref {
+        "source_report" => pack.source_report.id.clone(),
+        "work_unit" | "primary_work_unit" => pack.primary_work_unit.id.clone(),
+        "workstream" => pack.workstream.id.clone(),
+        "current_assignment" | "assignment" => pack.current_assignment.id.clone(),
+        _ => context_ref.to_string(),
+    }
 }
 
 fn synthesize_supervisor_summary(proposal_value: &Value) -> Value {
@@ -3669,6 +3789,255 @@ mod tests {
             draft["boundedness_note"].as_str(),
             Some("Bounded to the current work unit and live report.")
         );
+    }
+
+    #[test]
+    fn repair_supervisor_proposal_value_synthesizes_missing_proposed_decision_from_draft() {
+        let pack = sample_pack(vec![
+            DecisionType::Continue,
+            DecisionType::Redirect,
+            DecisionType::EscalateToHuman,
+        ]);
+        let proposal_value = serde_json::json!({
+            "confidence": "low",
+            "draft_next_assignment": {
+                "target_work_unit_id": "work_unit",
+                "predecessor_assignment_id": "current_assignment",
+                "derived_from_decision_type": "redirect",
+                "objective": "Keep the follow-up narrow",
+                "instructions": ["one", "two"],
+                "acceptance_criteria": ["a", "b"],
+                "stop_conditions": ["s1", "s2"],
+                "required_context_refs": [],
+                "expected_report_fields": ["summary", "confidence"],
+                "boundedness_note": "narrow redirect"
+            },
+            "summary": {
+                "headline": "ok",
+                "situation": "ok",
+                "recommended_action": "ok",
+                "key_evidence": [],
+                "risks": [],
+                "review_focus": []
+            }
+        });
+        let repaired = super::repair_supervisor_proposal_value(proposal_value, &pack);
+        assert_eq!(
+            repaired["proposed_decision"]["decision_type"].as_str(),
+            Some("redirect")
+        );
+        assert_eq!(
+            repaired["proposed_decision"]["target_work_unit_id"].as_str(),
+            Some(pack.primary_work_unit.id.as_str())
+        );
+        assert_eq!(
+            repaired["proposed_decision"]["source_report_id"].as_str(),
+            Some(pack.source_report.id.as_str())
+        );
+        assert_eq!(
+            repaired["proposed_decision"]["requires_assignment"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            repaired["proposed_decision"]["expected_work_unit_status"].as_str(),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn repair_supervisor_proposal_value_normalizes_symbolic_context_refs() {
+        let pack = sample_pack(vec![
+            DecisionType::Continue,
+            DecisionType::Redirect,
+            DecisionType::EscalateToHuman,
+        ]);
+        let proposal_value = serde_json::json!({
+            "confidence": "high",
+            "draft_next_assignment": {
+                "target_work_unit_id": "work_unit",
+                "predecessor_assignment_id": "current_assignment",
+                "derived_from_decision_type": "continue",
+                "objective": "Follow up",
+                "instructions": ["one", "two"],
+                "acceptance_criteria": ["a", "b"],
+                "stop_conditions": ["s1", "s2"],
+                "required_context_refs": ["source_report", "work_unit", "current_assignment"],
+                "expected_report_fields": ["summary", "findings"],
+                "boundedness_note": "narrow"
+            },
+            "open_questions": [],
+            "plan_assessment": null,
+            "plan_revision_proposal": null,
+            "proposed_decision": {
+                "decision_type": "continue",
+                "expected_work_unit_status": "completed",
+                "rationale": "bounded follow-up test",
+                "requires_assignment": true,
+                "source_report_id": "source_report",
+                "target_work_unit_id": "work_unit"
+            },
+            "schema_version": PROPOSAL_SCHEMA_VERSION,
+            "summary": {
+                "headline": "ok",
+                "situation": "ok",
+                "recommended_action": "ok",
+                "key_evidence": [],
+                "risks": [],
+                "review_focus": []
+            },
+            "warnings": []
+        });
+        let repaired = super::repair_supervisor_proposal_value(proposal_value, &pack);
+        assert_eq!(
+            repaired["proposed_decision"]["source_report_id"].as_str(),
+            Some(pack.source_report.id.as_str())
+        );
+        assert_eq!(
+            repaired["draft_next_assignment"]["required_context_refs"][0].as_str(),
+            Some(pack.source_report.id.as_str())
+        );
+        assert_eq!(
+            repaired["draft_next_assignment"]["predecessor_assignment_id"].as_str(),
+            Some(pack.current_assignment.id.as_str())
+        );
+    }
+
+    #[test]
+    fn repair_supervisor_proposal_value_forces_requires_assignment_policy() {
+        let pack = sample_pack(vec![
+            DecisionType::Continue,
+            DecisionType::Redirect,
+            DecisionType::EscalateToHuman,
+        ]);
+        let proposal_value = serde_json::json!({
+            "confidence": "high",
+            "draft_next_assignment": null,
+            "open_questions": [],
+            "plan_assessment": null,
+            "plan_revision_proposal": null,
+            "proposed_decision": {
+                "decision_type": "continue",
+                "expected_work_unit_status": "ready",
+                "rationale": "bounded follow-up test",
+                "requires_assignment": false,
+                "source_report_id": "report-1",
+                "target_work_unit_id": "work-unit-1"
+            },
+            "schema_version": PROPOSAL_SCHEMA_VERSION,
+            "summary": {
+                "headline": "ok",
+                "situation": "ok",
+                "recommended_action": "ok",
+                "key_evidence": [],
+                "risks": [],
+                "review_focus": []
+            },
+            "warnings": []
+        });
+        let repaired = super::repair_supervisor_proposal_value(proposal_value, &pack);
+        assert_eq!(
+            repaired["proposed_decision"]["requires_assignment"].as_bool(),
+            Some(true)
+        );
+        assert!(repaired["draft_next_assignment"].is_object());
+    }
+
+    #[test]
+    fn repair_supervisor_proposal_value_drops_malformed_optional_plan_revision() {
+        let pack = sample_pack(vec![
+            DecisionType::Continue,
+            DecisionType::Redirect,
+            DecisionType::EscalateToHuman,
+        ]);
+        let proposal_value = serde_json::json!({
+            "confidence": "high",
+            "draft_next_assignment": null,
+            "open_questions": [],
+            "plan_assessment": null,
+            "plan_revision_proposal": {
+                "proposal_id": "revision-1",
+                "workstream_id": pack.workstream.id,
+                "base_plan_id": "plan-1",
+                "base_plan_version": 1,
+                "rationale": "bad revision",
+                "urgency": "low",
+                "expected_benefit": "none",
+                "tradeoffs": [],
+                "ops": [{}, {}]
+            },
+            "proposed_decision": {
+                "decision_type": "escalate_to_human",
+                "expected_work_unit_status": "needs_human",
+                "rationale": "needs human eyes",
+                "requires_assignment": false,
+                "source_report_id": "report-1",
+                "target_work_unit_id": "work-unit-1"
+            },
+            "schema_version": PROPOSAL_SCHEMA_VERSION,
+            "summary": {
+                "headline": "ok",
+                "situation": "ok",
+                "recommended_action": "ok",
+                "key_evidence": [],
+                "risks": [],
+                "review_focus": []
+            },
+            "warnings": []
+        });
+        let repaired = super::repair_supervisor_proposal_value(proposal_value, &pack);
+        assert!(repaired["plan_revision_proposal"].is_null());
+    }
+
+    #[test]
+    fn repair_supervisor_proposal_value_drops_mismatched_plan_assessment() {
+        let pack = sample_pack(vec![
+            DecisionType::Continue,
+            DecisionType::Redirect,
+            DecisionType::EscalateToHuman,
+        ]);
+        let proposal_value = serde_json::json!({
+            "confidence": "high",
+            "draft_next_assignment": null,
+            "open_questions": [],
+            "plan_assessment": {
+                "assessment_id": "assessment-1",
+                "workstream_id": pack.workstream.id,
+                "plan_id": "plan-other",
+                "plan_version": 1,
+                "plan_item_id": null,
+                "assignment_id": pack.current_assignment.id,
+                "execution_kind": "direct_execution",
+                "alignment_status": "complete",
+                "progress_summary": "done",
+                "blocker_summary": null,
+                "recommended_next_action": "continue",
+                "drift_risk": "low",
+                "proposed_revision_needed": false,
+                "created_at": "2026-04-02T13:47:00.000Z",
+                "created_by": "supervisor"
+            },
+            "plan_revision_proposal": null,
+            "proposed_decision": {
+                "decision_type": "escalate_to_human",
+                "expected_work_unit_status": "needs_human",
+                "rationale": "needs human eyes",
+                "requires_assignment": false,
+                "source_report_id": "report-1",
+                "target_work_unit_id": "work-unit-1"
+            },
+            "schema_version": PROPOSAL_SCHEMA_VERSION,
+            "summary": {
+                "headline": "ok",
+                "situation": "ok",
+                "recommended_action": "ok",
+                "key_evidence": [],
+                "risks": [],
+                "review_focus": []
+            },
+            "warnings": []
+        });
+        let repaired = super::repair_supervisor_proposal_value(proposal_value, &pack);
+        assert!(repaired["plan_assessment"].is_null());
     }
 
     #[test]

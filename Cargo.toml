@@ -4,6 +4,8 @@ members = [
     "crates/orcas-codex",
     "crates/orcasd",
     "crates/orcas-server-client",
+    "crates/orcas-operator-core",
+    "crates/orcas-operator-web",
     "crates/orcas",
     "crates/orcas-server",
 ]
@@ -34,6 +36,9 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v7"] }
+gloo-net = "0.6.0"
+leptos = { version = "0.8.12", default-features = false, features = ["csr"] }
+leptos_router = "0.8.12"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

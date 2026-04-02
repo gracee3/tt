@@ -472,11 +472,9 @@ fn serve_fake_planning_session_connection(
                 let sessions = state
                     .sessions
                     .values()
-                    .filter(|session| {
-                        match params.workstream_id.as_ref() {
-                            None => true,
-                            Some(workstream_id) => &session.workstream_id == workstream_id,
-                        }
+                    .filter(|session| match params.workstream_id.as_ref() {
+                        None => true,
+                        Some(workstream_id) => &session.workstream_id == workstream_id,
                     })
                     .cloned()
                     .collect::<Vec<_>>();
@@ -508,7 +506,10 @@ fn serve_fake_planning_session_connection(
                     continue;
                 };
                 let mut state = state.lock().expect("lock fake planning daemon state");
-                let entry = state.request_counts.entry(params.session_id.clone()).or_insert(0);
+                let entry = state
+                    .request_counts
+                    .entry(params.session_id.clone())
+                    .or_insert(0);
                 *entry += 1;
                 if *entry > 1 {
                     let _ = send_jsonrpc_error(
@@ -1671,7 +1672,7 @@ async fn real_cli_planning_session_approve_stages_revision_proposal_without_appl
 
 #[tokio::test]
 async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_keeps_draft_create_working()
-{
+ {
     let _guard = planning_session_cli_test_lock().lock().await;
     let daemon = spawn_fake_planning_session_cli_daemon("cli-planning-create").await;
     let workstream_id = "planning-workstream-cli-create";
@@ -1704,15 +1705,14 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
     );
 
     let empty_list = run_orcas_with_env(
-        &[
-            "planning-sessions",
-            "list",
-            "--workstream",
-            workstream_id,
-        ],
+        &["planning-sessions", "list", "--workstream", workstream_id],
         &envs,
     );
-    assert!(empty_list.status.success(), "stderr: {}", stderr(&empty_list));
+    assert!(
+        empty_list.status.success(),
+        "stderr: {}",
+        stderr(&empty_list)
+    );
     assert!(stdout(&empty_list).contains("no planning sessions"));
 
     let valid_create = run_orcas_with_env(
@@ -1740,7 +1740,11 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
         ],
         &envs,
     );
-    assert!(valid_create.status.success(), "stderr: {}", stderr(&valid_create));
+    assert!(
+        valid_create.status.success(),
+        "stderr: {}",
+        stderr(&valid_create)
+    );
     let valid_stdout = stdout(&valid_create);
     assert!(valid_stdout.contains("surface: planning_session"));
     assert!(valid_stdout.contains("planning_session_status: Chatting"));
@@ -1755,7 +1759,11 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
         &["planning-sessions", "list", "--workstream", workstream_id],
         &envs,
     );
-    assert!(created_list.status.success(), "stderr: {}", stderr(&created_list));
+    assert!(
+        created_list.status.success(),
+        "stderr: {}",
+        stderr(&created_list)
+    );
     let created_list_stdout = stdout(&created_list);
     assert!(created_list_stdout.contains(created_session_id));
     assert!(created_list_stdout.contains(workstream_id));
@@ -2006,7 +2014,11 @@ async fn real_cli_planning_session_help_mentions_lifecycle_boundaries() {
     assert!(root_stdout.contains("mark-ready-for-review"));
 
     let create_help = run_orcas(&daemon, &["planning-sessions", "create", "--help"]);
-    assert!(create_help.status.success(), "stderr: {}", stderr(&create_help));
+    assert!(
+        create_help.status.success(),
+        "stderr: {}",
+        stderr(&create_help)
+    );
     let create_stdout = stdout(&create_help);
     assert!(create_stdout.contains(
         "Create a draft planning session; readiness must be set later with mark-ready-for-review"

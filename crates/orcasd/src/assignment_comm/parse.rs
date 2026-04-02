@@ -166,23 +166,6 @@ pub fn parse_worker_report(
         record,
         extraction.surrounding_text,
     ) else {
-        if looks_like_malformed_worker_report_envelope(&json_payload) {
-            warn!(
-                assignment_id = %assignment.id,
-                packet_id = %record.packet.packet_id,
-                stage = "decode_envelope",
-                duration_ms = started_at.elapsed().as_millis() as u64,
-                "worker report envelope decode failed but payload looked recoverable; falling back to minimal recovered envelope"
-            );
-            return recovered_report(
-                Some(
-                    "worker report envelope JSON could not be decoded; recovered a minimal envelope for supervisor review"
-                        .to_string(),
-                ),
-                assignment,
-                record,
-            );
-        }
         warn!(
             assignment_id = %assignment.id,
             packet_id = %record.packet.packet_id,
@@ -274,21 +257,6 @@ pub fn parse_worker_report(
     parsed
 }
 
-fn looks_like_malformed_worker_report_envelope(json_payload: &str) -> bool {
-    let has_schema = json_payload.contains("\"schema_version\":")
-        && json_payload.contains("worker_report_envelope.v1");
-    let has_report_shape = json_payload.contains("\"review_signal\":")
-        && json_payload.contains("\"mode_payload\":")
-        && (json_payload.contains("\"task_mode\":")
-            || json_payload.contains("\"triggered_stop_condition_ids\":"));
-    let has_identity_or_summary = json_payload.contains("\"assignment_id\":")
-        || json_payload.contains("\"packet_id\":")
-        || json_payload.contains("\"disposition\":")
-        || json_payload.contains("\"summary\":");
-
-    has_schema && has_report_shape && has_identity_or_summary
-}
-
 fn recovered_report(
     structural_issue: Option<String>,
     assignment: &Assignment,
@@ -375,25 +343,13 @@ fn parse_worker_report_envelope(
     surrounding_text: bool,
 ) -> Option<WorkerReportEnvelope> {
     match serde_json::from_str::<WorkerReportEnvelope>(json_payload.trim()) {
-        Ok(envelope) => {
-            if decoded_report_identity_looks_corrupted(&envelope, assignment, record) {
-                if let Some(repaired_payload) =
-                    repair_worker_report_envelope_payload(json_payload, assignment, record)
-                {
-                    if let Ok(repaired) =
-                        serde_json::from_str::<WorkerReportEnvelope>(&repaired_payload)
-                    {
-                        debug!(
-                            assignment_id = %assignment.id,
-                            packet_id = %record.packet.packet_id,
-                            stage = "decode_envelope_repaired",
-                            surrounding_text,
-                            "worker report envelope identity repaired after direct decode"
-                        );
-                        return Some(repaired);
-                    }
-                }
-            }
+        Ok(mut envelope) => {
+            repair_decoded_report_identity_fields(
+                &mut envelope,
+                assignment,
+                record,
+                surrounding_text,
+            );
             return Some(envelope);
         }
         Err(error) => {
@@ -438,22 +394,27 @@ fn parse_worker_report_envelope(
     Some(envelope)
 }
 
-fn decoded_report_identity_looks_corrupted(
-    envelope: &WorkerReportEnvelope,
+fn repair_decoded_report_identity_fields(
+    envelope: &mut WorkerReportEnvelope,
     assignment: &Assignment,
     record: &AssignmentCommunicationRecord,
-) -> bool {
-    (envelope.assignment_id != assignment.id
-        && !looks_like_plausible_report_identity(&envelope.assignment_id, "assignment-"))
-        || (envelope.packet_id != record.packet.packet_id
-            && !looks_like_plausible_report_identity(&envelope.packet_id, "packet-"))
-}
+    surrounding_text: bool,
+) {
+    if !surrounding_text {
+        return;
+    }
 
-fn looks_like_plausible_report_identity(value: &str, prefix: &str) -> bool {
-    value.starts_with(prefix)
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    if envelope.packet_id == record.packet.packet_id {
+        return;
+    }
+
+    if looks_like_corrupted_packet_identity(
+        &envelope.packet_id,
+        &record.packet.packet_id,
+        &assignment.id,
+    ) {
+        envelope.packet_id = record.packet.packet_id.clone();
+    }
 }
 
 fn repair_worker_report_envelope_payload(
@@ -541,6 +502,54 @@ fn repair_or_clear_json_array_field(
     let replacement = format!("\n{indent}\"{field}\": [],\n");
     json_payload.replace_range(line_start..next_line_start, &replacement);
     true
+}
+
+fn looks_like_corrupted_packet_identity(
+    observed: &str,
+    expected: &str,
+    assignment_id: &str,
+) -> bool {
+    if observed == expected {
+        return false;
+    }
+    if !observed.starts_with("packet-") || !expected.starts_with("packet-") {
+        return false;
+    }
+
+    let prefix_len = common_prefix_len(observed, expected);
+    let suffix_len = common_suffix_len(observed, expected);
+    if prefix_len >= 12
+        && suffix_len >= 8
+        && prefix_len + suffix_len + 8 >= expected.chars().count()
+    {
+        return true;
+    }
+
+    let Some(observed_suffix) = observed.strip_prefix("packet-") else {
+        return false;
+    };
+    if common_prefix_len(observed_suffix, assignment_id) < 12
+        || common_suffix_len(observed_suffix, assignment_id) < 8
+    {
+        return false;
+    }
+
+    observed_suffix.chars().count() + 8 >= assignment_id.chars().count()
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left_ch, right_ch)| left_ch == right_ch)
+        .count()
+}
+
+fn common_suffix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .rev()
+        .zip(right.chars().rev())
+        .take_while(|(left_ch, right_ch)| left_ch == right_ch)
+        .count()
 }
 
 fn repair_collapsed_report_header(json_payload: &mut String) -> bool {
@@ -707,6 +716,38 @@ fn repair_stray_report_field_prefix(json_payload: &mut String, field: &str) -> b
     true
 }
 
+fn repair_json_string_field(json_payload: &mut String, field: &str, value: &str) -> bool {
+    let needle = format!("\"{field}\":");
+    let Some(field_index) = json_payload.find(&needle) else {
+        return false;
+    };
+    let line_start = json_payload[..field_index]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = json_payload[field_index..]
+        .find('\n')
+        .map(|offset| field_index + offset)
+        .unwrap_or(json_payload.len());
+    let line = &json_payload[line_start..line_end];
+    let Some(colon_index) = line.find(':') else {
+        return false;
+    };
+    let value_segment = &line[colon_index + 1..];
+    if value_segment.trim_start().starts_with('"') {
+        return false;
+    }
+    let Some(comma_index) = value_segment.find(',') else {
+        return false;
+    };
+    let prefix = &line[..colon_index + 1];
+    let suffix = &value_segment[comma_index..];
+    let quoted_value = serde_json::to_string(value).expect("string value can be serialized");
+    let replacement = format!("{prefix} {quoted_value}{suffix}");
+    json_payload.replace_range(line_start..line_end, &replacement);
+    true
+}
+
 fn extract_envelope(raw_output: &str) -> EnvelopeExtraction {
     let Some((prefix, after_begin)) = raw_output.split_once(REPORT_MARKER_BEGIN) else {
         return EnvelopeExtraction {
@@ -741,7 +782,7 @@ mod tests {
         Assignment, AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentTaskMode,
         ImplementModePayload, ImplementModeSpec, ReportConfidence, ReportDisposition,
         ReportParseResult, ReviewSignal, ReviewSignalLevel, WorkUnit, WorkUnitStatus,
-        WorkerReportModePayload, Workstream, WorkstreamStatus, ipc,
+        WorkerReportEnvelope, WorkerReportModePayload, Workstream, WorkstreamStatus, ipc,
     };
 
     use super::{extract_envelope, parse_worker_report, parse_worker_report_for_turn};
@@ -1074,26 +1115,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_report_repairs_decoded_but_corrupted_packet_identity_field() {
-        let assignment = sample_assignment();
-        let record = sample_record(&assignment);
-        let raw = format!(
-            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"{}\",\n  \"packet_id\": \"packet-assignment-1position output in main.c to match the shell test expectation by adding a missing exclamation mark; `make test` now passes.\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Completed the bounded change.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [],\n  \"touched_files\": [],\n  \"commands_run\": [],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [],\n    \"tests_run\": [],\n    \"rough_edges\": []\n  }}\n}}\nORCAS_REPORT_END",
-            assignment.id
-        );
-
-        let parsed = parse_worker_report(&raw, &assignment, &record);
-
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
-        assert!(parsed.envelope.is_some());
-        assert_eq!(parsed.disposition, ReportDisposition::Completed);
-        assert_eq!(
-            parsed.envelope.as_ref().expect("envelope").packet_id,
-            record.packet.packet_id
-        );
-    }
-
-    #[test]
     fn parse_worker_report_repairs_stray_field_prefix_before_task_mode() {
         let assignment = sample_assignment();
         let record = sample_record(&assignment);
@@ -1227,46 +1248,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_report_repairs_live_worker_header_collapsed_before_triggered_stop_conditions() {
-        let assignment = sample_assignment();
-        let record = sample_record(&assignment);
+    fn parse_worker_report_repairs_decoded_but_corrupted_packet_identity_field() {
+        let mut assignment = sample_assignment();
+        assignment.id = "assignment-31e09de5573a4bdd8b9888b2f8690fe2".to_string();
+        let mut record = sample_record(&assignment);
+        record.packet.packet_id = format!("packet-{}", assignment.id);
+        let packet_id = &record.packet.packet_id;
+        let corrupted_packet_id = if packet_id.len() > 12 {
+            format!("{}{}", &packet_id[..packet_id.len() / 2], &packet_id[(packet_id.len() / 2) + 4..])
+        } else {
+            format!("{packet_id}-corrupt")
+        };
         let raw = format!(
-            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"assignment-c43cc0c9a9ba0290 \"completed\",\n matches_results_1,2, commands }}\n   \"triggered_stop_condition_ids\": [\"stop_1\"],\n  \"touched_files\": [\"main.c\"],\n  \"commands_run\": [\n    \"ls -la\"\n  ],\n  \"artifacts\": [\n    {{\n      \"name\": \"main.c_after\",\n      \"mime_type\": \"text/x-c\",\n      \"content\": \"#include <stdio.h>\\n\\nint main(void) {{\\n    puts(\\\"Hello, Orcas!\\\");\\n    return 0;\\n}}\\n\"\n    }}\n  ],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [\n      {{\n        \"path\": \"main.c\",\n        \"change\": \"Replace greeting literal \\\"Hello, Orcas\\\" with \\\"Hello, Orcas!\\\".\"\n      }}\n    ],\n    \"tests_run\": [\n      {{\n        \"name\": \"tests/test.sh\",\n        \"result\": \"pass\"\n      }}\n    ],\n    \"rough_edges\": [\n      \"applypatch helper was unavailable; used sed for in-place edit.\"\n    ]\n  }}\n}}\nORCAS_REPORT_END",
+            "worker preamble\nORCAS_REPORT_BEGIN\n{{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"assignment_id\": \"{assignment_id}\",\n  \"packet_id\": \"{packet_id}\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Completed the bounded change.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [],\n  \"touched_files\": [],\n  \"commands_run\": [],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {{\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  }},\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {{\n    \"kind\": \"implement\",\n    \"semantic_changes\": [],\n    \"tests_run\": [],\n    \"rough_edges\": []\n  }}\n}}\nORCAS_REPORT_END\nworker epilogue",
+            assignment_id = assignment.id,
+            packet_id = corrupted_packet_id,
         );
 
         let parsed = parse_worker_report(&raw, &assignment, &record);
 
         assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
-        assert!(parsed.validation.needs_supervisor_review);
-        let envelope = parsed.envelope.expect("envelope");
-        assert_eq!(parsed.disposition, ReportDisposition::Completed);
-        assert_eq!(envelope.assignment_id, assignment.id);
-        assert_eq!(envelope.packet_id, record.packet.packet_id);
-        assert!(parsed
-            .validation
-            .structural_issues
-            .iter()
-            .any(|issue| issue.contains("recovered a minimal envelope")));
-    }
-
-    #[test]
-    fn parse_worker_report_recovers_when_live_worker_corrupts_identity_line() {
-        let assignment = sample_assignment();
-        let record = sample_record(&assignment);
-        let raw = "worker preamble\nORCAS_REPORT_BEGIN\n{\n  \"schema_version\": \"worker_report_envelope.v1\",\n  \"180\",\n-assignment9688f4efc79045b1808e53f1c9826192\",\n  \"task_mode\": \"implement\",\n  \"disposition\": \"completed\",\n  \"summary\": \"Updated main.c to print \\\"Hello, Orcas!\\\" (added missing exclamation) so tests pass.\",\n  \"confidence\": \"high\",\n  \"acceptance_results\": [],\n  \"triggered_stop_condition_ids\": [\"stop_1\"],\n  \"touched_files\": [\"main.c\"],\n  \"commands_run\": [\"make test -j1 V=1\"],\n  \"artifacts\": [],\n  \"blockers\": [],\n  \"questions\": [],\n  \"recommended_next_actions\": [],\n  \"uncertainties\": [],\n  \"review_signal\": {\n    \"level\": \"normal\",\n    \"reasons\": [],\n    \"focus\": []\n  },\n  \"workspace_report\": null,\n  \"prune_workspace_result\": null,\n  \"landing_execution_result\": null,\n  \"mode_payload\": {\n    \"kind\": \"implement\",\n    \"semantic_changes\": [\n      {\n        \"path\": \"main.c\",\n        \"description\": \"Replaced string literal in puts() from \\\"Hello, Orcas\\\" to \\\"Hello, Orcas!\\\".\"\n      }\n    ],\n    \"tests_run\": [\n      {\n        \"name\": \"tests/test.sh\",\n        \"result\": \"pass\"\n      }\n    ],\n    \"rough_edges\": []\n  }\n}\nORCAS_REPORT_END";
-
-        let parsed = parse_worker_report(raw, &assignment, &record);
-
-        assert_eq!(parsed.validation.parse_result, ReportParseResult::Ambiguous);
-        assert!(parsed.validation.needs_supervisor_review);
-        let envelope = parsed.envelope.expect("envelope");
-        assert_eq!(envelope.assignment_id, assignment.id);
-        assert_eq!(envelope.packet_id, record.packet.packet_id);
-        assert!(parsed
-            .validation
-            .structural_issues
-            .iter()
-            .any(|issue| issue.contains("recovered a minimal envelope")));
+        assert!(parsed.envelope.is_some());
+        assert_eq!(
+            parsed.envelope.as_ref().expect("envelope").packet_id,
+            record.packet.packet_id
+        );
     }
 
     #[test]

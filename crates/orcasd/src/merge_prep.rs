@@ -86,7 +86,10 @@ pub fn assess_merge_prep(
 
     let inspection_suggests_success = inspection.is_some_and(|inspection| {
         let bounded_dirty_workspace = inspection.warnings.iter().all(|warning| {
-            matches!(warning, TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace)
+            matches!(
+                warning,
+                TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace
+            )
         });
         inspection.current_head_commit.is_some()
             && (inspection.warnings.is_empty() || bounded_dirty_workspace)

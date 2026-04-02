@@ -21,18 +21,20 @@ short_xdg_runtime_home="$short_xdg_root/runtime"
 listen_port="$((4600 + ($(printf '%s' "$E2E_RUN_ID" | cksum | awk '{print $1}') % 1000)))"
 listen_url="ws://127.0.0.1:$listen_port"
 
-rm -rf "$short_xdg_root"
-mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
-chmod 700 "$short_xdg_runtime_home" || true
+if ! e2e_using_shared_lab; then
+  rm -rf "$short_xdg_root"
+  mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
+  chmod 700 "$short_xdg_runtime_home" || true
 
-export E2E_SCENARIO_XDG_DIR="$short_xdg_root"
-export E2E_SCENARIO_XDG_DATA_HOME="$short_xdg_data_home"
-export E2E_SCENARIO_XDG_CONFIG_HOME="$short_xdg_config_home"
-export E2E_SCENARIO_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
-export ORCAS_E2E_XDG_DATA_HOME="$short_xdg_data_home"
-export ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home"
-export ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
-export ORCAS_CODEX_LISTEN_URL="$listen_url"
+  export E2E_SCENARIO_XDG_DIR="$short_xdg_root"
+  export E2E_SCENARIO_XDG_DATA_HOME="$short_xdg_data_home"
+  export E2E_SCENARIO_XDG_CONFIG_HOME="$short_xdg_config_home"
+  export E2E_SCENARIO_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
+  export ORCAS_E2E_XDG_DATA_HOME="$short_xdg_data_home"
+  export ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home"
+  export ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
+  export ORCAS_CODEX_LISTEN_URL="$listen_url"
+fi
 
 fixture_repo="$E2E_SCENARIO_WORKTREES_DIR/lane"
 daemon_log="$E2E_SCENARIO_LOGS_DIR/orcasd.log"
@@ -43,10 +45,9 @@ rm -rf "$fixture_repo"
 mkdir -p "$fixture_repo" "$reports_dir" "$artifacts_dir"
 cp -R "$fixture_dir/." "$fixture_repo/"
 
-e2e_orcas daemon start --force-spawn >"$daemon_log" 2>&1 &
-daemon_pid=$!
+e2e_start_managed_daemon "$daemon_log"
 cleanup() {
-  kill "$daemon_pid" >/dev/null 2>&1 || true
+  e2e_stop_managed_daemon
 }
 trap cleanup EXIT
 

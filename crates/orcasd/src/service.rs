@@ -48,9 +48,9 @@ use orcas_core::jsonrpc::{
 use orcas_core::{
     AppConfig, AppPaths, Assignment, AssignmentCommunicationPacket, AssignmentCommunicationRecord,
     AssignmentCommunicationSeed, AssignmentModeSpec, AssignmentStatus, AssignmentWorkspaceContract,
-    CodexConnectionMode, CodexThreadAssignment, CodexThreadAssignmentStatus,
-    CodexThreadBootstrapState, CollaborationState, ConnectionState, Decision, DecisionType,
-    DraftAssignment, EventEnvelope, ImplementModeSpec, JsonSessionStore,
+    CodexConnectionMode, CodexItemEvent, CodexThreadAssignment, CodexThreadAssignmentStatus,
+    CodexThreadBootstrapState, CodexTurnEvent, CollaborationState, ConnectionState, Decision,
+    DecisionType, DraftAssignment, EventEnvelope, ImplementModeSpec, JsonSessionStore,
     LandingAuthorizationRecord, LandingAuthorizationStatus, LandingExecutionRecord,
     LandingExecutionStatus, OrcasError, OrcasEvent, OrcasResult, OrcasSessionStore, PlanAssessment,
     PlanAssessmentId, PlanExecutionKind, PlanId, PlanItemId, PlanRevisionApplyFailureKind,
@@ -73,10 +73,11 @@ use crate::assignment_comm::policy::validate_assignment_packet;
 use crate::assignment_comm::render::build_assignment_communication_record;
 use crate::assignment_comm::stable_fingerprint;
 use crate::authority_store::{AuthorityMutationResult, AuthoritySqliteStore};
+use crate::inbox_mirror::OperatorInboxMirrorHttpClient;
 use crate::landing_authorization::landing_authorization_is_current;
 use crate::landing_execution::landing_execution_matches_authorization_basis;
 use crate::merge_prep::assess_merge_prep;
-use crate::operator_inbox::build_operator_inbox_state;
+use crate::operator_inbox::{build_operator_inbox_state, operator_inbox_changes_after};
 use crate::planning_session::{
     build_planning_revision_proposal, build_research_work_unit,
     planning_session_status_is_terminal, planning_session_thread_prompt,
@@ -315,6 +316,7 @@ impl OrcasDaemonService {
 
         service.initialize_state().await?;
         service.spawn_codex_event_bridge();
+        service.spawn_operator_inbox_mirror_loop();
         debug!(pid = std::process::id(), "daemon service initialized");
 
         Ok(service)
@@ -676,6 +678,94 @@ impl OrcasDaemonService {
                 }
             }
         });
+    }
+
+    fn spawn_operator_inbox_mirror_loop(self: &Arc<Self>) {
+        let Some(server_url) = self.config.inbox_mirror.server_url.clone() else {
+            return;
+        };
+
+        let operator_api_token = self.config.inbox_mirror.operator_api_token.clone();
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            service
+                .operator_inbox_mirror_loop(server_url, operator_api_token)
+                .await;
+        });
+    }
+
+    async fn operator_inbox_mirror_loop(
+        self: Arc<Self>,
+        server_url: String,
+        operator_api_token: Option<String>,
+    ) {
+        let client = match operator_api_token {
+            Some(token) if !token.trim().is_empty() => {
+                OperatorInboxMirrorHttpClient::with_operator_api_token(server_url, token)
+            }
+            _ => OperatorInboxMirrorHttpClient::new(server_url),
+        };
+        let origin_node_id = match self.authority_store.origin_node_id() {
+            Ok(origin) => origin,
+            Err(error) => {
+                warn!(%error, "operator inbox mirror loop could not resolve origin node id");
+                return;
+            }
+        };
+
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut last_exported_sequence = 0u64;
+
+        loop {
+            tokio::select! {
+                _ = self.shutdown.notified() => {
+                    info!("operator inbox mirror loop stopping");
+                    break;
+                }
+                _ = interval.tick() => {
+                    let collaboration = {
+                        self.state.read().await.collaboration.clone()
+                    };
+                    let inbox = build_operator_inbox_state(&collaboration);
+                    let checkpoint = inbox.checkpoint.clone();
+                    if checkpoint.current_sequence <= last_exported_sequence {
+                        continue;
+                    }
+
+                    let changes = operator_inbox_changes_after(
+                        &inbox,
+                        last_exported_sequence,
+                        None,
+                    );
+                    if changes.is_empty() {
+                        last_exported_sequence = checkpoint.current_sequence;
+                        continue;
+                    }
+
+                    let request = orcas_core::ipc::OperatorInboxMirrorApplyRequest {
+                        origin_node_id: origin_node_id.as_str().to_string(),
+                        checkpoint: checkpoint.clone(),
+                        changes,
+                    };
+                    match client.apply(&request).await {
+                        Ok(response) => {
+                            last_exported_sequence = response.mirror_checkpoint.last_exported_sequence;
+                            info!(
+                                origin_node_id = %origin_node_id.as_str(),
+                                checkpoint = response.checkpoint.current_sequence,
+                                exported_sequence = last_exported_sequence,
+                                applied_changes = response.applied_changes,
+                                skipped_changes = response.skipped_changes,
+                                "exported operator inbox mirror to server"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(%error, origin_node_id = %origin_node_id.as_str(), "operator inbox mirror export failed");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn handle_client(self: Arc<Self>, stream: UnixStream) {
@@ -11673,6 +11763,129 @@ impl OrcasDaemonService {
         Ok(())
     }
 
+    async fn ensure_assignment_tracked_thread_binding(
+        &self,
+        worker_session_id: &str,
+        work_unit_id: &str,
+        requested_model: Option<&str>,
+        requested_cwd: Option<&str>,
+    ) -> OrcasResult<()> {
+        let worker_session = self
+            .state
+            .read()
+            .await
+            .collaboration
+            .worker_sessions
+            .get(worker_session_id)
+            .cloned();
+        let Some(worker_session) = worker_session else {
+            return Ok(());
+        };
+        let Some(worker_thread_id) = worker_session.thread_id.clone() else {
+            return Ok(());
+        };
+        if worker_session.tracked_thread_id.is_some() {
+            return Ok(());
+        }
+
+        let work_unit_id = orcas_core::authority::WorkUnitId::parse(work_unit_id.to_string())?;
+        let tracked_threads = self
+            .authority_store
+            .list_tracked_threads(&work_unit_id, false)
+            .await?;
+
+        if let Some(tracked_thread_id) = tracked_threads
+            .iter()
+            .find(|tracked_thread| {
+                tracked_thread.upstream_thread_id.as_deref() == Some(worker_thread_id.as_str())
+            })
+            .map(|tracked_thread| tracked_thread.id.clone())
+        {
+            self.sync_worker_session_tracked_thread_binding(
+                &tracked_thread_id,
+                Some(worker_thread_id.as_str()),
+                None,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if tracked_threads.is_empty() {
+            let metadata = self.authority_command_metadata("orcasd")?;
+            let tracked_thread_id = orcas_core::authority::TrackedThreadId::new();
+            self.authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
+                command: orcas_core::authority::CreateTrackedThread {
+                    metadata,
+                    tracked_thread_id,
+                    work_unit_id: work_unit_id.clone(),
+                    title: worker_session.worker_id.clone(),
+                    notes: Some("auto-created from assignment_start".to_string()),
+                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
+                    upstream_thread_id: Some(worker_thread_id.clone()),
+                    preferred_cwd: requested_cwd.map(ToOwned::to_owned),
+                    preferred_model: requested_model.map(ToOwned::to_owned),
+                    workspace: None,
+                },
+            })
+            .await?;
+            self.sync_worker_session_tracked_thread_binding_for_assignment(
+                worker_session_id,
+                work_unit_id.as_str(),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if tracked_threads.len() == 1
+            && tracked_threads[0].upstream_thread_id.is_none()
+            && tracked_threads[0].deleted_at.is_none()
+        {
+            let tracked_thread = self
+                .authority_tracked_thread_get(ipc::AuthorityTrackedThreadGetRequest {
+                    tracked_thread_id: tracked_threads[0].id.clone(),
+                })
+                .await?
+                .tracked_thread;
+            let mut changes = orcas_core::authority::TrackedThreadPatch {
+                title: None,
+                notes: None,
+                backend_kind: None,
+                upstream_thread_id: Some(Some(worker_thread_id.clone())),
+                binding_state: Some(orcas_core::authority::TrackedThreadBindingState::Bound),
+                preferred_cwd: None,
+                preferred_model: None,
+                last_seen_turn_id: None,
+                workspace: None,
+            };
+            if tracked_thread.preferred_cwd.is_none()
+                && let Some(cwd) = requested_cwd
+            {
+                changes.preferred_cwd = Some(Some(cwd.to_string()));
+            }
+            if tracked_thread.preferred_model.is_none()
+                && let Some(model) = requested_model
+            {
+                changes.preferred_model = Some(Some(model.to_string()));
+            }
+            self.authority_tracked_thread_edit(ipc::AuthorityTrackedThreadEditRequest {
+                command: orcas_core::authority::EditTrackedThread {
+                    metadata: self.authority_command_metadata("orcasd")?,
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    expected_revision: tracked_thread.revision,
+                    changes,
+                },
+            })
+            .await?;
+            self.sync_worker_session_tracked_thread_binding_for_assignment(
+                worker_session_id,
+                work_unit_id.as_str(),
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
     async fn reconcile_worker_session_tracked_thread_bindings(&self) -> OrcasResult<()> {
         let work_unit_ids = {
             self.state
@@ -11699,6 +11912,30 @@ impl OrcasDaemonService {
                 .await?;
             }
         }
+        let assignment_bindings = {
+            self.state
+                .read()
+                .await
+                .collaboration
+                .assignments
+                .values()
+                .map(|assignment| {
+                    (
+                        assignment.worker_session_id.clone(),
+                        assignment.work_unit_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (worker_session_id, work_unit_id) in assignment_bindings {
+            self.ensure_assignment_tracked_thread_binding(
+                &worker_session_id,
+                &work_unit_id,
+                None,
+                None,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -11709,6 +11946,8 @@ impl OrcasDaemonService {
         cwd: Option<String>,
         work_unit_id: Option<&str>,
     ) -> OrcasResult<WorkerSession> {
+        let requested_model = model.clone();
+        let requested_cwd = cwd.clone();
         // Worker sessions may be reused across assignments, but that reuse only preserves the
         // runtime thread anchor. It does not carry hidden workflow continuity; each assignment
         // still records its own explicit worker_session binding and executes as a distinct step.
@@ -11732,6 +11971,13 @@ impl OrcasDaemonService {
                 .is_ok()
         {
             if let Some(work_unit_id) = work_unit_id {
+                self.ensure_assignment_tracked_thread_binding(
+                    worker_session_id,
+                    work_unit_id,
+                    requested_model.as_deref(),
+                    requested_cwd.as_deref(),
+                )
+                .await?;
                 self.sync_worker_session_tracked_thread_binding_for_assignment(
                     worker_session_id,
                     work_unit_id,
@@ -11779,6 +12025,13 @@ impl OrcasDaemonService {
         };
         self.persist_collaboration_state().await?;
         if let Some(work_unit_id) = work_unit_id {
+            self.ensure_assignment_tracked_thread_binding(
+                worker_session_id,
+                work_unit_id,
+                requested_model.as_deref(),
+                requested_cwd.as_deref(),
+            )
+            .await?;
             self.sync_worker_session_tracked_thread_binding_for_assignment(
                 worker_session_id,
                 work_unit_id,
@@ -11925,9 +12178,13 @@ impl OrcasDaemonService {
         action: ipc::AssignmentLifecycleAction,
         assignment: &Assignment,
     ) {
+        let assignment = {
+            let state = self.state.read().await;
+            Self::assignment_summary(&state.collaboration, assignment)
+        };
         self.emit(ipc::DaemonEvent::AssignmentLifecycle {
             action,
-            assignment: Self::assignment_summary(assignment),
+            assignment,
         })
         .await;
     }
@@ -12166,7 +12423,7 @@ impl OrcasDaemonService {
             .assignments
             .values()
             .filter(|assignment| assignment.status != AssignmentStatus::Closed)
-            .map(Self::assignment_summary)
+            .map(|assignment| Self::assignment_summary(collaboration, assignment))
             .collect::<Vec<_>>();
         assignments.sort_by(|left, right| {
             right
@@ -12361,7 +12618,13 @@ impl OrcasDaemonService {
         }
     }
 
-    fn assignment_summary(assignment: &Assignment) -> ipc::AssignmentSummary {
+    fn assignment_summary(
+        collaboration: &CollaborationState,
+        assignment: &Assignment,
+    ) -> ipc::AssignmentSummary {
+        let worker_session = collaboration
+            .worker_sessions
+            .get(&assignment.worker_session_id);
         ipc::AssignmentSummary {
             id: assignment.id.clone(),
             work_unit_id: assignment.work_unit_id.clone(),
@@ -12372,6 +12635,10 @@ impl OrcasDaemonService {
             alignment_rationale: assignment.alignment_rationale.clone(),
             worker_id: assignment.worker_id.clone(),
             worker_session_id: assignment.worker_session_id.clone(),
+            codex_thread_id: worker_session.and_then(|session| session.thread_id.clone()),
+            tracked_thread_id: worker_session
+                .and_then(|session| session.tracked_thread_id.as_ref())
+                .map(ToString::to_string),
             status: assignment.status,
             attempt_number: assignment.attempt_number,
             updated_at: assignment.updated_at,
@@ -14043,7 +14310,9 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                         completed_at: None,
                         latest_diff: None,
                         latest_plan_snapshot: None,
+                        latest_plan: None,
                         token_usage_snapshot: None,
+                        token_usage: None,
                         items: Vec::new(),
                     },
                 );
@@ -14183,34 +14452,23 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             .await;
     }
 
-    async fn apply_codex_turn_completed(&self, thread_id: String, turn_id: String, status: String) {
+    async fn apply_codex_turn_completed(&self, thread_id: String, turn: CodexTurnEvent) {
+        let turn_id = turn.id.clone();
+        let status = turn.status.clone();
         info!(
             thread_id = %thread_id,
             turn_id = %turn_id,
             status = %status,
             "processing upstream turn completion event"
         );
+        let turn_view = Self::turn_view_from_event(turn);
         let (session, turn, thread, turn_state) = {
             let mut state = self.state.write().await;
             let (turn, thread_summary, turn_state) = {
                 let thread = Self::ensure_thread_entry(&mut state, &thread_id);
                 Self::touch_thread(thread);
                 thread.summary.recent_event = Some(format!("turn {status}"));
-                let turn = Self::upsert_turn(
-                    thread,
-                    ipc::TurnView {
-                        id: turn_id.clone(),
-                        status: status.clone(),
-                        error_message: None,
-                        error_summary: None,
-                        started_at: None,
-                        completed_at: Some(Utc::now()),
-                        latest_diff: None,
-                        latest_plan_snapshot: None,
-                        token_usage_snapshot: None,
-                        items: Vec::new(),
-                    },
-                );
+                let turn = Self::upsert_turn(thread, turn_view);
                 Self::refresh_thread_summary(thread);
                 let recent_output =
                     Self::turn_output(&turn).or_else(|| thread.summary.recent_output.clone());
@@ -14241,7 +14499,6 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             }
             (state.session.clone(), turn, thread_summary, turn_state)
         };
-        let _ = (thread, session, turn);
         info!(
             thread_id = %thread_id,
             turn_id = %turn_id,
@@ -14251,11 +14508,71 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         let _ = self
             .refresh_codex_supervisor_state_for_thread(&thread_id)
             .await;
-        let _ = turn_state;
+        if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view).await;
+        }
+        let _ = self.persist_turn_state_view(&turn_state).await;
+        self.emit(ipc::DaemonEvent::ThreadUpdated { thread }).await;
+        self.emit(ipc::DaemonEvent::SessionChanged { session })
+            .await;
+        self.emit(ipc::DaemonEvent::TurnUpdated { thread_id, turn })
+            .await;
     }
 
-    async fn apply_codex_turn_started(&self, thread_id: String, turn_id: String) {
-        self.record_turn_started(&thread_id, &turn_id, "in_progress")
+    async fn apply_codex_turn_started(&self, thread_id: String, turn: CodexTurnEvent) {
+        let turn_id = turn.id.clone();
+        let status = turn.status.clone();
+        let turn_view = Self::turn_view_from_event(turn);
+        let (session, turn, thread, turn_state) = {
+            let mut state = self.state.write().await;
+            let (turn, thread_summary, turn_state) = {
+                let thread = Self::ensure_thread_entry(&mut state, &thread_id);
+                Self::touch_thread(thread);
+                thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "live_observed");
+                thread.summary.recent_event = Some(format!("turn {status}"));
+                let turn = Self::upsert_turn(thread, turn_view);
+                Self::refresh_thread_summary(thread);
+                let recent_output =
+                    Self::turn_output(&turn).or_else(|| thread.summary.recent_output.clone());
+                let recent_event = Some(format!("turn {status}"));
+                (
+                    turn.clone(),
+                    thread.summary.clone(),
+                    ipc::TurnStateView {
+                        thread_id: thread_id.clone(),
+                        turn_id: turn_id.clone(),
+                        lifecycle: Self::turn_lifecycle_from_status(&status),
+                        status: status.clone(),
+                        attachable: !Self::is_terminal_status(&status),
+                        live_stream: !Self::is_terminal_status(&status),
+                        terminal: Self::is_terminal_status(&status),
+                        recent_output,
+                        recent_event,
+                        updated_at: Utc::now(),
+                        error_message: turn.error_message.clone(),
+                    },
+                )
+            };
+            Self::upsert_turn_state(&mut state, turn_state.clone());
+            Self::refresh_session_from_turns(&mut state);
+            state.session.active_thread_id = Some(thread_id.clone());
+            state.recent_thread_id = Some(thread_id.clone());
+            (state.session.clone(), turn, thread_summary, turn_state)
+        };
+        if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view).await;
+        }
+        let _ = self.persist_turn_state_view(&turn_state).await;
+        self.emit(ipc::DaemonEvent::ThreadUpdated { thread }).await;
+        self.emit(ipc::DaemonEvent::SessionChanged { session })
+            .await;
+        self.emit(ipc::DaemonEvent::TurnUpdated {
+            thread_id: thread_id.clone(),
+            turn,
+        })
+        .await;
+        let _ = self
+            .refresh_codex_supervisor_state_for_thread(&thread_id)
             .await;
     }
 
@@ -14263,18 +14580,10 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         &self,
         thread_id: String,
         turn_id: String,
-        item_id: String,
-        item_type: String,
+        item: CodexItemEvent,
     ) {
         let item = self
-            .update_item_state(
-                &thread_id,
-                &turn_id,
-                &item_id,
-                &item_type,
-                Some("started"),
-                None,
-            )
+            .upsert_item_state(&thread_id, &turn_id, Self::item_view_from_event(item))
             .await;
         if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
             let _ = self.persist_thread_view(thread_view).await;
@@ -14291,18 +14600,10 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         &self,
         thread_id: String,
         turn_id: String,
-        item_id: String,
-        item_type: String,
+        item: CodexItemEvent,
     ) {
         let item = self
-            .update_item_state(
-                &thread_id,
-                &turn_id,
-                &item_id,
-                &item_type,
-                Some("completed"),
-                None,
-            )
+            .upsert_item_state(&thread_id, &turn_id, Self::item_view_from_event(item))
             .await;
         if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
             let _ = self.persist_thread_view(thread_view).await;
@@ -14330,6 +14631,9 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 "agent_message",
                 Some("streaming"),
                 Some(delta.clone()),
+                None,
+                None,
+                Some("agent_message"),
             )
             .await;
         self.emit(ipc::DaemonEvent::OutputDelta {
@@ -14352,6 +14656,83 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         self.emit(ipc::DaemonEvent::Warning { message }).await;
     }
 
+    async fn apply_codex_turn_diff_updated(
+        &self,
+        thread_id: String,
+        turn_id: String,
+        diff: String,
+    ) {
+        let updated_turn = {
+            let mut state = self.state.write().await;
+            let thread = Self::ensure_thread_entry(&mut state, &thread_id);
+            Self::touch_thread(thread);
+            let turn = Self::ensure_turn_entry(thread, &turn_id);
+            turn.latest_diff = Some(diff.clone());
+            turn.clone()
+        };
+        if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view).await;
+        }
+        self.emit(ipc::DaemonEvent::TurnDiffUpdated {
+            thread_id,
+            turn_id,
+            diff,
+        })
+        .await;
+        let _ = updated_turn;
+    }
+
+    async fn apply_codex_turn_plan_updated(
+        &self,
+        thread_id: String,
+        turn_id: String,
+        plan: ipc::TurnPlanView,
+    ) {
+        let updated_turn = {
+            let mut state = self.state.write().await;
+            let thread = Self::ensure_thread_entry(&mut state, &thread_id);
+            Self::touch_thread(thread);
+            let turn = Self::ensure_turn_entry(thread, &turn_id);
+            turn.latest_plan_snapshot = serde_json::to_value(&plan).ok();
+            turn.latest_plan = Some(plan.clone());
+            turn.clone()
+        };
+        if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view).await;
+        }
+        self.emit(ipc::DaemonEvent::TurnPlanUpdated {
+            thread_id,
+            turn_id,
+            plan,
+        })
+        .await;
+        let _ = updated_turn;
+    }
+
+    async fn apply_codex_thread_token_usage_updated(
+        &self,
+        thread_id: String,
+        token_usage: ipc::ThreadTokenUsageView,
+    ) {
+        {
+            let mut state = self.state.write().await;
+            let thread = Self::ensure_thread_entry(&mut state, &thread_id);
+            Self::touch_thread(thread);
+            if let Some(turn) = thread.turns.last_mut() {
+                turn.token_usage_snapshot = serde_json::to_value(&token_usage).ok();
+                turn.token_usage = Some(token_usage.clone());
+            }
+        }
+        if let Some(thread_view) = self.thread_from_state(&thread_id).await.as_ref() {
+            let _ = self.persist_thread_view(thread_view).await;
+        }
+        self.emit(ipc::DaemonEvent::ThreadTokenUsageUpdated {
+            thread_id,
+            token_usage,
+        })
+        .await;
+    }
+
     async fn apply_codex_event(&self, envelope: EventEnvelope) {
         debug!(event = ?envelope.event, "processing codex event");
         match envelope.event {
@@ -14364,33 +14745,25 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             OrcasEvent::ThreadStatusChanged { thread_id, status } => {
                 Box::pin(self.apply_codex_thread_status_changed(thread_id, status)).await;
             }
-            OrcasEvent::TurnStarted { thread_id, turn_id } => {
-                Box::pin(self.apply_codex_turn_started(thread_id, turn_id)).await;
+            OrcasEvent::TurnStarted { thread_id, turn } => {
+                Box::pin(self.apply_codex_turn_started(thread_id, turn)).await;
             }
-            OrcasEvent::TurnCompleted {
-                thread_id,
-                turn_id,
-                status,
-            } => {
-                Box::pin(self.apply_codex_turn_completed(thread_id, turn_id, status)).await;
+            OrcasEvent::TurnCompleted { thread_id, turn } => {
+                Box::pin(self.apply_codex_turn_completed(thread_id, turn)).await;
             }
             OrcasEvent::ItemStarted {
                 thread_id,
                 turn_id,
-                item_id,
-                item_type,
+                item,
             } => {
-                Box::pin(self.apply_codex_item_started(thread_id, turn_id, item_id, item_type))
-                    .await;
+                Box::pin(self.apply_codex_item_started(thread_id, turn_id, item)).await;
             }
             OrcasEvent::ItemCompleted {
                 thread_id,
                 turn_id,
-                item_id,
-                item_type,
+                item,
             } => {
-                Box::pin(self.apply_codex_item_completed(thread_id, turn_id, item_id, item_type))
-                    .await;
+                Box::pin(self.apply_codex_item_completed(thread_id, turn_id, item)).await;
             }
             OrcasEvent::AgentMessageDelta {
                 thread_id,
@@ -14399,6 +14772,208 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 delta,
             } => {
                 Box::pin(self.apply_codex_agent_message_delta(thread_id, turn_id, item_id, delta))
+                    .await;
+            }
+            OrcasEvent::PlanDelta {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "plan",
+                        Some("streaming"),
+                        Some(delta.clone()),
+                        None,
+                        None,
+                        Some("plan"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id,
+                    turn_id,
+                    item,
+                })
+                .await;
+            }
+            OrcasEvent::ReasoningSummaryTextDelta {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+                ..
+            }
+            | OrcasEvent::ReasoningTextDelta {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+                ..
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "reasoning",
+                        Some("streaming"),
+                        Some(delta.clone()),
+                        None,
+                        None,
+                        Some("reasoning"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id,
+                    turn_id,
+                    item,
+                })
+                .await;
+            }
+            OrcasEvent::ReasoningSummaryPartAdded {
+                thread_id,
+                turn_id,
+                item_id,
+                summary_index,
+                ..
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "reasoning",
+                        Some("streaming"),
+                        None,
+                        Some(serde_json::json!({ "summaryIndex": summary_index })),
+                        None,
+                        Some("reasoning"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id,
+                    turn_id,
+                    item,
+                })
+                .await;
+            }
+            OrcasEvent::CommandExecutionOutputDelta {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "command_execution",
+                        Some("streaming"),
+                        Some(delta.clone()),
+                        None,
+                        None,
+                        Some("command_execution"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item,
+                })
+                .await;
+                self.emit(ipc::DaemonEvent::OutputDelta {
+                    thread_id,
+                    turn_id,
+                    item_id,
+                    delta,
+                })
+                .await;
+            }
+            OrcasEvent::FileChangeOutputDelta {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "file_change",
+                        Some("streaming"),
+                        Some(delta.clone()),
+                        None,
+                        None,
+                        Some("file_change"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item,
+                })
+                .await;
+                self.emit(ipc::DaemonEvent::OutputDelta {
+                    thread_id,
+                    turn_id,
+                    item_id,
+                    delta,
+                })
+                .await;
+            }
+            OrcasEvent::McpToolCallProgress {
+                thread_id,
+                turn_id,
+                item_id,
+                message,
+            } => {
+                let item = self
+                    .update_item_state(
+                        &thread_id,
+                        &turn_id,
+                        &item_id,
+                        "mcp_tool_call",
+                        Some("streaming"),
+                        None,
+                        Some(serde_json::json!({ "message": message.clone() })),
+                        Some(message),
+                        Some("mcp_tool_call"),
+                    )
+                    .await;
+                self.emit(ipc::DaemonEvent::ItemUpdated {
+                    thread_id,
+                    turn_id,
+                    item,
+                })
+                .await;
+            }
+            OrcasEvent::TurnDiffUpdated {
+                thread_id,
+                turn_id,
+                diff,
+            } => {
+                self.apply_codex_turn_diff_updated(thread_id, turn_id, diff)
+                    .await;
+            }
+            OrcasEvent::TurnPlanUpdated {
+                thread_id,
+                turn_id,
+                plan,
+            } => {
+                self.apply_codex_turn_plan_updated(thread_id, turn_id, plan)
+                    .await;
+            }
+            OrcasEvent::ThreadTokenUsageUpdated {
+                thread_id,
+                token_usage,
+            } => {
+                self.apply_codex_thread_token_usage_updated(thread_id, token_usage)
                     .await;
             }
             OrcasEvent::ServerRequest { method } => {
@@ -14418,6 +14993,9 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         item_type: &str,
         status: Option<&str>,
         delta: Option<String>,
+        payload: Option<Value>,
+        summary: Option<String>,
+        detail_kind: Option<&str>,
     ) -> ipc::ItemView {
         let mut state = self.state.write().await;
         let thread = Self::ensure_thread_entry(&mut state, thread_id);
@@ -14430,11 +15008,21 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             if let Some(item_status) = status {
                 item.status = Some(item_status.to_string());
             }
+            if let Some(detail_kind) = detail_kind {
+                item.detail_kind = Some(detail_kind.to_string());
+            }
             if let Some(text_delta) = delta.as_ref() {
                 item.text
                     .get_or_insert_with(String::new)
                     .push_str(&text_delta);
                 item.summary = item.text.as_ref().map(|text| Self::truncate_snippet(text));
+            }
+            if let Some(payload) = payload {
+                item.payload = Some(payload.clone());
+                item.detail = Some(payload);
+            }
+            if let Some(summary) = summary {
+                item.summary = Some(summary);
             }
             item.clone()
         };
@@ -14466,6 +15054,62 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             status: turn_status.clone(),
             attachable,
             live_stream,
+            terminal: Self::is_terminal_status(&turn_status),
+            recent_output: live_output,
+            recent_event,
+            updated_at: Utc::now(),
+            error_message,
+        };
+        Self::upsert_turn_state(&mut state, turn_state.clone());
+        Self::refresh_session_from_turns(&mut state);
+        drop(state);
+        let _ = self.persist_turn_state_view(&turn_state).await;
+        item
+    }
+
+    async fn upsert_item_state(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item: ipc::ItemView,
+    ) -> ipc::ItemView {
+        let item_type = item.item_type.clone();
+        let item_status = item.status.clone();
+        let mut state = self.state.write().await;
+        let thread = Self::ensure_thread_entry(&mut state, thread_id);
+        Self::touch_thread(thread);
+        thread.summary.scope = Self::prefer_scope(&thread.summary.scope, "live_observed");
+        let item = {
+            let turn = Self::ensure_turn_entry(thread, turn_id);
+            Self::upsert_item(turn, item)
+        };
+        thread.summary.recent_event = Some(match item_status.as_deref() {
+            Some(status) => format!("{item_type} {status}"),
+            None => format!("{item_type} updated"),
+        });
+        Self::refresh_thread_summary(thread);
+        let (turn_status, live_output, recent_event, error_message) = {
+            let current_turn = thread.turns.iter().find(|turn| turn.id == turn_id);
+            (
+                current_turn
+                    .map(|turn| turn.status.clone())
+                    .unwrap_or_else(|| "in_progress".to_string()),
+                current_turn
+                    .and_then(Self::turn_output)
+                    .or_else(|| thread.summary.recent_output.clone()),
+                thread.summary.recent_event.clone(),
+                current_turn.and_then(|turn| turn.error_message.clone()),
+            )
+        };
+        let lifecycle = Self::turn_lifecycle_from_status(&turn_status);
+        let attachable = !Self::is_final_turn_lifecycle(lifecycle);
+        let turn_state = ipc::TurnStateView {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            lifecycle,
+            status: turn_status.clone(),
+            attachable,
+            live_stream: attachable,
             terminal: Self::is_terminal_status(&turn_status),
             recent_output: live_output,
             recent_event,
@@ -14541,6 +15185,35 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 format!("delta {}", delta.replace('\n', "\\n")),
                 Some(thread_id.clone()),
                 Some(turn_id.clone()),
+            ),
+            ipc::DaemonEvent::TurnDiffUpdated {
+                thread_id,
+                turn_id,
+                diff,
+            } => (
+                "turn_diff",
+                format!("turn diff {}", Self::truncate_snippet(diff)),
+                Some(thread_id.clone()),
+                Some(turn_id.clone()),
+            ),
+            ipc::DaemonEvent::TurnPlanUpdated {
+                thread_id,
+                turn_id,
+                plan,
+            } => (
+                "turn_plan",
+                format!("turn plan {}", plan.plan.len()),
+                Some(thread_id.clone()),
+                Some(turn_id.clone()),
+            ),
+            ipc::DaemonEvent::ThreadTokenUsageUpdated {
+                thread_id,
+                token_usage,
+            } => (
+                "thread_token_usage",
+                format!("token usage {}", token_usage.total_tokens),
+                Some(thread_id.clone()),
+                None,
             ),
             ipc::DaemonEvent::WorkstreamLifecycle { action, workstream } => (
                 "workstream",
@@ -14828,13 +15501,19 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             completed_at: None,
             latest_diff: Self::latest_diff_from_items(&items),
             latest_plan_snapshot: Self::latest_plan_snapshot_from_items(&items),
+            latest_plan: Self::latest_plan_from_items(&items),
             token_usage_snapshot: Self::token_usage_snapshot_from_items(&items),
+            token_usage: Self::token_usage_from_items(&items),
             items,
         }
     }
 
     fn item_view_from_codex(item: types::ThreadItem) -> ipc::ItemView {
-        let text = item.text().map(ToOwned::to_owned);
+        let text = item.display_text();
+        let item_type = item.normalized_item_type();
+        let status = item.item_status();
+        let detail_kind = item.detail_kind();
+        let detail = item.detail_json();
         let payload = (!item.extra.is_empty()).then_some(Value::Object(item.extra));
         let summary = text
             .as_ref()
@@ -14842,11 +15521,47 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             .or_else(|| payload.as_ref().map(Self::payload_summary));
         ipc::ItemView {
             id: item.id,
-            item_type: item.item_type,
-            status: None,
+            item_type,
+            status,
             text,
             summary,
             payload,
+            detail_kind: Some(detail_kind),
+            detail,
+        }
+    }
+
+    fn turn_view_from_event(turn: CodexTurnEvent) -> ipc::TurnView {
+        ipc::TurnView {
+            id: turn.id,
+            status: turn.status,
+            error_message: turn.error_message,
+            error_summary: turn.error_summary,
+            started_at: None,
+            completed_at: None,
+            latest_diff: turn.latest_diff,
+            latest_plan_snapshot: turn.latest_plan_snapshot,
+            latest_plan: turn.latest_plan,
+            token_usage_snapshot: turn.token_usage_snapshot,
+            token_usage: turn.token_usage,
+            items: turn
+                .items
+                .into_iter()
+                .map(Self::item_view_from_event)
+                .collect(),
+        }
+    }
+
+    fn item_view_from_event(item: CodexItemEvent) -> ipc::ItemView {
+        ipc::ItemView {
+            id: item.id,
+            item_type: item.item_type,
+            status: item.status,
+            text: item.text,
+            summary: item.summary,
+            payload: item.payload,
+            detail_kind: item.detail_kind,
+            detail: item.detail,
         }
     }
 
@@ -14935,6 +15650,16 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         })
     }
 
+    fn latest_plan_from_items(items: &[ipc::ItemView]) -> Option<ipc::TurnPlanView> {
+        items.iter().rev().find_map(|item| {
+            item.detail_kind
+                .as_deref()
+                .filter(|kind| *kind == "plan")
+                .and_then(|_| item.detail.clone())
+                .and_then(|detail| serde_json::from_value(detail).ok())
+        })
+    }
+
     fn token_usage_snapshot_from_items(items: &[ipc::ItemView]) -> Option<Value> {
         items.iter().rev().find_map(|item| {
             item.payload
@@ -14942,6 +15667,11 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 .and_then(|payload| payload.get("usage"))
                 .cloned()
         })
+    }
+
+    fn token_usage_from_items(items: &[ipc::ItemView]) -> Option<ipc::ThreadTokenUsageView> {
+        Self::token_usage_snapshot_from_items(items)
+            .and_then(|token_usage| serde_json::from_value(token_usage).ok())
     }
 
     fn truncate_snippet(text: &str) -> String {
@@ -15046,8 +15776,14 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             if turn.latest_plan_snapshot.is_some() {
                 existing.latest_plan_snapshot = turn.latest_plan_snapshot;
             }
+            if turn.latest_plan.is_some() {
+                existing.latest_plan = turn.latest_plan;
+            }
             if turn.token_usage_snapshot.is_some() {
                 existing.token_usage_snapshot = turn.token_usage_snapshot;
+            }
+            if turn.token_usage.is_some() {
+                existing.token_usage = turn.token_usage;
             }
             for item in turn.items {
                 let _ = Self::upsert_item(existing, item);
@@ -15076,6 +15812,12 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             if let Some(payload) = item.payload {
                 existing.payload = Some(payload);
             }
+            if let Some(detail_kind) = item.detail_kind {
+                existing.detail_kind = Some(detail_kind);
+            }
+            if let Some(detail) = item.detail {
+                existing.detail = Some(detail);
+            }
             if !item.item_type.is_empty() {
                 existing.item_type = item.item_type;
             }
@@ -15101,7 +15843,9 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: Vec::new(),
         });
         let index = thread.turns.len() - 1;
@@ -15123,6 +15867,8 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             text: None,
             summary: None,
             payload: None,
+            detail_kind: None,
+            detail: None,
         });
         let index = turn.items.len() - 1;
         &mut turn.items[index]
@@ -15359,16 +16105,16 @@ mod tests {
     };
     use orcas_core::{
         AppConfig, AppPaths, Assignment, AssignmentCommunicationSeed, AssignmentModeSpec,
-        AssignmentStatus, CodexThreadAssignmentStatus, CodexThreadBootstrapState,
-        CollaborationState, DecisionType, DraftAssignment, EventEnvelope, ImplementModeSpec,
-        JsonSessionStore, OrcasError, OrcasEvent, OrcasResult, OrcasSessionStore,
-        PlanExecutionKind, PlanRevisionProposalStatus, ProposedDecision, Report, ReportConfidence,
-        ReportDisposition, ReportParseResult, SupervisorContextPack, SupervisorProposal,
-        SupervisorProposalEdits, SupervisorProposalFailureStage, SupervisorProposalStatus,
-        SupervisorProposalTriggerKind, SupervisorSummary, SupervisorTurnDecision,
-        SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus, SupervisorTurnProposalKind,
-        WorkUnit, WorkUnitStatus, WorkerSessionAttachability, WorkerSessionRuntimeStatus,
-        WorkerStatus, Workstream, WorkstreamStatus, ipc,
+        AssignmentStatus, CodexItemEvent, CodexThreadAssignmentStatus, CodexThreadBootstrapState,
+        CodexTurnEvent, CollaborationState, DecisionType, DraftAssignment, EventEnvelope,
+        ImplementModeSpec, JsonSessionStore, OrcasError, OrcasEvent, OrcasResult,
+        OrcasSessionStore, PlanExecutionKind, PlanRevisionProposalStatus, ProposedDecision, Report,
+        ReportConfidence, ReportDisposition, ReportParseResult, SupervisorContextPack,
+        SupervisorProposal, SupervisorProposalEdits, SupervisorProposalFailureStage,
+        SupervisorProposalStatus, SupervisorProposalTriggerKind, SupervisorSummary,
+        SupervisorTurnDecision, SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus,
+        SupervisorTurnProposalKind, WorkUnit, WorkUnitStatus, WorkerSessionAttachability,
+        WorkerSessionRuntimeStatus, WorkerStatus, Workstream, WorkstreamStatus, ipc,
     };
 
     #[test]
@@ -16969,7 +17715,9 @@ worker epilogue"#;
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: Vec::new(),
         });
         thread
@@ -21570,7 +22318,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: vec![ipc::ItemView {
                 id: "item-1".to_string(),
                 item_type: "agent_message".to_string(),
@@ -21578,6 +22328,8 @@ ORCAS_REPORT_END"#
                 text: Some("hello world".to_string()),
                 summary: Some("hello world".to_string()),
                 payload: None,
+                detail_kind: None,
+                detail: None,
             }],
         });
 
@@ -21605,7 +22357,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: vec![ipc::ItemView {
                 id: "item-1".to_string(),
                 item_type: "agent_message".to_string(),
@@ -21613,6 +22367,8 @@ ORCAS_REPORT_END"#
                 text: Some("partial output".to_string()),
                 summary: Some("partial output".to_string()),
                 payload: None,
+                detail_kind: None,
+                detail: None,
             }],
         });
         state.threads.insert("thread-1".to_string(), thread);
@@ -21969,7 +22725,9 @@ ORCAS_REPORT_END"#
                 completed_at: None,
                 latest_diff: None,
                 latest_plan_snapshot: None,
+                latest_plan: None,
                 token_usage_snapshot: None,
+                token_usage: None,
                 items: vec![ipc::ItemView {
                     id: "item-stale".to_string(),
                     item_type: "agent_message".to_string(),
@@ -21977,6 +22735,8 @@ ORCAS_REPORT_END"#
                     text: Some("partial output".to_string()),
                     summary: Some("partial output".to_string()),
                     payload: None,
+                    detail_kind: None,
+                    detail: None,
                 }],
             });
             state.threads.insert(thread_id.clone(), thread);
@@ -22071,7 +22831,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: vec![ipc::ItemView {
                 id: "item-1".to_string(),
                 item_type: "agent_message".to_string(),
@@ -22079,6 +22841,8 @@ ORCAS_REPORT_END"#
                 text: Some("hello world".to_string()),
                 summary: Some("hello world".to_string()),
                 payload: None,
+                detail_kind: None,
+                detail: None,
             }],
         });
 
@@ -22104,7 +22868,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: Vec::new(),
         });
 
@@ -22310,7 +23076,18 @@ ORCAS_REPORT_END"#
                 "test",
                 OrcasEvent::TurnStarted {
                     thread_id: "thread-headless".to_string(),
-                    turn_id: "turn-live-1".to_string(),
+                    turn: CodexTurnEvent {
+                        id: "turn-live-1".to_string(),
+                        status: "in_progress".to_string(),
+                        error_message: None,
+                        error_summary: None,
+                        latest_diff: None,
+                        latest_plan_snapshot: None,
+                        token_usage_snapshot: None,
+                        latest_plan: None,
+                        token_usage: None,
+                        items: Vec::new(),
+                    },
                 },
             ))
             .await;
@@ -22320,8 +23097,16 @@ ORCAS_REPORT_END"#
                 OrcasEvent::ItemStarted {
                     thread_id: "thread-headless".to_string(),
                     turn_id: "turn-live-1".to_string(),
-                    item_id: "item-live-1".to_string(),
-                    item_type: "agent_message".to_string(),
+                    item: CodexItemEvent {
+                        id: "item-live-1".to_string(),
+                        item_type: "agent_message".to_string(),
+                        status: Some("started".to_string()),
+                        text: None,
+                        summary: None,
+                        payload: None,
+                        detail_kind: Some("agent_message".to_string()),
+                        detail: None,
+                    },
                 },
             ))
             .await;
@@ -22342,8 +23127,16 @@ ORCAS_REPORT_END"#
                 OrcasEvent::ItemCompleted {
                     thread_id: "thread-headless".to_string(),
                     turn_id: "turn-live-1".to_string(),
-                    item_id: "item-live-1".to_string(),
-                    item_type: "agent_message".to_string(),
+                    item: CodexItemEvent {
+                        id: "item-live-1".to_string(),
+                        item_type: "agent_message".to_string(),
+                        status: Some("completed".to_string()),
+                        text: Some("live text".to_string()),
+                        summary: Some("live text".to_string()),
+                        payload: None,
+                        detail_kind: Some("agent_message".to_string()),
+                        detail: None,
+                    },
                 },
             ))
             .await;
@@ -22352,8 +23145,27 @@ ORCAS_REPORT_END"#
                 "test",
                 OrcasEvent::TurnCompleted {
                     thread_id: "thread-headless".to_string(),
-                    turn_id: "turn-live-1".to_string(),
-                    status: "completed".to_string(),
+                    turn: CodexTurnEvent {
+                        id: "turn-live-1".to_string(),
+                        status: "completed".to_string(),
+                        error_message: None,
+                        error_summary: None,
+                        latest_diff: None,
+                        latest_plan_snapshot: None,
+                        token_usage_snapshot: None,
+                        latest_plan: None,
+                        token_usage: None,
+                        items: vec![CodexItemEvent {
+                            id: "item-live-1".to_string(),
+                            item_type: "agent_message".to_string(),
+                            status: Some("completed".to_string()),
+                            text: Some("live text".to_string()),
+                            summary: Some("live text".to_string()),
+                            payload: None,
+                            detail_kind: Some("agent_message".to_string()),
+                            detail: None,
+                        }],
+                    },
                 },
             ))
             .await;
@@ -22573,7 +23385,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: Vec::new(),
         });
         let (workstream, work_unit) =
@@ -22733,8 +23547,18 @@ ORCAS_REPORT_END"#
                 "test",
                 OrcasEvent::TurnCompleted {
                     thread_id: thread.summary.id.clone(),
-                    turn_id: "turn-live".to_string(),
-                    status: "completed".to_string(),
+                    turn: CodexTurnEvent {
+                        id: "turn-live".to_string(),
+                        status: "completed".to_string(),
+                        error_message: None,
+                        error_summary: None,
+                        latest_diff: None,
+                        latest_plan_snapshot: None,
+                        token_usage_snapshot: None,
+                        latest_plan: None,
+                        token_usage: None,
+                        items: Vec::new(),
+                    },
                 },
             ))
             .await;
@@ -25439,8 +26263,18 @@ ORCAS_REPORT_END"#
                 "test",
                 OrcasEvent::TurnCompleted {
                     thread_id: thread.summary.id.clone(),
-                    turn_id: "turn-live".to_string(),
-                    status: "completed".to_string(),
+                    turn: CodexTurnEvent {
+                        id: "turn-live".to_string(),
+                        status: "completed".to_string(),
+                        error_message: None,
+                        error_summary: None,
+                        latest_diff: None,
+                        latest_plan_snapshot: None,
+                        token_usage_snapshot: None,
+                        latest_plan: None,
+                        token_usage: None,
+                        items: Vec::new(),
+                    },
                 },
             ))
             .await;
@@ -25490,8 +26324,18 @@ ORCAS_REPORT_END"#
                 "test",
                 OrcasEvent::TurnCompleted {
                     thread_id: thread.summary.id.clone(),
-                    turn_id: "turn-live".to_string(),
-                    status: "completed".to_string(),
+                    turn: CodexTurnEvent {
+                        id: "turn-live".to_string(),
+                        status: "completed".to_string(),
+                        error_message: None,
+                        error_summary: None,
+                        latest_diff: None,
+                        latest_plan_snapshot: None,
+                        token_usage_snapshot: None,
+                        latest_plan: None,
+                        token_usage: None,
+                        items: Vec::new(),
+                    },
                 },
             ))
             .await;
@@ -25788,7 +26632,9 @@ ORCAS_REPORT_END"#
             completed_at: None,
             latest_diff: None,
             latest_plan_snapshot: None,
+            latest_plan: None,
             token_usage_snapshot: None,
+            token_usage: None,
             items: vec![ipc::ItemView {
                 id: "item-1".to_string(),
                 item_type: "agent_message".to_string(),
@@ -25796,6 +26642,8 @@ ORCAS_REPORT_END"#
                 text: Some("history".to_string()),
                 summary: Some("history".to_string()),
                 payload: None,
+                detail_kind: None,
+                detail: None,
             }],
         });
         let original_thread = thread.clone();
@@ -26411,6 +27259,235 @@ ORCAS_REPORT_END"#
                 .map(|tracked_thread_id| tracked_thread_id.as_str()),
             Some("binding-tt")
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_worker_session_thread_auto_creates_tracked_thread_for_assignment_lane() {
+        let base =
+            std::env::temp_dir().join(format!("orcas-auto-tracked-thread-{}", Uuid::new_v4()));
+        let service = test_service_at(base).await;
+        let origin_node_id = service.authority_store.origin_node_id().expect("origin");
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: origin_node_id.clone(),
+            actor: orcas_core::authority::CommandActor::parse("workspace_test")
+                .expect("command actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("ws"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("auto-ws")
+                        .expect("workstream id"),
+                    title: "Auto stream".to_string(),
+                    objective: "Exercise auto tracked thread binding".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "high".to_string(),
+                },
+            })
+            .await
+            .expect("authority workstream")
+            .workstream;
+        let work_unit = service
+            .authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+                command: orcas_core::authority::CreateWorkUnit {
+                    metadata: metadata("wu"),
+                    work_unit_id: orcas_core::authority::WorkUnitId::parse("auto-wu")
+                        .expect("work unit id"),
+                    workstream_id: workstream.id.clone(),
+                    title: "Auto unit".to_string(),
+                    task_statement: "Bind the launched Codex lane automatically.".to_string(),
+                    status: WorkUnitStatus::Ready,
+                },
+            })
+            .await
+            .expect("authority work unit")
+            .work_unit;
+
+        let prepared = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: "auto-worker".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Keep the auto-binding test narrow.".to_string()),
+                model: Some("gpt-5.4".to_string()),
+                cwd: Some("/tmp/orcas-auto".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("prepare assignment");
+
+        let worker_session = service
+            .ensure_worker_session_thread(
+                &prepared.assignment.worker_session_id,
+                Some("gpt-5.4".to_string()),
+                Some("/tmp/orcas-auto".to_string()),
+                Some(work_unit.id.as_str()),
+            )
+            .await
+            .expect("worker session thread");
+        let thread_id = worker_session.thread_id.clone().expect("thread id");
+        let tracked_thread_id = worker_session
+            .tracked_thread_id
+            .clone()
+            .expect("tracked thread id");
+        let tracked_thread = service
+            .authority_tracked_thread_get(ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: tracked_thread_id.clone(),
+            })
+            .await
+            .expect("tracked thread")
+            .tracked_thread;
+
+        assert_eq!(tracked_thread.work_unit_id, work_unit.id);
+        assert_eq!(
+            tracked_thread.upstream_thread_id.as_deref(),
+            Some(thread_id.as_str())
+        );
+        assert_eq!(tracked_thread.title, "auto-worker");
+        assert_eq!(tracked_thread.preferred_cwd.as_deref(), Some("/tmp/orcas-auto"));
+        assert_eq!(tracked_thread.preferred_model.as_deref(), Some("gpt-5.4"));
+
+        let snapshot = service.state_get().await.expect("state snapshot");
+        let assignment_summary = snapshot
+            .snapshot
+            .collaboration
+            .assignments
+            .into_iter()
+            .find(|assignment| assignment.id == prepared.assignment.id)
+            .expect("assignment summary");
+        assert_eq!(
+            assignment_summary.codex_thread_id.as_deref(),
+            Some(thread_id.as_str())
+        );
+        assert_eq!(
+            assignment_summary.tracked_thread_id.as_deref(),
+            Some(tracked_thread_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_worker_session_thread_binds_single_existing_unbound_tracked_thread() {
+        let base =
+            std::env::temp_dir().join(format!("orcas-auto-bind-existing-{}", Uuid::new_v4()));
+        let service = test_service_at(base).await;
+        let origin_node_id = service.authority_store.origin_node_id().expect("origin");
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: origin_node_id.clone(),
+            actor: orcas_core::authority::CommandActor::parse("workspace_test")
+                .expect("command actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("ws"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("single-ws")
+                        .expect("workstream id"),
+                    title: "Single stream".to_string(),
+                    objective: "Bind one existing unbound lane".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "high".to_string(),
+                },
+            })
+            .await
+            .expect("authority workstream")
+            .workstream;
+        let work_unit = service
+            .authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+                command: orcas_core::authority::CreateWorkUnit {
+                    metadata: metadata("wu"),
+                    work_unit_id: orcas_core::authority::WorkUnitId::parse("single-wu")
+                        .expect("work unit id"),
+                    workstream_id: workstream.id.clone(),
+                    title: "Single unit".to_string(),
+                    task_statement: "Reuse the one available lane.".to_string(),
+                    status: WorkUnitStatus::Ready,
+                },
+            })
+            .await
+            .expect("authority work unit")
+            .work_unit;
+        let tracked_thread = service
+            .authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
+                command: orcas_core::authority::CreateTrackedThread {
+                    metadata: metadata("tt"),
+                    tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("single-tt")
+                        .expect("tracked thread id"),
+                    work_unit_id: work_unit.id.clone(),
+                    title: "Single lane".to_string(),
+                    notes: None,
+                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
+                    upstream_thread_id: None,
+                    preferred_cwd: None,
+                    preferred_model: None,
+                    workspace: None,
+                },
+            })
+            .await
+            .expect("tracked thread")
+            .tracked_thread;
+
+        let prepared = service
+            .prepare_assignment(ipc::AssignmentStartRequest {
+                work_unit_id: work_unit.id.to_string(),
+                worker_id: "bind-worker".to_string(),
+                worker_kind: Some("codex".to_string()),
+                instructions: Some("Bind the existing lane.".to_string()),
+                model: Some("gpt-5.4-mini".to_string()),
+                cwd: Some("/tmp/orcas-bind-existing".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("prepare assignment");
+
+        let worker_session = service
+            .ensure_worker_session_thread(
+                &prepared.assignment.worker_session_id,
+                Some("gpt-5.4-mini".to_string()),
+                Some("/tmp/orcas-bind-existing".to_string()),
+                Some(work_unit.id.as_str()),
+            )
+            .await
+            .expect("worker session thread");
+
+        assert_eq!(
+            worker_session
+                .tracked_thread_id
+                .as_ref()
+                .map(|tracked_thread_id| tracked_thread_id.as_str()),
+            Some(tracked_thread.id.as_str())
+        );
+
+        let rebound = service
+            .authority_tracked_thread_get(ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: tracked_thread.id.clone(),
+            })
+            .await
+            .expect("tracked thread")
+            .tracked_thread;
+        assert_eq!(rebound.binding_state, orcas_core::authority::TrackedThreadBindingState::Bound);
+        assert_eq!(
+            rebound.upstream_thread_id.as_deref(),
+            worker_session.thread_id.as_deref()
+        );
+        assert_eq!(
+            rebound.preferred_cwd.as_deref(),
+            Some("/tmp/orcas-bind-existing")
+        );
+        assert_eq!(rebound.preferred_model.as_deref(), Some("gpt-5.4-mini"));
     }
 
     #[test]

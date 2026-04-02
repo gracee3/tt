@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use url::form_urlencoded;
 
 use crate::authority;
 use crate::collaboration::{
@@ -586,6 +587,60 @@ pub struct OperatorInboxMirrorCheckpointQueryResponse {
     pub checkpoint: OperatorInboxCheckpoint,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorInboxWaitForCheckpointRequest {
+    pub origin_node_id: String,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorInboxWaitForCheckpointResponse {
+    pub origin_node_id: String,
+    pub checkpoint: OperatorInboxCheckpoint,
+    pub timed_out: bool,
+}
+
+/// Monotonic read-model checkpoint for mirrored server-side views.
+///
+/// This is intentionally distinct from the inbox sequence checkpoint so the
+/// operator client can wait on notification and delivery changes without
+/// conflating them with inbox replication semantics.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorReadModelCheckpoint {
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorReadModelCheckpointQueryRequest {
+    pub origin_node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorReadModelCheckpointQueryResponse {
+    pub origin_node_id: String,
+    pub checkpoint: OperatorReadModelCheckpoint,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OperatorReadModelWaitForCheckpointRequest {
+    pub origin_node_id: String,
+    #[serde(default)]
+    pub after_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorReadModelWaitForCheckpointResponse {
+    pub origin_node_id: String,
+    pub checkpoint: OperatorReadModelCheckpoint,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorInboxMirrorApplyRequest {
     pub origin_node_id: String,
@@ -1100,6 +1155,100 @@ pub struct NotificationDeliveryRunPendingResponse {
     pub jobs: Vec<NotificationDeliveryJob>,
 }
 
+/// Read-model payload for a browser push notification.
+///
+/// The payload is derived from mirrored notification readiness and delivery
+/// state. It is delivery/display metadata only and does not change workflow
+/// truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserPushNotificationPayload {
+    pub notification_id: String,
+    pub title: String,
+    pub body: String,
+    pub route: BrowserPushNotificationRoute,
+    #[serde(default)]
+    pub source_kind: Option<OperatorInboxSourceKind>,
+    #[serde(default)]
+    pub candidate_status: Option<OperatorNotificationCandidateStatus>,
+    #[serde(default)]
+    pub item_status: Option<OperatorInboxItemStatus>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub badge: Option<String>,
+}
+
+impl BrowserPushNotificationPayload {
+    pub fn route_path(&self) -> String {
+        self.route.route_path(self.notification_id.as_str())
+    }
+}
+
+/// Click-through target for a browser push notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrowserPushNotificationRoute {
+    InboxItem {
+        origin_node_id: String,
+        item_id: String,
+        candidate_id: String,
+    },
+    RemoteActionRequest {
+        origin_node_id: String,
+        request_id: String,
+    },
+    Notifications {
+        origin_node_id: String,
+    },
+    Deliveries {
+        origin_node_id: String,
+    },
+}
+
+impl BrowserPushNotificationRoute {
+    pub fn route_path(&self, notification_id: &str) -> String {
+        match self {
+            Self::InboxItem {
+                origin_node_id,
+                item_id,
+                candidate_id,
+            } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("candidate_id", candidate_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/inbox/{item_id}?{}", query.finish())
+            }
+            Self::RemoteActionRequest {
+                origin_node_id,
+                request_id,
+            } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("request_id", request_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/actions/{request_id}?{}", query.finish())
+            }
+            Self::Notifications { origin_node_id } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/notifications?{}", query.finish())
+            }
+            Self::Deliveries { origin_node_id } => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                query.append_pair("origin_node_id", origin_node_id);
+                query.append_pair("notification_id", notification_id);
+                query.append_pair("push", "1");
+                format!("/deliveries?{}", query.finish())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorInboxActionRouteRequest {
     pub item_id: String,
@@ -1214,6 +1363,20 @@ pub enum DaemonEvent {
         turn_id: String,
         item_id: String,
         delta: String,
+    },
+    TurnDiffUpdated {
+        thread_id: String,
+        turn_id: String,
+        diff: String,
+    },
+    TurnPlanUpdated {
+        thread_id: String,
+        turn_id: String,
+        plan: TurnPlanView,
+    },
+    ThreadTokenUsageUpdated {
+        thread_id: String,
+        token_usage: ThreadTokenUsageView,
     },
     WorkstreamLifecycle {
         action: CollaborationLifecycleAction,
@@ -1404,6 +1567,10 @@ pub struct AssignmentSummary {
     pub alignment_rationale: Option<String>,
     pub worker_id: String,
     pub worker_session_id: String,
+    #[serde(default)]
+    pub codex_thread_id: Option<String>,
+    #[serde(default)]
+    pub tracked_thread_id: Option<String>,
     pub status: AssignmentStatus,
     pub attempt_number: u32,
     pub updated_at: DateTime<Utc>,
@@ -1582,7 +1749,10 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
-    use super::{DaemonEvent, DecisionSummary, EventsSubscribeRequest, StateSnapshot};
+    use super::{
+        BrowserPushNotificationPayload, BrowserPushNotificationRoute, DaemonEvent, DecisionSummary,
+        EventsSubscribeRequest, StateSnapshot,
+    };
     use crate::{DecisionType, WorkstreamStatus};
 
     #[test]
@@ -1712,6 +1882,50 @@ mod tests {
         let serialized = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(serialized, json!({ "include_snapshot": false }));
     }
+
+    #[test]
+    fn browser_push_notification_route_serializes_into_push_deep_link() {
+        let payload = BrowserPushNotificationPayload {
+            notification_id: "notification-1".to_string(),
+            title: "Title".to_string(),
+            body: "Body".to_string(),
+            route: BrowserPushNotificationRoute::InboxItem {
+                origin_node_id: "origin-a".to_string(),
+                item_id: "item-1".to_string(),
+                candidate_id: "candidate-1".to_string(),
+            },
+            source_kind: None,
+            candidate_status: None,
+            item_status: None,
+            icon: None,
+            badge: None,
+        };
+        assert_eq!(
+            payload.route_path(),
+            "/inbox/item-1?origin_node_id=origin-a&candidate_id=candidate-1&notification_id=notification-1&push=1"
+        );
+    }
+
+    #[test]
+    fn browser_push_notification_payload_round_trips_through_serde() {
+        let payload = BrowserPushNotificationPayload {
+            notification_id: "notification-1".to_string(),
+            title: "Title".to_string(),
+            body: "Body".to_string(),
+            route: BrowserPushNotificationRoute::Notifications {
+                origin_node_id: "origin-a".to_string(),
+            },
+            source_kind: Some(crate::OperatorInboxSourceKind::SupervisorProposal),
+            candidate_status: Some(crate::OperatorNotificationCandidateStatus::Pending),
+            item_status: Some(crate::OperatorInboxItemStatus::Open),
+            icon: Some("/icon-192.svg".to_string()),
+            badge: Some("/badge.svg".to_string()),
+        };
+        let json = serde_json::to_value(&payload).expect("serialize payload");
+        let decoded: BrowserPushNotificationPayload =
+            serde_json::from_value(json).expect("deserialize payload");
+        assert_eq!(decoded, payload);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1825,7 +2039,34 @@ pub struct TurnView {
     pub latest_plan_snapshot: Option<Value>,
     #[serde(default)]
     pub token_usage_snapshot: Option<Value>,
+    #[serde(default)]
+    pub latest_plan: Option<TurnPlanView>,
+    #[serde(default)]
+    pub token_usage: Option<ThreadTokenUsageView>,
     pub items: Vec<ItemView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnPlanView {
+    #[serde(default)]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub plan: Vec<TurnPlanStepView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnPlanStepView {
+    pub step: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadTokenUsageView {
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1872,6 +2113,10 @@ pub struct ItemView {
     pub summary: Option<String>,
     #[serde(default)]
     pub payload: Option<Value>,
+    #[serde(default)]
+    pub detail_kind: Option<String>,
+    #[serde(default)]
+    pub detail: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
