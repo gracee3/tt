@@ -395,6 +395,10 @@ a {
   letter-spacing: 0.08em;
 }
 
+.compact-value {
+  overflow-wrap: anywhere;
+}
+
 .workspace-focus-card {
   display: grid;
   gap: 0.35rem;

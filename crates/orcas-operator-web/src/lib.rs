@@ -296,6 +296,95 @@ fn SupervisorProposalDetailBlock(
 }
 
 #[component]
+fn SupervisorWorkflowBlock(
+    assignment_label: String,
+    headline: String,
+    summary: String,
+    report: Option<orcas_core::ipc::ReportSummary>,
+    proposal: Option<orcas_core::ipc::WorkUnitProposalSummary>,
+    decision: Option<orcas_core::ipc::DecisionSummary>,
+) -> impl IntoView {
+    let latest_timestamp = latest_supervisor_timestamp(
+        report.as_ref(),
+        proposal.as_ref(),
+        decision.as_ref(),
+    );
+    view! {
+        <div class="detail-block">
+            <p class="eyebrow">"Supervisor workflow"</p>
+            <div class="item-card-topline">
+                <span class="status-pill">{headline.clone()}</span>
+                <span class="muted">{assignment_label}</span>
+            </div>
+            <p class="item-summary">{summary}</p>
+            {latest_timestamp.map(|timestamp| view! { <p class="item-meta">{timestamp}</p> })}
+            <div class="compact-grid">
+                {report.as_ref().map(|report| view! {
+                    <div class="mini-stat">
+                        <span class="mini-label">"Report"</span>
+                        <strong>{humanize_snake_case(
+                            serde_json::to_string(&report.parse_result)
+                                .unwrap_or_default()
+                                .trim_matches('"')
+                        )}</strong>
+                        <span class="muted">
+                            {humanize_snake_case(
+                                serde_json::to_string(&report.disposition)
+                                    .unwrap_or_default()
+                                    .trim_matches('"')
+                            )}
+                        </span>
+                    </div>
+                })}
+                {proposal.as_ref().map(|proposal| view! {
+                    <div class="mini-stat">
+                        <span class="mini-label">"Proposal"</span>
+                        <strong>{humanize_snake_case(
+                            serde_json::to_string(&proposal.latest_status)
+                                .unwrap_or_default()
+                                .trim_matches('"')
+                        )}</strong>
+                        <span class="muted">
+                            {proposal.latest_proposed_decision_type
+                                .as_ref()
+                                .map(|decision| humanize_snake_case(
+                                    serde_json::to_string(decision)
+                                        .unwrap_or_default()
+                                        .trim_matches('"')
+                                ))
+                                .unwrap_or_else(|| "No decision type".to_string())}
+                        </span>
+                    </div>
+                })}
+                {decision.as_ref().map(|decision| view! {
+                    <div class="mini-stat">
+                        <span class="mini-label">"Decision"</span>
+                        <strong>{humanize_snake_case(
+                            serde_json::to_string(&decision.decision_type)
+                                .unwrap_or_default()
+                                .trim_matches('"')
+                        )}</strong>
+                        <span class="muted">{format_timestamp(decision.created_at)}</span>
+                    </div>
+                })}
+            </div>
+            {report.as_ref().map(|report| view! {
+                <p class="item-meta">
+                    {if report.needs_supervisor_review {
+                        "Supervisor review was required for this report."
+                    } else {
+                        "This report did not require supervisor review."
+                    }}
+                </p>
+            })}
+            {decision
+                .as_ref()
+                .map(|decision| view! { <p class="item-meta">{decision.rationale.clone()}</p> })}
+        </div>
+    }
+}
+
+#[component]
 fn TurnPlanCard(plan: orcas_core::ipc::TurnPlanView) -> impl IntoView {
     let explanation = plan.explanation.clone();
     let steps = plan.plan.clone();
@@ -535,6 +624,58 @@ fn ThreadTurnCard(turn: orcas_core::ipc::TurnView) -> impl IntoView {
                 }
                 .into_any()
             }}
+        </div>
+    }
+}
+
+#[component]
+fn ThreadMonitorBlock(detail: orcas_core::ipc::ThreadView) -> impl IntoView {
+    let turn_count = detail.turns.len();
+    let latest_turn = detail.turns.into_iter().rev().next();
+    let activity_summary = thread_activity_summary(&detail.summary);
+    let cwd_display = if detail.summary.cwd.is_empty() {
+        "No working directory".to_string()
+    } else {
+        detail.summary.cwd.clone()
+    };
+
+    view! {
+        <div class="detail-block">
+            <p class="eyebrow">"Thread monitor"</p>
+            <div class="item-card-topline">
+                <span class="status-pill">{humanize_snake_case(&detail.summary.status)}</span>
+                <span class="muted">
+                    {if turn_count == 1 { "1 recorded turn".to_string() } else { format!("{turn_count} recorded turns") }}
+                </span>
+            </div>
+            <p class="item-summary">{activity_summary}</p>
+            <div class="compact-grid">
+                <div class="mini-stat">
+                    <span class="mini-label">"Monitor"</span>
+                    <strong>{humanize_snake_case(
+                        serde_json::to_string(&detail.summary.monitor_state)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                    )}</strong>
+                    <span class="muted">{format_unix_millis(detail.summary.updated_at)}</span>
+                </div>
+                <div class="mini-stat">
+                    <span class="mini-label">"Working directory"</span>
+                    <strong class="compact-value">{cwd_display}</strong>
+                </div>
+            </div>
+            {(!detail.summary.preview.trim().is_empty()).then(|| view! {
+                <p class="item-meta">{detail.summary.preview.clone()}</p>
+            })}
+            {latest_turn.map(|turn| view! { <ThreadTurnCard turn /> })}
+            {detail.summary.raw_summary.clone().map(|raw_summary| view! {
+                <div class="json-panel">
+                    <details>
+                        <summary>"Show raw thread summary"</summary>
+                        <JsonValueTree value=raw_summary />
+                    </details>
+                </div>
+            })}
         </div>
     }
 }
@@ -2355,11 +2496,11 @@ fn RuntimeAssignmentCard(
     view! {
         <div class="item-card">
             <div class="item-card-topline">
-                <span class="status-pill">{headline}</span>
+                <span class="status-pill">{headline.clone()}</span>
                 <span class="muted">"runtime lane"</span>
             </div>
             <p class="item-title">{assignment.worker_id.clone()}</p>
-            <p class="item-summary">{supervisor_summary}</p>
+            <p class="item-summary">{supervisor_summary.clone()}</p>
             <p class="item-meta">{detail_parts.join(" · ")}</p>
             {latest_supervisor_timestamp(
                 latest_report.as_ref(),
@@ -2584,75 +2725,23 @@ fn RuntimeAssignmentCard(
                                     }
                                 }
                             }}
-                            {match latest_report.clone() {
-                                Some(report) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Supervisor"</p>
-                                        <dl class="detail-grid">
-                                            <div><dt>"Assignment"</dt><dd>{humanize_snake_case(serde_json::to_string(&assignment.status).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            <div><dt>"Disposition"</dt><dd>{humanize_snake_case(serde_json::to_string(&report.disposition).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            <div><dt>"Parse result"</dt><dd>{humanize_snake_case(serde_json::to_string(&report.parse_result).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            <div><dt>"Supervisor review"</dt><dd>{if report.needs_supervisor_review { "Required" } else { "Not required" }}</dd></div>
-                                            <div><dt>"Recorded"</dt><dd>{format_timestamp(report.created_at)}</dd></div>
-                                        </dl>
-                                        <p class="item-summary">{report.summary.clone()}</p>
-                                    </div>
-                                }.into_any(),
-                                None => view! { <div class="detail-block"><p class="eyebrow">"Latest report"</p><p class="item-meta">"No report recorded yet"</p></div> }.into_any(),
-                            }}
-                            {match work_unit_proposal.clone() {
-                                Some(proposal) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Proposal"</p>
-                                        <dl class="detail-grid">
-                                            <div><dt>"Status"</dt><dd>{humanize_snake_case(serde_json::to_string(&proposal.latest_status).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            <div><dt>"Created"</dt><dd>{format_timestamp(proposal.latest_created_at)}</dd></div>
-                                            {proposal.latest_failure_stage.as_ref().map(|stage| view! {
-                                                <div><dt>"Failure stage"</dt><dd>{humanize_snake_case(serde_json::to_string(stage).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            })}
-                                        </dl>
-                                    </div>
-                                }.into_any(),
-                                None => view! {}.into_any(),
-                            }}
-                            {match latest_decision.clone() {
-                                Some(decision) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Latest decision"</p>
-                                        <dl class="detail-grid">
-                                            <div><dt>"Type"</dt><dd>{humanize_snake_case(serde_json::to_string(&decision.decision_type).unwrap_or_default().trim_matches('"'))}</dd></div>
-                                            <div><dt>"Recorded"</dt><dd>{format_timestamp(decision.created_at)}</dd></div>
-                                        </dl>
-                                        <p class="item-summary">{decision.rationale.clone()}</p>
-                                    </div>
-                                }.into_any(),
-                                None => view! {}.into_any(),
-                            }}
+                            <SupervisorWorkflowBlock
+                                assignment_label=format!(
+                                    "assignment {}",
+                                    humanize_snake_case(
+                                        serde_json::to_string(&assignment.status)
+                                            .unwrap_or_default()
+                                            .trim_matches('"')
+                                    )
+                                )
+                                headline=headline.clone()
+                                summary=supervisor_summary.clone()
+                                report=latest_report.clone()
+                                proposal=work_unit_proposal.clone()
+                                decision=latest_decision.clone()
+                            />
                             {move || match detail.get() {
-                                Some(detail) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Thread monitor"</p>
-                                        <dl class="detail-grid">
-                                            <div><dt>"Thread"</dt><dd>{detail.summary.id.clone()}</dd></div>
-                                            <div><dt>"Status"</dt><dd>{detail.summary.status.clone()}</dd></div>
-                                            <div><dt>"Turns"</dt><dd>{detail.turns.len().to_string()}</dd></div>
-                                            <div><dt>"Updated"</dt><dd>{format_unix_millis(detail.summary.updated_at)}</dd></div>
-                                        </dl>
-                                        <p class="item-summary">{detail.summary.preview.clone()}</p>
-                                        {detail.summary.raw_summary.clone().map(|raw_summary| view! {
-                                            <div class="json-panel">
-                                                <p class="eyebrow">"Thread summary"</p>
-                                                <details>
-                                                    <summary>"Show raw thread summary"</summary>
-                                                    <JsonValueTree value=raw_summary />
-                                                </details>
-                                            </div>
-                                        })}
-                                        <div class="detail-panel">
-                                            {detail.turns.into_iter().rev().take(2).map(|turn| view! { <ThreadTurnCard turn /> }).collect_view()}
-                                        </div>
-                                    </div>
-                                }.into_any(),
+                                Some(detail) => view! { <ThreadMonitorBlock detail /> }.into_any(),
                                 None => {
                                     if loading_detail.get() {
                                         view! { <div class="detail-block"><p class="eyebrow">"Thread monitor"</p><p class="item-meta">"Loading live thread detail…"</p></div> }.into_any()
@@ -2765,7 +2854,7 @@ fn TrackedThreadCard(
                 <span class="muted">"tracked lane"</span>
             </div>
             <p class="item-title">{thread.title.clone()}</p>
-            <p class="item-summary">{supervisor_summary}</p>
+            <p class="item-summary">{supervisor_summary.clone()}</p>
             <p class="item-meta">{runtime.detail}</p>
             {latest_supervisor_timestamp(
                 latest_report.as_ref(),
@@ -3043,103 +3132,19 @@ fn TrackedThreadCard(
                                     }
                                 }
                             }}
-                            {match latest_report.clone() {
-                                Some(report) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Supervisor"</p>
-                                        <dl class="detail-grid">
-                                            <div>
-                                                <dt>"Assignment"</dt>
-                                                <dd>{runtime
-                                                    .assignment_id
-                                                    .clone()
-                                                    .unwrap_or_else(|| "Unknown".to_string())}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Disposition"</dt>
-                                                <dd>{humanize_snake_case(
-                                                    serde_json::to_string(&report.disposition)
-                                                        .unwrap_or_default()
-                                                        .trim_matches('"')
-                                                )}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Parse result"</dt>
-                                                <dd>{humanize_snake_case(
-                                                    serde_json::to_string(&report.parse_result)
-                                                        .unwrap_or_default()
-                                                        .trim_matches('"')
-                                                )}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Supervisor review"</dt>
-                                                <dd>{if report.needs_supervisor_review { "Required" } else { "Not required" }}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Recorded"</dt>
-                                                <dd>{format_timestamp(report.created_at)}</dd>
-                                            </div>
-                                        </dl>
-                                        <p class="item-summary">{report.summary.clone()}</p>
-                                    </div>
-                                }.into_any(),
-                                None => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Latest report"</p>
-                                        <p class="item-meta">"No report recorded yet"</p>
-                                    </div>
-                                }.into_any(),
-                            }}
+                            <SupervisorWorkflowBlock
+                                assignment_label=runtime
+                                    .assignment_id
+                                    .clone()
+                                    .unwrap_or_else(|| "assignment unknown".to_string())
+                                headline=runtime.headline.clone()
+                                summary=supervisor_summary.clone()
+                                report=latest_report.clone()
+                                proposal=work_unit_proposal.clone()
+                                decision=latest_decision.clone()
+                            />
                             {match work_unit_proposal.clone() {
-                                Some(proposal) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Proposal"</p>
-                                        <dl class="detail-grid">
-                                            <div>
-                                                <dt>"Status"</dt>
-                                                <dd>{humanize_snake_case(
-                                                    serde_json::to_string(&proposal.latest_status)
-                                                        .unwrap_or_default()
-                                                        .trim_matches('"')
-                                                )}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Decision type"</dt>
-                                                <dd>{proposal
-                                                    .latest_proposed_decision_type
-                                                    .as_ref()
-                                                    .map(|decision| humanize_snake_case(
-                                                        serde_json::to_string(decision)
-                                                            .unwrap_or_default()
-                                                            .trim_matches('"')
-                                                    ))
-                                                    .unwrap_or_else(|| "Unknown".to_string())}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Open"</dt>
-                                                <dd>{if proposal.has_open_proposal { "Yes" } else { "No" }}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Created"</dt>
-                                                <dd>{format_timestamp(proposal.latest_created_at)}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Reviewed"</dt>
-                                                <dd>{format_optional_timestamp(proposal.latest_reviewed_at)}</dd>
-                                            </div>
-                                            {proposal.latest_failure_stage.as_ref().map(|stage| view! {
-                                                <div>
-                                                    <dt>"Failure stage"</dt>
-                                                    <dd>{humanize_snake_case(
-                                                        serde_json::to_string(stage)
-                                                            .unwrap_or_default()
-                                                            .trim_matches('"')
-                                                    )}</dd>
-                                                </div>
-                                            })}
-                                        </dl>
-                                    </div>
-                                }.into_any(),
+                                Some(_) => view! {}.into_any(),
                                 None => match actionable_inbox_item.clone() {
                                     Some(item) => view! {
                                         <div class="detail-block">
@@ -3179,80 +3184,8 @@ fn TrackedThreadCard(
                                     }.into_any(),
                                 },
                             }}
-                            {match latest_decision.clone() {
-                                Some(decision) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Latest decision"</p>
-                                        <dl class="detail-grid">
-                                            <div>
-                                                <dt>"Type"</dt>
-                                                <dd>{humanize_snake_case(
-                                                    serde_json::to_string(&decision.decision_type)
-                                                        .unwrap_or_default()
-                                                        .trim_matches('"')
-                                                )}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Recorded"</dt>
-                                                <dd>{format_timestamp(decision.created_at)}</dd>
-                                            </div>
-                                        </dl>
-                                        <p class="item-summary">{decision.rationale.clone()}</p>
-                                    </div>
-                                }.into_any(),
-                                None => view! {}.into_any(),
-                            }}
                             {move || match detail.get() {
-                                Some(detail) => view! {
-                                    <div class="detail-block">
-                                        <p class="eyebrow">"Thread monitor"</p>
-                                        <dl class="detail-grid">
-                                            <div>
-                                                <dt>"Thread"</dt>
-                                                <dd>{detail.summary.id.clone()}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Status"</dt>
-                                                <dd>{detail.summary.status.clone()}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Monitor"</dt>
-                                                <dd>{humanize_snake_case(
-                                                    serde_json::to_string(&detail.summary.monitor_state)
-                                                        .unwrap_or_default()
-                                                        .trim_matches('"')
-                                                )}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Turns"</dt>
-                                                <dd>{detail.turns.len().to_string()}</dd>
-                                            </div>
-                                            <div>
-                                                <dt>"Updated"</dt>
-                                                <dd>{format_unix_millis(detail.summary.updated_at)}</dd>
-                                            </div>
-                                        </dl>
-                                        <p class="item-summary">{detail.summary.preview.clone()}</p>
-                                        {detail.summary.raw_summary.clone().map(|raw_summary| view! {
-                                            <div class="json-panel">
-                                                <p class="eyebrow">"Thread summary"</p>
-                                                <details>
-                                                    <summary>"Show raw thread summary"</summary>
-                                                    <JsonValueTree value=raw_summary />
-                                                </details>
-                                            </div>
-                                        })}
-                                        <div class="detail-panel">
-                                            {detail
-                                                .turns
-                                                .into_iter()
-                                                .rev()
-                                                .take(2)
-                                                .map(|turn| view! { <ThreadTurnCard turn /> })
-                                                .collect_view()}
-                                        </div>
-                                    </div>
-                                }.into_any(),
+                                Some(detail) => view! { <ThreadMonitorBlock detail /> }.into_any(),
                                 None => {
                                     if loading_detail.get() {
                                         view! {
