@@ -21,60 +21,55 @@ workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_i
 workunit_output="$(e2e_orcas workunits create --workstream "$workstream_id" --title "Planning work unit" --task "Draft a short implementation plan before execution")"
 workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
-assignment_start_log="$E2E_SCENARIO_REPORTS_DIR/assignment-start.txt"
-e2e_orcas assignments start --workunit "$workunit_id" --worker harness-worker --worker-kind harness --instructions "Draft a planning report with at least two steps." --cwd "$e2e_repo_root" >"$assignment_start_log" 2>&1 &
-assignment_start_pid=$!
-assignment_start_cleanup() {
-  kill "$assignment_start_pid" >/dev/null 2>&1 || true
-}
-trap assignment_start_cleanup EXIT
-sleep 5
-report_id=""
-assignment_id=""
-assignment_status=""
-workunit_status=""
+planning_create_output="$E2E_SCENARIO_REPORTS_DIR/planning-create.txt"
+e2e_orcas planning-sessions create \
+  --workstream "$workstream_id" \
+  --objective "Review the planning lane and decide whether bounded research is needed before implementation." \
+  --open-question "What is the smallest coherent first implementation slice?" \
+  --constraint "Stay strictly pre-execution." \
+  --non-goal "Do not modify code in this planning session." \
+  --draft-plan-summary "Draft a short implementation plan and identify whether one bounded research turn is needed." \
+  --created-by harness \
+  --request-note "Shared lab planning validation" \
+  >"$planning_create_output"
 
-normalize_status() {
-  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr '-' '_'
-}
+planning_session_id="$(awk -F': ' '/^planning_session_id:/ {print $2; exit}' "$planning_create_output")"
+planning_thread_id="$(awk -F': ' '/^planning_session_thread_id:/ {print $2; exit}' "$planning_create_output")"
+planning_status="$(awk -F': ' '/^planning_session_status:/ {print $2; exit}' "$planning_create_output")"
 
-for _ in $(seq 1 120); do
-  if [[ -s "$assignment_start_log" ]]; then
-    report_id="$(awk -F': ' '/^report_id:/ {print $2; exit}' "$assignment_start_log")"
-    assignment_id="$(awk -F': ' '/^assignment_id:/ {print $2; exit}' "$assignment_start_log")"
-    assignment_status="$(awk -F': ' '/^assignment_status:/ {print $2; exit}' "$assignment_start_log")"
-    [[ -n "$report_id" && -n "$assignment_id" ]] && break
-  fi
-  sleep 2
-done
+test -n "$planning_session_id"
+test -n "$planning_thread_id"
+test -n "$planning_status"
 
-test -n "$report_id"
-e2e_orcas reports get --report "$report_id" >"$E2E_SCENARIO_REPORTS_DIR/report-get.txt"
-test -n "$assignment_id"
-workunit_output="$(e2e_orcas workunits get --workunit "$workunit_id" 2>/dev/null || true)"
-workunit_status="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^status:/ {print $2; exit}')"
+e2e_orcas planning-sessions request-supervisor-context \
+  --session "$planning_session_id" \
+  --requested-by harness \
+  --note "Prime the planning session for operator review." \
+  >"$E2E_SCENARIO_REPORTS_DIR/planning-request-context.txt"
 
-printf 'assignment_id: %s\nassignment_status: %s\nworkunit_status: %s\n' \
-  "$assignment_id" "$assignment_status" "$workunit_status" \
-  >"$E2E_SCENARIO_REPORTS_DIR/workunit-edit.txt"
+e2e_orcas planning-sessions mark-ready-for-review \
+  --session "$planning_session_id" \
+  --updated-by harness \
+  --note "Planning summary is ready for approval." \
+  >"$E2E_SCENARIO_REPORTS_DIR/planning-mark-ready.txt"
 
-test "$(normalize_status "$assignment_status")" = "awaiting_decision"
-test -n "$(normalize_status "$workunit_status")"
+e2e_orcas planning-sessions approve \
+  --session "$planning_session_id" \
+  --approved-by harness \
+  --review-note "Planning looks coherent" \
+  >"$E2E_SCENARIO_REPORTS_DIR/planning-approve.txt"
 
-proposal_output="$(e2e_orcas proposals create --workunit "$workunit_id" --report "$report_id" --requested-by harness --note "Draft a two-step plan before execution.")"
-proposal_id="$(printf '%s\n' "$proposal_output" | awk -F': ' '/^proposal_id:/ {print $2; exit}')"
+e2e_orcas planning-sessions get --session "$planning_session_id" \
+  >"$E2E_SCENARIO_REPORTS_DIR/planning-get.txt"
 
-e2e_orcas proposals get --proposal "$proposal_id" >"$E2E_SCENARIO_REPORTS_DIR/proposal-get.txt"
-approve_output="$(e2e_orcas proposals approve --proposal "$proposal_id" --reviewed-by harness --review-note "Planning looks coherent" --rationale "Plan is inspectable and actionable" --type continue)"
-approved_decision_id="$(printf '%s\n' "$approve_output" | awk -F': ' '/^approved_decision_id:/ {print $2; exit}')"
+final_status="$(awk -F': ' '/^planning_session_status:/ {print $2; exit}' "$E2E_SCENARIO_REPORTS_DIR/planning-get.txt")"
+approved_plan_revision_id="$(awk -F': ' '/^planning_revision_proposal_id:/ {print $2; exit}' "$E2E_SCENARIO_REPORTS_DIR/planning-approve.txt")"
 
 test -n "$workstream_id"
 test -n "$workunit_id"
-test -n "$report_id"
-test -n "$assignment_id"
-test -n "$proposal_id"
-test -n "$approved_decision_id"
-
-wait "$assignment_start_pid" >/dev/null 2>&1 || true
+test -n "$planning_session_id"
+test -n "$planning_thread_id"
+test "$final_status" = "Approved"
+test -n "$approved_plan_revision_id"
 
 echo "PASS"
