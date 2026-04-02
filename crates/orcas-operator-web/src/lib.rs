@@ -64,6 +64,84 @@ fn format_unix_millis(timestamp_ms: i64) -> String {
         .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
+fn proposal_status_summary(proposal: &orcas_core::ipc::WorkUnitProposalSummary) -> String {
+    if proposal.has_generation_failed {
+        let stage = proposal
+            .latest_failure_stage
+            .as_ref()
+            .map(|stage| {
+                humanize_snake_case(
+                    serde_json::to_string(stage)
+                        .unwrap_or_default()
+                        .trim_matches('"'),
+                )
+            })
+            .unwrap_or_else(|| "Generation failed".to_string());
+        format!("proposal failed · {stage}")
+    } else if proposal.has_open_proposal {
+        let decision = proposal
+            .open_proposed_decision_type
+            .or(proposal.latest_proposed_decision_type)
+            .map(|decision| {
+                humanize_snake_case(
+                    serde_json::to_string(&decision)
+                        .unwrap_or_default()
+                        .trim_matches('"'),
+                )
+            })
+            .unwrap_or_else(|| "Review ready".to_string());
+        format!("proposal ready · {decision}")
+    } else {
+        let status = humanize_snake_case(
+            serde_json::to_string(&proposal.latest_status)
+                .unwrap_or_default()
+                .trim_matches('"'),
+        );
+        format!("proposal {status}")
+    }
+}
+
+fn lane_activity_summary(
+    report: Option<&orcas_core::ipc::ReportSummary>,
+    proposal: Option<&orcas_core::ipc::WorkUnitProposalSummary>,
+    decision: Option<&orcas_core::ipc::DecisionSummary>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(report) = report {
+        parts.push(if report.needs_supervisor_review {
+            "report submitted".to_string()
+        } else {
+            "report recorded".to_string()
+        });
+        parts.push(format!(
+            "parse {}",
+            humanize_snake_case(
+                serde_json::to_string(&report.parse_result)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+            )
+        ));
+    }
+    if let Some(proposal) = proposal {
+        parts.push(proposal_status_summary(proposal));
+    }
+    if let Some(decision) = decision {
+        parts.push(format!(
+            "decision {}",
+            humanize_snake_case(
+                serde_json::to_string(&decision.decision_type)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+            )
+        ));
+    }
+    if parts.is_empty() {
+        "No supervisor activity yet".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 fn is_message_like_item(item_type: &str) -> bool {
     let lowered = item_type.to_ascii_lowercase();
     lowered.contains("message") || lowered.contains("reasoning") || lowered.contains("comment")
@@ -2033,6 +2111,11 @@ fn RuntimeAssignmentCard(
                 .trim_matches('"')
         )
     ));
+    let supervisor_summary = lane_activity_summary(
+        latest_report.as_ref(),
+        work_unit_proposal.as_ref(),
+        latest_decision.as_ref(),
+    );
     let inferred_thread_id_for_detail = inferred_thread.as_ref().map(|thread| thread.id.clone());
     let has_inferred_thread = inferred_thread.is_some();
 
@@ -2043,11 +2126,21 @@ fn RuntimeAssignmentCard(
                 <span class="muted">"runtime lane"</span>
             </div>
             <p class="item-title">{assignment.worker_id.clone()}</p>
-            <p class="item-summary">{detail_parts.join(" · ")}</p>
-            <p class="item-meta">{format!("assignment {}", assignment.id)}</p>
+            <p class="item-summary">{supervisor_summary}</p>
+            <p class="item-meta">{detail_parts.join(" · ")}</p>
             {match inferred_thread.as_ref() {
                 Some(thread) => view! {
-                    <p class="item-meta">{format!("codex {}", thread.id)}</p>
+                    <p class="item-meta">
+                        {format!(
+                            "codex lane {}{}",
+                            thread.id,
+                            if thread.cwd.is_empty() {
+                                "".to_string()
+                            } else {
+                                format!(" · {}", thread.cwd)
+                            }
+                        )}
+                    </p>
                 }.into_any(),
                 None => view! {
                     <p class="item-meta">"No inferred live Codex thread yet"</p>
@@ -2117,7 +2210,7 @@ fn RuntimeAssignmentCard(
                     _ => view! {}.into_any(),
                 }}
                 <button class="refresh-button" on:click=move |_| showing_detail.update(|value| *value = !*value)>
-                    {move || if showing_detail.get() { "Hide detail" } else { "Show detail" }}
+                    {move || if showing_detail.get() { "Hide inspect" } else { "Inspect lane" }}
                 </button>
                 {match actionable_inbox_item.clone() {
                     Some(item) => {
@@ -2240,7 +2333,7 @@ fn RuntimeAssignmentCard(
                             {match latest_report.clone() {
                                 Some(report) => view! {
                                     <div class="detail-block">
-                                        <p class="eyebrow">"Latest report"</p>
+                                        <p class="eyebrow">"Supervisor state"</p>
                                         <dl class="detail-grid">
                                             <div><dt>"Disposition"</dt><dd>{humanize_snake_case(serde_json::to_string(&report.disposition).unwrap_or_default().trim_matches('"'))}</dd></div>
                                             <div><dt>"Parse result"</dt><dd>{humanize_snake_case(serde_json::to_string(&report.parse_result).unwrap_or_default().trim_matches('"'))}</dd></div>
@@ -2255,11 +2348,14 @@ fn RuntimeAssignmentCard(
                             {match work_unit_proposal.clone() {
                                 Some(proposal) => view! {
                                     <div class="detail-block">
-                                        <p class="eyebrow">"Supervisor proposal"</p>
+                                        <p class="eyebrow">"Proposal"</p>
                                         <dl class="detail-grid">
                                             <div><dt>"Status"</dt><dd>{humanize_snake_case(serde_json::to_string(&proposal.latest_status).unwrap_or_default().trim_matches('"'))}</dd></div>
                                             <div><dt>"Proposal id"</dt><dd>{proposal.latest_proposal_id.clone()}</dd></div>
                                             <div><dt>"Created"</dt><dd>{format_timestamp(proposal.latest_created_at)}</dd></div>
+                                            {proposal.latest_failure_stage.as_ref().map(|stage| view! {
+                                                <div><dt>"Failure stage"</dt><dd>{humanize_snake_case(serde_json::to_string(stage).unwrap_or_default().trim_matches('"'))}</dd></div>
+                                            })}
                                         </dl>
                                     </div>
                                 }.into_any(),
@@ -2291,7 +2387,7 @@ fn RuntimeAssignmentCard(
                                         </dl>
                                         <p class="item-summary">{detail.summary.preview.clone()}</p>
                                         <div class="detail-panel">
-                                            {detail.turns.into_iter().rev().take(3).map(|turn| view! { <ThreadTurnCard turn /> }).collect_view()}
+                                            {detail.turns.into_iter().rev().take(2).map(|turn| view! { <ThreadTurnCard turn /> }).collect_view()}
                                         </div>
                                     </div>
                                 }.into_any(),
@@ -2386,18 +2482,24 @@ fn TrackedThreadCard(
         .filter(|item| item.work_unit_id.as_deref() == Some(thread.work_unit_id.as_str()))
         .max_by_key(|item| item.updated_at)
         .cloned();
+    let supervisor_summary = lane_activity_summary(
+        latest_report.as_ref(),
+        work_unit_proposal.as_ref(),
+        latest_decision.as_ref(),
+    );
 
     view! {
         <div class="item-card">
             <div class="item-card-topline">
                 <span class="status-pill">{runtime.headline.clone()}</span>
-                <span class="muted">{thread.id.to_string()}</span>
+                <span class="muted">"tracked lane"</span>
             </div>
             <p class="item-title">{thread.title.clone()}</p>
-            <p class="item-summary">{runtime.detail.clone()}</p>
+            <p class="item-summary">{supervisor_summary}</p>
             <p class="item-meta">
                 {format!(
-                    "binding {}{}",
+                    "{} · binding {}{}",
+                    runtime.detail,
                     humanize_snake_case(
                         serde_json::to_string(&thread.binding_state)
                             .unwrap_or_default()
@@ -2493,7 +2595,7 @@ fn TrackedThreadCard(
                     _ => view! {}.into_any(),
                 }}
                 <button class="refresh-button" on:click=move |_| showing_detail.update(|value| *value = !*value)>
-                    {move || if showing_detail.get() { "Hide detail" } else { "Show detail" }}
+                    {move || if showing_detail.get() { "Hide inspect" } else { "Inspect lane" }}
                 </button>
                 {match actionable_inbox_item.clone() {
                     Some(item) => {
@@ -2656,7 +2758,7 @@ fn TrackedThreadCard(
                             {match latest_report.clone() {
                                 Some(report) => view! {
                                     <div class="detail-block">
-                                        <p class="eyebrow">"Latest report"</p>
+                                        <p class="eyebrow">"Supervisor state"</p>
                                         <dl class="detail-grid">
                                             <div>
                                                 <dt>"Disposition"</dt>
@@ -2704,7 +2806,7 @@ fn TrackedThreadCard(
                             {match work_unit_proposal.clone() {
                                 Some(proposal) => view! {
                                     <div class="detail-block">
-                                        <p class="eyebrow">"Supervisor proposal"</p>
+                                        <p class="eyebrow">"Proposal"</p>
                                         <dl class="detail-grid">
                                             <div>
                                                 <dt>"Status"</dt>
@@ -2742,6 +2844,16 @@ fn TrackedThreadCard(
                                                 <dt>"Reviewed"</dt>
                                                 <dd>{format_optional_timestamp(proposal.latest_reviewed_at)}</dd>
                                             </div>
+                                            {proposal.latest_failure_stage.as_ref().map(|stage| view! {
+                                                <div>
+                                                    <dt>"Failure stage"</dt>
+                                                    <dd>{humanize_snake_case(
+                                                        serde_json::to_string(stage)
+                                                            .unwrap_or_default()
+                                                            .trim_matches('"')
+                                                    )}</dd>
+                                                </div>
+                                            })}
                                         </dl>
                                     </div>
                                 }.into_any(),
@@ -2856,7 +2968,7 @@ fn TrackedThreadCard(
                                                 .turns
                                                 .into_iter()
                                                 .rev()
-                                                .take(3)
+                                                .take(2)
                                                 .map(|turn| view! { <ThreadTurnCard turn /> })
                                                 .collect_view()}
                                         </div>
