@@ -52,6 +52,7 @@ supervisor_reasoning_effort="${ORCAS_SUPERVISOR_REASONING_EFFORT:-}"
 supervisor_max_output_tokens="${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-16384}"
 codex_bin="${ORCAS_CODEX_BIN:-$(command -v codex)}"
 
+if ! e2e_using_shared_lab; then
 rm -rf "$short_xdg_root"
 mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
 chmod 700 "$short_xdg_runtime_home" || true
@@ -88,6 +89,7 @@ export ORCAS_E2E_XDG_DATA_HOME="$short_xdg_data_home"
 export ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home"
 export ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
 export ORCAS_CODEX_LISTEN_URL="$listen_url"
+fi
 
 worktree_path="$E2E_SCENARIO_WORKTREES_DIR/lane"
 repo_root="$E2E_SCENARIO_WORKTREES_DIR/lane-repo"
@@ -110,12 +112,9 @@ git -C "$repo_root" add .
 git -C "$repo_root" commit -m "Initial tracked-thread fixture" >"$reports_dir/git-initial-commit.txt" 2>&1
 git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/git-worktree-add.txt" 2>&1
 
-e2e_orcas daemon start --force-spawn >"$daemon_log" 2>&1 &
-daemon_pid=$!
+e2e_start_managed_daemon "$daemon_log"
 cleanup() {
-  e2e_orcas daemon stop >/dev/null 2>&1 || true
-  kill "$daemon_pid" >/dev/null 2>&1 || true
-  wait "$daemon_pid" >/dev/null 2>&1 || true
+  e2e_stop_managed_daemon
 }
 trap cleanup EXIT
 

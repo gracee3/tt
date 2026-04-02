@@ -15,6 +15,7 @@ supported_scenarios=(
   live-worker-direct-patch
   live-supervisor-micro-proposal
   live-reject-redirect
+  live-worktree-lifecycle
   supervisor-planning
 )
 
