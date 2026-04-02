@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101520" />
+    
+<script type="module">
+import init, * as bindings from '/orcas-operator-web-a4dd9d2a5b414f6d.js';
+const wasm = await init({ module_or_path: '/orcas-operator-web-a4dd9d2a5b414f6d_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <link rel="stylesheet" href="/style-3f2f72a16d944251.css" integrity="sha384-RBdhncjkUK/b7F+ynCvi7DX2/9hnXiK4n4sHC/HvEmFpDykC50GAKGy4oA6ezC5Q"/>
+    
+    
+    
+    
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Orcas operator web</title>
+  <link rel="modulepreload" href="/orcas-operator-web-a4dd9d2a5b414f6d.js" crossorigin="anonymous" integrity="sha384-LpiR7njNL99j5ID8DKKwuUQ64CCoRkIJS9hY28Mc4VpLYODwQB/M48Vl9+6do/It"><link rel="preload" href="/orcas-operator-web-a4dd9d2a5b414f6d_bg.wasm" crossorigin="anonymous" integrity="sha384-7jbrlX9+YCEMNQm7+gOxvgwqFHXpu78fYdB8EY0f+Ns8O4RMOrTTU43e4Q9SPvX5" as="fetch" type="application/wasm"></head>
+  <body></body>
+</html>

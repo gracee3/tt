@@ -570,6 +570,29 @@ fn planning_session_is_terminal(status: orcas_core::PlanningSessionStatus) -> bo
 }
 
 #[component]
+fn HistoricalPlanningSessionRow(session: orcas_core::PlanningSession) -> impl IntoView {
+    let summary = session.latest_structured_summary.clone();
+    let headline = planning_headline(&session.status, &summary);
+    let (_, recommendation) = planning_recommendation_line(&session.status, &summary);
+
+    view! {
+        <div class="planning-history-row">
+            <div class="item-card-topline">
+                <span class="status-pill">{headline}</span>
+                <span class="muted">
+                    {match session.reviewed_at {
+                        Some(reviewed_at) => format!("reviewed {}", format_timestamp(reviewed_at)),
+                        None => format!("updated {}", format_timestamp(session.updated_at)),
+                    }}
+                </span>
+            </div>
+            <p class="item-summary">{summary.objective}</p>
+            <p class="item-meta">{recommendation}</p>
+        </div>
+    }
+}
+
+#[component]
 fn PlanningRecommendationBlock(session: orcas_core::PlanningSession) -> impl IntoView {
     let (headline, summary) =
         planning_recommendation_line(&session.status, &session.latest_structured_summary);
@@ -1636,7 +1659,12 @@ fn PlanningSessionsPanel(
                 }.into_any()
             } else {
                 view! {
-                    <div class="stack">
+                    <div class="detail-block">
+                        <p class="eyebrow">"Active planning"</p>
+                        <p class="item-meta">
+                            "Open planning lanes stay visible here until they are reviewed or closed."
+                        </p>
+                        <div class="stack">
                         {active_sessions
                             .into_iter()
                             .map(|session| view! {
@@ -1649,6 +1677,7 @@ fn PlanningSessionsPanel(
                                 />
                             })
                             .collect_view()}
+                        </div>
                     </div>
                 }.into_any()
             }}
@@ -1667,13 +1696,7 @@ fn PlanningSessionsPanel(
                             {historical_sessions
                                 .into_iter()
                                 .map(|session| view! {
-                                    <PlanningSessionCard
-                                        session
-                                        settings
-                                        refresh_epoch
-                                        action_message
-                                        action_error
-                                    />
+                                    <HistoricalPlanningSessionRow session />
                                 })
                                 .collect_view()}
                         </div>

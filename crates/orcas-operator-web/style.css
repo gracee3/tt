@@ -388,6 +388,15 @@ a {
   border: 1px solid var(--border);
 }
 
+.planning-history-row {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+}
+
 .mini-label {
   color: var(--muted);
   font-size: 0.76rem;
