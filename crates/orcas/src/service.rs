@@ -1969,7 +1969,7 @@ impl SupervisorService {
     ) -> Result<()> {
         if ready_for_review {
             bail!(
-                "planning session create cannot mark a session ready for review; use planning-sessions mark-ready-for-review after creation"
+                "planning session create cannot mark a session ready for review; use plan mark-ready-for-review after creation"
             );
         }
         let client = self.daemon_state_client().await?;

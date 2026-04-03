@@ -118,9 +118,9 @@ enum TopCommand {
         #[command(subcommand)]
         command: WorkunitsCommand,
     },
-    PlanningSessions {
+    Plan {
         #[command(subcommand)]
-        command: PlanningSessionsCommand,
+        command: PlanCommand,
     },
     Assignments {
         #[command(subcommand)]
@@ -231,7 +231,7 @@ enum ThreadsCommand {
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Supervisor-owned planning session orchestration")]
-enum PlanningSessionsCommand {
+enum PlanCommand {
     #[command(
         about = "Create a draft planning session; readiness must be set later with mark-ready-for-review"
     )]
@@ -1467,10 +1467,10 @@ async fn main() -> Result<()> {
                 WorkunitsCommand::Get(args) => service.workunit_get(&args.workunit).await?,
             }
         }
-        TopCommand::PlanningSessions { command } => {
+        TopCommand::Plan { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
-                PlanningSessionsCommand::Create(args) => {
+                PlanCommand::Create(args) => {
                     service
                         .planning_session_create(
                             &args.workstream,
@@ -1490,15 +1490,15 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                PlanningSessionsCommand::Get(args) => {
+                PlanCommand::Get(args) => {
                     service.planning_session_get(&args.session).await?;
                 }
-                PlanningSessionsCommand::List(args) => {
+                PlanCommand::List(args) => {
                     service
                         .planning_session_list(args.workstream, args.include_closed)
                         .await?;
                 }
-                PlanningSessionsCommand::UpdateSummary(args) => {
+                PlanCommand::UpdateSummary(args) => {
                     service
                         .planning_session_update_summary(
                             &args.session,
@@ -1515,7 +1515,7 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                PlanningSessionsCommand::RequestSupervisorContext(args) => {
+                PlanCommand::RequestSupervisorContext(args) => {
                     service
                         .planning_session_request_supervisor_context(
                             &args.session,
@@ -1524,7 +1524,7 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                PlanningSessionsCommand::RequestResearch(args) => {
+                PlanCommand::RequestResearch(args) => {
                     service
                         .planning_session_request_research(
                             &args.session,
@@ -1537,7 +1537,7 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                PlanningSessionsCommand::MarkReadyForReview(args) => {
+                PlanCommand::MarkReadyForReview(args) => {
                     service
                         .planning_session_mark_ready_for_review(
                             &args.session,
@@ -1546,22 +1546,22 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                PlanningSessionsCommand::Abort(args) => {
+                PlanCommand::Abort(args) => {
                     service
                         .planning_session_abort(&args.session, args.updated_by, args.note)
                         .await?;
                 }
-                PlanningSessionsCommand::Approve(args) => {
+                PlanCommand::Approve(args) => {
                     service
                         .planning_session_approve(&args.session, args.approved_by, args.review_note)
                         .await?;
                 }
-                PlanningSessionsCommand::Reject(args) => {
+                PlanCommand::Reject(args) => {
                     service
                         .planning_session_reject(&args.session, args.rejected_by, args.review_note)
                         .await?;
                 }
-                PlanningSessionsCommand::Supersede(args) => {
+                PlanCommand::Supersede(args) => {
                     service
                         .planning_session_supersede(
                             &args.session,
@@ -2116,6 +2116,12 @@ mod tests {
     }
 
     #[test]
+    fn rejects_removed_planning_sessions_namespace() {
+        assert!(Cli::try_parse_from(["orcas", "planning-sessions", "create"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "planning-sessions", "list"]).is_err());
+    }
+
+    #[test]
     fn parses_top_level_review_propose_steer_command() {
         let cli = Cli::parse_from([
             "orcas",
@@ -2136,6 +2142,55 @@ mod tests {
                 assert_eq!(args.thread, "thread-1");
                 assert_eq!(args.text, "stay focused");
                 assert_eq!(args.requested_by.as_deref(), Some("cli_user"));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_plan_create_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "plan",
+            "create",
+            "--workstream",
+            "ws-1",
+            "--objective",
+            "Plan a bounded change",
+            "--created-by",
+            "cli_user",
+        ]);
+
+        match cli.command {
+            TopCommand::Plan {
+                command: PlanCommand::Create(args),
+            } => {
+                assert_eq!(args.workstream, "ws-1");
+                assert_eq!(args.summary.objective, "Plan a bounded change");
+                assert_eq!(args.created_by.as_deref(), Some("cli_user"));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_plan_mark_ready_for_review_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "plan",
+            "mark-ready-for-review",
+            "--session",
+            "ps-1",
+            "--updated-by",
+            "cli_user",
+        ]);
+
+        match cli.command {
+            TopCommand::Plan {
+                command: PlanCommand::MarkReadyForReview(args),
+            } => {
+                assert_eq!(args.session, "ps-1");
+                assert_eq!(args.updated_by.as_deref(), Some("cli_user"));
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
