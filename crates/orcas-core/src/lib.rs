@@ -17,6 +17,13 @@ pub mod session;
 pub mod store;
 pub mod supervisor;
 
+pub const ORCAS_APP_SERVER_TAG_ENV: &str = "ORCAS_APP_SERVER_TAG";
+pub const ORCAS_APP_SERVER_TAG_VALUE: &str = "orcas-managed";
+pub const ORCAS_APP_SERVER_OWNER_KIND_ENV: &str = "ORCAS_APP_SERVER_OWNER_KIND";
+pub const ORCAS_APP_SERVER_OWNER_PID_ENV: &str = "ORCAS_APP_SERVER_OWNER_PID";
+pub const ORCAS_APP_SERVER_LISTEN_URL_ENV: &str = "ORCAS_APP_SERVER_LISTEN_URL";
+pub const ORCAS_APP_SERVER_STARTED_AT_ENV: &str = "ORCAS_APP_SERVER_STARTED_AT";
+
 pub use collaboration::{
     Assignment, AssignmentStatus, CodexThreadAssignment, CodexThreadAssignmentStatus,
     CodexThreadBootstrapState, CodexThreadSendPolicy, CollaborationState, Decision, DecisionType,
