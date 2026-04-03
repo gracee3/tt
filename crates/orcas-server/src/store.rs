@@ -3966,11 +3966,12 @@ mod tests {
             ))
             .expect("create");
 
-        let complete_result = store.complete_remote_action_request(&remote_action_complete_request(
-            origin,
-            created.request.request_id.as_str(),
-            "wrong-token",
-        ));
+        let complete_result =
+            store.complete_remote_action_request(&remote_action_complete_request(
+                origin,
+                created.request.request_id.as_str(),
+                "wrong-token",
+            ));
         assert!(complete_result.is_err());
 
         let fail_result = store.fail_remote_action_request(&remote_action_fail_request(

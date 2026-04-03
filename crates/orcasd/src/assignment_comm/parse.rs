@@ -1255,7 +1255,11 @@ mod tests {
         record.packet.packet_id = format!("packet-{}", assignment.id);
         let packet_id = &record.packet.packet_id;
         let corrupted_packet_id = if packet_id.len() > 12 {
-            format!("{}{}", &packet_id[..packet_id.len() / 2], &packet_id[(packet_id.len() / 2) + 4..])
+            format!(
+                "{}{}",
+                &packet_id[..packet_id.len() / 2],
+                &packet_id[(packet_id.len() / 2) + 4..]
+            )
         } else {
             format!("{packet_id}-corrupt")
         };

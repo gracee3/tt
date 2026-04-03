@@ -2,15 +2,13 @@
 
 use orcas_core::authority;
 use orcas_core::ipc::{
-    AssignmentStartRequest, AssignmentStartResponse,
-    AuthorityDeletePlanRequest, AuthorityHierarchyGetRequest,
-    AuthorityTrackedThreadCreateRequest, AuthorityTrackedThreadDeleteRequest,
-    AuthorityTrackedThreadEditRequest, AuthorityTrackedThreadGetRequest,
-    AuthorityTrackedThreadGetResponse, ThreadGetRequest, ThreadGetResponse,
-    CodexAssignmentPauseRequest, CodexAssignmentResumeRequest,
+    AssignmentStartRequest, AssignmentStartResponse, AuthorityDeletePlanRequest,
+    AuthorityHierarchyGetRequest, AuthorityTrackedThreadCreateRequest,
+    AuthorityTrackedThreadDeleteRequest, AuthorityTrackedThreadEditRequest,
+    AuthorityTrackedThreadGetRequest, AuthorityTrackedThreadGetResponse,
     AuthorityWorkstreamCreateRequest, AuthorityWorkstreamEditRequest,
-    AuthorityWorkunitCreateRequest, AuthorityWorkunitDeleteRequest,
-    AuthorityWorkunitEditRequest, AuthorityWorkunitGetRequest, StateGetRequest,
+    AuthorityWorkunitCreateRequest, AuthorityWorkunitDeleteRequest, AuthorityWorkunitEditRequest,
+    AuthorityWorkunitGetRequest, CodexAssignmentPauseRequest, CodexAssignmentResumeRequest,
     NotificationDeliveryJobListRequest, NotificationRecipientUpsertRequest,
     NotificationSubscriptionListRequest, NotificationSubscriptionSetEnabledRequest,
     NotificationSubscriptionUpsertRequest, NotificationTransportKind,
@@ -18,14 +16,14 @@ use orcas_core::ipc::{
     OperatorNotificationListRequest, OperatorReadModelCheckpointQueryRequest,
     OperatorReadModelWaitForCheckpointRequest, OperatorRemoteActionCreateRequest,
     OperatorRemoteActionGetRequest, OperatorRemoteActionListRequest,
-    OperatorRemoteActionWaitRequest, ProposalApproveRequest, ProposalCreateRequest,
-    ProposalCreateResponse, ProposalGetRequest, ProposalGetResponse,
-    ProposalArtifactDetailGetRequest, ProposalArtifactDetailGetResponse, ProposalRejectRequest,
-    PlanningSessionApproveRequest, PlanningSessionCreateRequest, PlanningSessionCreateResponse,
-    PlanningSessionListRequest,
+    OperatorRemoteActionWaitRequest, PlanningSessionApproveRequest, PlanningSessionCreateRequest,
+    PlanningSessionCreateResponse, PlanningSessionListRequest,
     PlanningSessionMarkReadyForReviewRequest, PlanningSessionRejectRequest,
     PlanningSessionRequestResearchRequest, PlanningSessionRequestResearchResponse,
-    PlanningSessionRequestSupervisorContextRequest,
+    PlanningSessionRequestSupervisorContextRequest, ProposalApproveRequest,
+    ProposalArtifactDetailGetRequest, ProposalArtifactDetailGetResponse, ProposalCreateRequest,
+    ProposalCreateResponse, ProposalGetRequest, ProposalGetResponse, ProposalRejectRequest,
+    StateGetRequest, ThreadGetRequest, ThreadGetResponse,
 };
 use orcas_operator_core::{
     DeliveryPageView, InboxDetailPageView, InboxPageView, NotificationPageView,
@@ -62,7 +60,9 @@ fn configured_origin(settings: &OperatorServerSettings) -> Result<&str, String> 
     Ok(origin)
 }
 
-fn command_metadata(settings: &OperatorServerSettings) -> Result<authority::CommandMetadata, String> {
+fn command_metadata(
+    settings: &OperatorServerSettings,
+) -> Result<authority::CommandMetadata, String> {
     let origin = authority::OriginNodeId::parse(configured_origin(settings)?.to_string())
         .map_err(|error| error.to_string())?;
     let actor =

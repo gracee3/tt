@@ -1,55 +1,54 @@
 use tracing::debug;
 
 use orcas_core::ipc::{
-    AssignmentStartRequest, AssignmentStartResponse,
-    AuthorityDeletePlanRequest, AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest,
-    AuthorityHierarchyGetResponse, AuthorityTrackedThreadCreateRequest,
+    AssignmentStartRequest, AssignmentStartResponse, AuthorityDeletePlanRequest,
+    AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest, AuthorityHierarchyGetResponse,
+    AuthorityTrackedThreadCreateRequest, AuthorityTrackedThreadCreateResponse,
+    AuthorityTrackedThreadDeleteRequest, AuthorityTrackedThreadDeleteResponse,
     AuthorityTrackedThreadEditRequest, AuthorityTrackedThreadEditResponse,
-    AuthorityTrackedThreadCreateResponse, AuthorityTrackedThreadDeleteRequest,
-    AuthorityTrackedThreadDeleteResponse, AuthorityWorkstreamCreateRequest,
-    AuthorityWorkstreamCreateResponse, AuthorityWorkstreamDeleteRequest,
-    AuthorityWorkstreamDeleteResponse, AuthorityWorkstreamEditRequest,
-    AuthorityWorkstreamEditResponse, AuthorityWorkunitCreateRequest,
-    AuthorityWorkunitCreateResponse, AuthorityWorkunitDeleteRequest,
-    AuthorityWorkunitDeleteResponse, AuthorityWorkunitEditRequest,
-    AuthorityWorkunitEditResponse, AuthorityWorkunitGetRequest,
-    AuthorityWorkunitGetResponse, AuthorityTrackedThreadGetRequest,
-    AuthorityTrackedThreadGetResponse, PlanningSessionCreateRequest,
-    PlanningSessionCreateResponse, PlanningSessionRequestSupervisorContextRequest,
-    PlanningSessionRequestSupervisorContextResponse, PlanningSessionRequestResearchRequest,
-    PlanningSessionRequestResearchResponse, PlanningSessionMarkReadyForReviewRequest,
-    PlanningSessionMarkReadyForReviewResponse, PlanningSessionApproveRequest,
-    PlanningSessionApproveResponse, PlanningSessionRejectRequest,
-    PlanningSessionRejectResponse, PlanningSessionListRequest,
-    PlanningSessionListResponse,
-    NotificationDeliveryJobGetRequest, NotificationDeliveryJobGetResponse,
-    NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
-    NotificationDeliveryRunPendingRequest, NotificationDeliveryRunPendingResponse,
-    NotificationRecipientListRequest, NotificationRecipientListResponse,
-    NotificationRecipientUpsertRequest, NotificationRecipientUpsertResponse,
-    NotificationSubscriptionListRequest, NotificationSubscriptionListResponse,
-    NotificationSubscriptionSetEnabledRequest, NotificationSubscriptionSetEnabledResponse,
-    NotificationSubscriptionUpsertRequest, NotificationSubscriptionUpsertResponse,
-    OperatorInboxMirrorCheckpointQueryResponse, OperatorInboxMirrorGetResponse,
-    OperatorInboxMirrorListResponse, OperatorInboxWaitForCheckpointRequest,
-    OperatorInboxWaitForCheckpointResponse, OperatorNotificationAckRequest,
-    OperatorNotificationAckResponse, OperatorNotificationGetRequest,
-    OperatorNotificationGetResponse, OperatorNotificationListRequest,
-    OperatorNotificationListResponse, OperatorNotificationSuppressRequest,
-    OperatorNotificationSuppressResponse, OperatorReadModelCheckpointQueryRequest,
-    OperatorReadModelCheckpointQueryResponse, OperatorReadModelWaitForCheckpointRequest,
-    OperatorReadModelWaitForCheckpointResponse, OperatorRemoteActionClaimRequest,
-    OperatorRemoteActionClaimResponse, OperatorRemoteActionCompleteRequest,
-    OperatorRemoteActionCompleteResponse, OperatorRemoteActionCreateRequest,
-    OperatorRemoteActionCreateResponse, OperatorRemoteActionFailRequest,
-    OperatorRemoteActionFailResponse, OperatorRemoteActionGetRequest,
-    OperatorRemoteActionGetResponse, OperatorRemoteActionListRequest,
-    OperatorRemoteActionListResponse, OperatorRemoteActionWaitRequest, ProposalApproveRequest,
+    AuthorityTrackedThreadGetRequest, AuthorityTrackedThreadGetResponse,
+    AuthorityWorkstreamCreateRequest, AuthorityWorkstreamCreateResponse,
+    AuthorityWorkstreamDeleteRequest, AuthorityWorkstreamDeleteResponse,
+    AuthorityWorkstreamEditRequest, AuthorityWorkstreamEditResponse,
+    AuthorityWorkunitCreateRequest, AuthorityWorkunitCreateResponse,
+    AuthorityWorkunitDeleteRequest, AuthorityWorkunitDeleteResponse, AuthorityWorkunitEditRequest,
+    AuthorityWorkunitEditResponse, AuthorityWorkunitGetRequest, AuthorityWorkunitGetResponse,
+    CodexAssignmentPauseRequest, CodexAssignmentPauseResponse, CodexAssignmentResumeRequest,
+    CodexAssignmentResumeResponse, NotificationDeliveryJobGetRequest,
+    NotificationDeliveryJobGetResponse, NotificationDeliveryJobListRequest,
+    NotificationDeliveryJobListResponse, NotificationDeliveryRunPendingRequest,
+    NotificationDeliveryRunPendingResponse, NotificationRecipientListRequest,
+    NotificationRecipientListResponse, NotificationRecipientUpsertRequest,
+    NotificationRecipientUpsertResponse, NotificationSubscriptionListRequest,
+    NotificationSubscriptionListResponse, NotificationSubscriptionSetEnabledRequest,
+    NotificationSubscriptionSetEnabledResponse, NotificationSubscriptionUpsertRequest,
+    NotificationSubscriptionUpsertResponse, OperatorInboxMirrorCheckpointQueryResponse,
+    OperatorInboxMirrorGetResponse, OperatorInboxMirrorListResponse,
+    OperatorInboxWaitForCheckpointRequest, OperatorInboxWaitForCheckpointResponse,
+    OperatorNotificationAckRequest, OperatorNotificationAckResponse,
+    OperatorNotificationGetRequest, OperatorNotificationGetResponse,
+    OperatorNotificationListRequest, OperatorNotificationListResponse,
+    OperatorNotificationSuppressRequest, OperatorNotificationSuppressResponse,
+    OperatorReadModelCheckpointQueryRequest, OperatorReadModelCheckpointQueryResponse,
+    OperatorReadModelWaitForCheckpointRequest, OperatorReadModelWaitForCheckpointResponse,
+    OperatorRemoteActionClaimRequest, OperatorRemoteActionClaimResponse,
+    OperatorRemoteActionCompleteRequest, OperatorRemoteActionCompleteResponse,
+    OperatorRemoteActionCreateRequest, OperatorRemoteActionCreateResponse,
+    OperatorRemoteActionFailRequest, OperatorRemoteActionFailResponse,
+    OperatorRemoteActionGetRequest, OperatorRemoteActionGetResponse,
+    OperatorRemoteActionListRequest, OperatorRemoteActionListResponse,
+    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse,
+    PlanningSessionApproveRequest, PlanningSessionApproveResponse, PlanningSessionCreateRequest,
+    PlanningSessionCreateResponse, PlanningSessionListRequest, PlanningSessionListResponse,
+    PlanningSessionMarkReadyForReviewRequest, PlanningSessionMarkReadyForReviewResponse,
+    PlanningSessionRejectRequest, PlanningSessionRejectResponse,
+    PlanningSessionRequestResearchRequest, PlanningSessionRequestResearchResponse,
+    PlanningSessionRequestSupervisorContextRequest,
+    PlanningSessionRequestSupervisorContextResponse, ProposalApproveRequest,
     ProposalApproveResponse, ProposalArtifactDetailGetRequest, ProposalArtifactDetailGetResponse,
     ProposalCreateRequest, ProposalCreateResponse, ProposalGetRequest, ProposalGetResponse,
-    ProposalRejectRequest, ProposalRejectResponse, OperatorRemoteActionWaitResponse, StateGetRequest, StateGetResponse,
-    ThreadGetRequest, ThreadGetResponse, CodexAssignmentPauseRequest,
-    CodexAssignmentPauseResponse, CodexAssignmentResumeRequest, CodexAssignmentResumeResponse,
+    ProposalRejectRequest, ProposalRejectResponse, StateGetRequest, StateGetResponse,
+    ThreadGetRequest, ThreadGetResponse,
 };
 use orcas_core::{OrcasError, OrcasResult};
 use uuid::Uuid;
@@ -442,7 +441,8 @@ impl OrcasServerClient {
         &self,
         request: &ProposalGetRequest,
     ) -> OrcasResult<ProposalGetResponse> {
-        self.post_json("operator-runtime/proposals/get", request).await
+        self.post_json("operator-runtime/proposals/get", request)
+            .await
     }
 
     pub async fn proposal_artifact_detail_get(
@@ -481,7 +481,8 @@ impl OrcasServerClient {
         &self,
         request: &AuthorityDeletePlanRequest,
     ) -> OrcasResult<AuthorityDeletePlanResponse> {
-        self.post_json("operator-authority/delete-plan", request).await
+        self.post_json("operator-authority/delete-plan", request)
+            .await
     }
 
     pub async fn authority_workstream_create(
@@ -603,8 +604,11 @@ impl OrcasServerClient {
         &self,
         request: &PlanningSessionRequestResearchRequest,
     ) -> OrcasResult<PlanningSessionRequestResearchResponse> {
-        self.post_json("operator-runtime/planning-sessions/request-research", request)
-            .await
+        self.post_json(
+            "operator-runtime/planning-sessions/request-research",
+            request,
+        )
+        .await
     }
 
     pub async fn planning_session_mark_ready_for_review(
@@ -632,7 +636,8 @@ impl OrcasServerClient {
     }
 
     pub async fn thread_get(&self, request: &ThreadGetRequest) -> OrcasResult<ThreadGetResponse> {
-        self.post_json("operator-runtime/threads/get", request).await
+        self.post_json("operator-runtime/threads/get", request)
+            .await
     }
 
     pub async fn codex_assignment_pause(
