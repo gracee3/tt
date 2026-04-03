@@ -798,16 +798,8 @@ fn repair_supervisor_proposal_value(
             .get_mut("proposed_decision")
             .and_then(Value::as_object_mut)
         {
-            normalize_supervisor_context_ref_field(
-                proposed_decision,
-                "target_work_unit_id",
-                pack,
-            );
-            normalize_supervisor_context_ref_field(
-                proposed_decision,
-                "source_report_id",
-                pack,
-            );
+            normalize_supervisor_context_ref_field(proposed_decision, "target_work_unit_id", pack);
+            normalize_supervisor_context_ref_field(proposed_decision, "source_report_id", pack);
             proposed_decision.insert(
                 "expected_work_unit_status".to_string(),
                 Value::String(
@@ -854,13 +846,12 @@ fn repair_supervisor_proposal_value(
     if let Some(plan_assessment_value) = proposal_object.get("plan_assessment").cloned()
         && !plan_assessment_value.is_null()
     {
-        let drop_assessment =
-            match serde_json::from_value::<orcas_core::planning::PlanAssessment>(
-                plan_assessment_value,
-            ) {
-                Ok(plan_assessment) => validate_plan_assessment(&plan_assessment, pack).is_err(),
-                Err(_) => true,
-            };
+        let drop_assessment = match serde_json::from_value::<orcas_core::planning::PlanAssessment>(
+            plan_assessment_value,
+        ) {
+            Ok(plan_assessment) => validate_plan_assessment(&plan_assessment, pack).is_err(),
+            Err(_) => true,
+        };
         if drop_assessment {
             proposal_object.insert("plan_assessment".to_string(), Value::Null);
         }

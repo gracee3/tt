@@ -6167,13 +6167,13 @@ impl OrcasDaemonService {
                         plan.workspace_report.as_ref(),
                     )
                 {
-                    let completed_disposition =
-                        if plan.parsed_report.validation.parse_result == ReportParseResult::Invalid
-                        {
-                            Some(ReportDisposition::Completed)
-                        } else {
-                            Some(plan.parsed_report.disposition)
-                        };
+                    let completed_disposition = if plan.parsed_report.validation.parse_result
+                        == ReportParseResult::Invalid
+                    {
+                        Some(ReportDisposition::Completed)
+                    } else {
+                        Some(plan.parsed_report.disposition)
+                    };
                     self.mark_workspace_operation_completed(
                         &plan.assignment_id,
                         Some(core.report.id.clone()),
@@ -12182,11 +12182,8 @@ impl OrcasDaemonService {
             let state = self.state.read().await;
             Self::assignment_summary(&state.collaboration, assignment)
         };
-        self.emit(ipc::DaemonEvent::AssignmentLifecycle {
-            action,
-            assignment,
-        })
-        .await;
+        self.emit(ipc::DaemonEvent::AssignmentLifecycle { action, assignment })
+            .await;
     }
 
     async fn emit_codex_assignment_lifecycle(
@@ -16474,12 +16471,12 @@ worker epilogue"#;
             rebase_succeeded: Some(false),
         };
 
-        assert!(OrcasDaemonService::workspace_operation_recovery_suggests_success(
-            Some(&workspace_report)
-        ));
         assert!(
-            !OrcasDaemonService::workspace_operation_recovery_suggests_success(None)
+            OrcasDaemonService::workspace_operation_recovery_suggests_success(Some(
+                &workspace_report
+            ))
         );
+        assert!(!OrcasDaemonService::workspace_operation_recovery_suggests_success(None));
     }
 
     fn sample_planning_session(
@@ -27387,7 +27384,10 @@ ORCAS_REPORT_END"#
             Some(thread_id.as_str())
         );
         assert_eq!(tracked_thread.title, "auto-worker");
-        assert_eq!(tracked_thread.preferred_cwd.as_deref(), Some("/tmp/orcas-auto"));
+        assert_eq!(
+            tracked_thread.preferred_cwd.as_deref(),
+            Some("/tmp/orcas-auto")
+        );
         assert_eq!(tracked_thread.preferred_model.as_deref(), Some("gpt-5.4"));
 
         let snapshot = service.state_get().await.expect("state snapshot");
@@ -27514,7 +27514,10 @@ ORCAS_REPORT_END"#
             .await
             .expect("tracked thread")
             .tracked_thread;
-        assert_eq!(rebound.binding_state, orcas_core::authority::TrackedThreadBindingState::Bound);
+        assert_eq!(
+            rebound.binding_state,
+            orcas_core::authority::TrackedThreadBindingState::Bound
+        );
         assert_eq!(
             rebound.upstream_thread_id.as_deref(),
             worker_session.thread_id.as_deref()
@@ -28550,7 +28553,11 @@ Boundedness note: Stay within the legacy compatibility boundary."#
             Some("/tmp/refreshed-cwd")
         );
         assert_eq!(
-            refreshed_record.packet.execution_context.repo_root.as_deref(),
+            refreshed_record
+                .packet
+                .execution_context
+                .repo_root
+                .as_deref(),
             Some("/tmp/refreshed-cwd")
         );
     }

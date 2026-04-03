@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -7,14 +8,18 @@ use std::time::Instant;
 
 use anyhow::{Error, Result, anyhow, bail};
 use async_trait::async_trait;
+use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use orcas_core::{
-    AppConfig, AppPaths, CodexThreadAssignmentStatus, DecisionType, SupervisorProposalEdits,
-    SupervisorProposalRecord, SupervisorTurnDecision, SupervisorTurnDecisionKind,
-    SupervisorTurnDecisionStatus, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest,
-    WorkUnitStatus, WorkstreamStatus, authority, ipc,
+    AppConfig, AppPaths, CodexThreadAssignmentStatus, DecisionType,
+    ORCAS_APP_SERVER_LISTEN_URL_ENV, ORCAS_APP_SERVER_OWNER_KIND_ENV,
+    ORCAS_APP_SERVER_OWNER_PID_ENV, ORCAS_APP_SERVER_STARTED_AT_ENV, ORCAS_APP_SERVER_TAG_ENV,
+    ORCAS_APP_SERVER_TAG_VALUE, SupervisorProposalEdits, SupervisorProposalRecord,
+    SupervisorTurnDecision, SupervisorTurnDecisionKind, SupervisorTurnDecisionStatus,
+    ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, WorkUnitStatus, WorkstreamStatus,
+    authority, ipc,
 };
 use orcasd::{
     OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides,
@@ -612,6 +617,23 @@ pub struct SupervisorService {
     overrides: OrcasRuntimeOverrides,
 }
 
+#[derive(Debug, Clone)]
+struct LocalCodexAppServer {
+    endpoint: String,
+    listen_address: String,
+    pid: u32,
+    parent_pid: Option<u32>,
+    process_name: String,
+    command_line: String,
+    managed: bool,
+    owner_kind: Option<String>,
+    owner_pid: Option<u32>,
+    owner_pid_running: Option<bool>,
+    owner_listen_url: Option<String>,
+    owner_started_at: Option<String>,
+    reap_hint: String,
+}
+
 impl SupervisorService {
     pub async fn load(overrides: &RuntimeOverrides) -> Result<Self> {
         let paths = AppPaths::discover()?;
@@ -691,6 +713,111 @@ impl SupervisorService {
         Ok(())
     }
 
+    pub async fn session_active(&self) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client.session_get_active().await?;
+        println!(
+            "active_thread_id: {}",
+            response.session.active_thread_id.as_deref().unwrap_or("-")
+        );
+        println!("active_turns: {}", response.session.active_turns.len());
+        for turn in response.session.active_turns {
+            println!(
+                "{}\t{}\t{}\t{}",
+                turn.thread_id, turn.turn_id, turn.status, turn.updated_at
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn daemon_discover_app_servers(&self) -> Result<()> {
+        let servers = Self::discover_local_codex_app_servers().await?;
+        if servers.is_empty() {
+            println!("no local codex app-server listeners discovered");
+            return Ok(());
+        }
+        for (index, server) in servers.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            Self::print_discovered_app_server(server);
+        }
+        Ok(())
+    }
+
+    pub async fn daemon_reap_app_servers(
+        &self,
+        apply: bool,
+        all_tagged: bool,
+        include_untagged: bool,
+        target_pids: &[u32],
+    ) -> Result<()> {
+        let servers = Self::discover_local_codex_app_servers().await?;
+        let explicit_targets = !target_pids.is_empty();
+        let selected = servers
+            .into_iter()
+            .filter(|server| {
+                if explicit_targets {
+                    target_pids.contains(&server.pid)
+                } else if all_tagged {
+                    server.managed
+                } else {
+                    server.managed && server.owner_pid_running != Some(true)
+                }
+            })
+            .filter(|server| include_untagged || server.managed)
+            .collect::<Vec<_>>();
+
+        let selection_mode = if explicit_targets {
+            "explicit-pid-selection"
+        } else if all_tagged {
+            "all-tagged"
+        } else {
+            "tagged-owner-dead"
+        };
+
+        println!("mode: {}", if apply { "apply" } else { "dry-run" });
+        println!("selection: {selection_mode}");
+        println!("matched: {}", selected.len());
+
+        if selected.is_empty() {
+            println!("no app-servers matched reap selection");
+            return Ok(());
+        }
+
+        for server in &selected {
+            println!();
+            Self::print_discovered_app_server(server);
+            if !apply {
+                println!("action: would send SIGTERM");
+            }
+        }
+
+        if !apply {
+            println!();
+            println!("dry_run: rerun with --apply to send SIGTERM");
+            if explicit_targets && !include_untagged {
+                println!(
+                    "note: add --include-untagged to target manually selected untagged listeners"
+                );
+            }
+            return Ok(());
+        }
+
+        for server in selected {
+            let status = Command::new("kill")
+                .args(["-TERM", &server.pid.to_string()])
+                .status()
+                .await
+                .map_err(|error| anyhow!("failed to run `kill -TERM {}`: {error}", server.pid))?;
+            if !status.success() {
+                bail!("`kill -TERM {}` failed with status {}", server.pid, status);
+            }
+            println!("reaped_pid: {}", server.pid);
+        }
+        Ok(())
+    }
+
     pub async fn daemon_start(&self, force: bool) -> Result<()> {
         let launch = if force || self.overrides.force_spawn {
             OrcasDaemonLaunch::Always
@@ -764,14 +891,29 @@ impl SupervisorService {
     pub async fn threads_list(&self) -> Result<()> {
         let client = self.ready_client().await?;
         let response = client.threads_list_scoped().await?;
-        for thread in response.data {
+        Self::print_thread_list(response.data);
+        Ok(())
+    }
+
+    pub async fn threads_list_loaded(&self) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client.threads_list_loaded().await?;
+        Self::print_thread_list(response.data);
+        Ok(())
+    }
+
+    fn print_thread_list(threads: Vec<ipc::ThreadSummary>) {
+        for thread in threads {
             println!(
-                "{}\t{}\t{}\t{}\tin_flight={}\t{}\t{}",
+                "{}\t{}\t{}\t{}\tloaded={:?}\tmonitor={:?}\tin_flight={}\tactive_turn={}\t{}\t{}",
                 thread.id,
                 thread.status,
                 thread.model_provider,
                 thread.scope,
+                thread.loaded_status,
+                thread.monitor_state,
                 thread.turn_in_flight,
+                thread.active_turn_id.as_deref().unwrap_or("-"),
                 thread
                     .recent_output
                     .clone()
@@ -779,7 +921,6 @@ impl SupervisorService {
                 thread.recent_event.unwrap_or_default()
             );
         }
-        Ok(())
     }
 
     pub async fn thread_read(&self, thread_id: &str) -> Result<()> {
@@ -825,6 +966,36 @@ impl SupervisorService {
                 turn.recent_output.unwrap_or_default(),
                 turn.recent_event.unwrap_or_default()
             );
+        }
+        Ok(())
+    }
+
+    pub async fn turns_recent(&self, thread_id: &str, limit: usize) -> Result<()> {
+        let client = self.ready_client().await?;
+        let response = client
+            .turns_recent(&ipc::TurnsRecentRequest {
+                thread_id: thread_id.to_string(),
+                limit,
+            })
+            .await?;
+        println!("thread_id: {}", response.thread_id);
+        println!("turns: {}", response.turns.len());
+        for turn in response.turns {
+            println!(
+                "{}\t{}\titems={}\tstarted={}\tcompleted={}",
+                turn.id,
+                turn.status,
+                turn.items.len(),
+                turn.started_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
+                turn.completed_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+            if let Some(summary) = Self::turn_recent_text(&turn) {
+                println!("summary: {summary}");
+            }
         }
         Ok(())
     }
@@ -980,6 +1151,73 @@ impl SupervisorService {
                 workstream.title
             );
         }
+        Ok(())
+    }
+
+    pub async fn events_recent(&self, limit: usize) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client.state_get().await?;
+        let total = response.snapshot.recent_events.len();
+        let start = total.saturating_sub(limit);
+        let events = &response.snapshot.recent_events[start..];
+        println!("daemon_recent_events: {}", total);
+        if events.is_empty() {
+            println!("no recent daemon events");
+            return Ok(());
+        }
+        for event in events {
+            Self::print_event_summary(event);
+        }
+        Ok(())
+    }
+
+    pub async fn events_watch(&self, include_snapshot: bool, count: Option<usize>) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let (mut subscription, snapshot) = client.subscribe_events(include_snapshot).await?;
+        if let Some(snapshot) = snapshot {
+            println!("snapshot_threads: {}", snapshot.threads.len());
+            println!(
+                "snapshot_active_thread_id: {}",
+                snapshot.session.active_thread_id.as_deref().unwrap_or("-")
+            );
+            println!("snapshot_recent_events: {}", snapshot.recent_events.len());
+            for event in snapshot.recent_events {
+                Self::print_event_summary(&event);
+            }
+        }
+
+        let mut seen = 0usize;
+        loop {
+            tokio::select! {
+                event = subscription.recv() => {
+                    match event {
+                        Ok(envelope) => {
+                            Self::print_daemon_event(&envelope);
+                            seen += 1;
+                            if let Some(limit) = count
+                                && seen >= limit
+                            {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            println!("event_watch_warning: lagged_by={skipped}");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            println!("event_watch_closed: true");
+                            break;
+                        }
+                    }
+                }
+                signal = tokio::signal::ctrl_c() => {
+                    if signal.is_ok() {
+                        println!("event_watch_interrupted: true");
+                    }
+                    break;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -3817,6 +4055,470 @@ impl SupervisorService {
         }
 
         Err(last_error.unwrap_or_else(|| Error::msg("connect to Orcas daemon")))
+    }
+
+    fn print_event_summary(event: &ipc::EventSummary) {
+        println!(
+            "{}\t{}\tthread={}\tturn={}\t{}",
+            event.timestamp.to_rfc3339(),
+            event.kind,
+            event.thread_id.as_deref().unwrap_or("-"),
+            event.turn_id.as_deref().unwrap_or("-"),
+            event.message
+        );
+    }
+
+    fn print_daemon_event(envelope: &ipc::DaemonEventEnvelope) {
+        let (kind, thread_id, turn_id, message) = Self::daemon_event_line_parts(&envelope.event);
+        println!(
+            "{}\t{}\tthread={}\tturn={}\t{}",
+            envelope.emitted_at.to_rfc3339(),
+            kind,
+            thread_id.unwrap_or("-"),
+            turn_id.unwrap_or("-"),
+            message
+        );
+    }
+
+    fn daemon_event_line_parts(
+        event: &ipc::DaemonEvent,
+    ) -> (&'static str, Option<&str>, Option<&str>, String) {
+        match event {
+            ipc::DaemonEvent::UpstreamStatusChanged { upstream } => (
+                "upstream",
+                None,
+                None,
+                format!(
+                    "endpoint={} status={} detail={}",
+                    upstream.endpoint,
+                    upstream.status,
+                    upstream.detail.as_deref().unwrap_or("-")
+                ),
+            ),
+            ipc::DaemonEvent::SessionChanged { session } => (
+                "session",
+                session.active_thread_id.as_deref(),
+                None,
+                format!("active_turns={}", session.active_turns.len()),
+            ),
+            ipc::DaemonEvent::ThreadUpdated { thread } => (
+                "thread",
+                Some(thread.id.as_str()),
+                None,
+                format!(
+                    "status={} scope={} in_flight={} preview={}",
+                    thread.status,
+                    thread.scope,
+                    thread.turn_in_flight,
+                    Self::truncate_snippet(&thread.preview.replace('\n', " "))
+                ),
+            ),
+            ipc::DaemonEvent::TurnUpdated { thread_id, turn } => (
+                "turn",
+                Some(thread_id.as_str()),
+                Some(turn.id.as_str()),
+                format!("status={} items={}", turn.status, turn.items.len()),
+            ),
+            ipc::DaemonEvent::ItemUpdated {
+                thread_id,
+                turn_id,
+                item,
+            } => (
+                "item",
+                Some(thread_id.as_str()),
+                Some(turn_id.as_str()),
+                format!(
+                    "item_id={} type={} status={}",
+                    item.id,
+                    item.item_type,
+                    item.status.as_deref().unwrap_or("-")
+                ),
+            ),
+            ipc::DaemonEvent::OutputDelta {
+                thread_id,
+                turn_id,
+                delta,
+                ..
+            } => (
+                "delta",
+                Some(thread_id.as_str()),
+                Some(turn_id.as_str()),
+                Self::truncate_snippet(&delta.replace('\n', "\\n")),
+            ),
+            ipc::DaemonEvent::TurnDiffUpdated {
+                thread_id,
+                turn_id,
+                diff,
+            } => (
+                "turn_diff",
+                Some(thread_id.as_str()),
+                Some(turn_id.as_str()),
+                Self::truncate_snippet(diff),
+            ),
+            ipc::DaemonEvent::TurnPlanUpdated {
+                thread_id,
+                turn_id,
+                plan,
+            } => (
+                "turn_plan",
+                Some(thread_id.as_str()),
+                Some(turn_id.as_str()),
+                format!("steps={}", plan.plan.len()),
+            ),
+            ipc::DaemonEvent::ThreadTokenUsageUpdated {
+                thread_id,
+                token_usage,
+            } => (
+                "thread_token_usage",
+                Some(thread_id.as_str()),
+                None,
+                format!("total_tokens={}", token_usage.total_tokens),
+            ),
+            ipc::DaemonEvent::WorkstreamLifecycle { action, workstream } => (
+                "workstream",
+                None,
+                None,
+                format!("workstream_id={} action={action:?}", workstream.id),
+            ),
+            ipc::DaemonEvent::WorkUnitLifecycle { action, work_unit } => (
+                "work_unit",
+                None,
+                None,
+                format!("work_unit_id={} action={action:?}", work_unit.id),
+            ),
+            ipc::DaemonEvent::TrackedThreadLifecycle {
+                action,
+                tracked_thread,
+            } => (
+                "tracked_thread",
+                None,
+                None,
+                format!("tracked_thread_id={} action={action:?}", tracked_thread.id),
+            ),
+            ipc::DaemonEvent::AssignmentLifecycle { action, assignment } => (
+                "assignment",
+                None,
+                None,
+                format!("assignment_id={} action={action:?}", assignment.id),
+            ),
+            ipc::DaemonEvent::CodexAssignmentLifecycle { action, assignment } => (
+                "codex_assignment",
+                Some(assignment.codex_thread_id.as_str()),
+                assignment.latest_basis_turn_id.as_deref(),
+                format!(
+                    "assignment_id={} action={action:?}",
+                    assignment.assignment_id
+                ),
+            ),
+            ipc::DaemonEvent::SupervisorDecisionLifecycle { action, decision } => (
+                "supervisor_decision",
+                Some(decision.codex_thread_id.as_str()),
+                decision.basis_turn_id.as_deref(),
+                format!("decision_id={} action={action:?}", decision.decision_id),
+            ),
+            ipc::DaemonEvent::ReportRecorded { report } => (
+                "report",
+                None,
+                None,
+                format!(
+                    "report_id={} parse_result={:?}",
+                    report.id, report.parse_result
+                ),
+            ),
+            ipc::DaemonEvent::DecisionApplied { decision } => (
+                "decision",
+                None,
+                None,
+                format!(
+                    "decision_id={} type={:?}",
+                    decision.id, decision.decision_type
+                ),
+            ),
+            ipc::DaemonEvent::ProposalLifecycle {
+                action, proposal, ..
+            } => (
+                "proposal",
+                None,
+                None,
+                format!("proposal_id={} action={action:?}", proposal.id),
+            ),
+            ipc::DaemonEvent::Warning { message } => ("warning", None, None, message.clone()),
+        }
+    }
+
+    fn turn_recent_text(turn: &ipc::TurnView) -> Option<String> {
+        turn.items.iter().rev().find_map(|item| {
+            item.summary
+                .clone()
+                .or_else(|| item.text.clone())
+                .or_else(|| item.payload.as_ref().map(Self::truncate_json_value))
+        })
+    }
+
+    fn truncate_json_value(value: &serde_json::Value) -> String {
+        Self::truncate_snippet(&value.to_string())
+    }
+
+    fn truncate_snippet(text: &str) -> String {
+        const LIMIT: usize = 96;
+        let compact = text.replace('\n', " ");
+        let mut chars = compact.chars();
+        let truncated: String = chars.by_ref().take(LIMIT).collect();
+        if chars.next().is_some() {
+            format!("{truncated}...")
+        } else {
+            truncated
+        }
+    }
+
+    fn print_wrapped_field(label: &str, value: &str, width: usize) {
+        let prefix = format!("{label}: ");
+        let continuation = " ".repeat(prefix.len());
+        let available = width.saturating_sub(prefix.len()).max(16);
+        let mut lines = Vec::new();
+        let mut current = String::new();
+
+        for word in value.split_whitespace() {
+            let candidate_len = if current.is_empty() {
+                word.len()
+            } else {
+                current.len() + 1 + word.len()
+            };
+            if !current.is_empty() && candidate_len > available {
+                lines.push(current);
+                current = word.to_string();
+            } else {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+            }
+        }
+
+        if !current.is_empty() {
+            lines.push(current);
+        }
+
+        if lines.is_empty() {
+            println!("{prefix}");
+            return;
+        }
+
+        for (index, line) in lines.iter().enumerate() {
+            if index == 0 {
+                println!("{prefix}{line}");
+            } else {
+                println!("{continuation}{line}");
+            }
+        }
+    }
+
+    fn print_discovered_app_server(server: &LocalCodexAppServer) {
+        println!("endpoint: {}", server.endpoint);
+        println!("pid: {}", server.pid);
+        println!(
+            "ppid: {}",
+            server
+                .parent_pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        println!("process: {}", server.process_name);
+        println!("listen: {}", server.listen_address);
+        println!(
+            "managed: {}",
+            if server.managed {
+                ORCAS_APP_SERVER_TAG_VALUE
+            } else {
+                "no"
+            }
+        );
+        if let Some(owner_kind) = server.owner_kind.as_deref() {
+            println!("owner_kind: {owner_kind}");
+        }
+        if let Some(owner_pid) = server.owner_pid {
+            let running = server.owner_pid_running.unwrap_or(false);
+            println!("owner_pid: {owner_pid} running={running}");
+        }
+        if let Some(owner_listen_url) = server.owner_listen_url.as_deref() {
+            println!("owner_listen_url: {owner_listen_url}");
+        }
+        if let Some(owner_started_at) = server.owner_started_at.as_deref() {
+            println!("owner_started_at: {owner_started_at}");
+        }
+        println!("reap_hint: {}", server.reap_hint);
+        Self::print_wrapped_field("args", &server.command_line, 88);
+    }
+
+    async fn discover_local_codex_app_servers() -> Result<Vec<LocalCodexAppServer>> {
+        let output = Command::new("ss")
+            .args(["-ltnpH"])
+            .output()
+            .await
+            .map_err(|error| anyhow!("failed to run `ss -ltnpH`: {error}"))?;
+        if !output.status.success() {
+            return Err(anyhow!("`ss -ltnpH` failed with status {}", output.status));
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|error| anyhow!("failed to decode `ss` output as utf-8: {error}"))?;
+        let mut servers = Vec::new();
+        for line in stdout.lines() {
+            if let Some(server) = Self::parse_ss_codex_listener(line).await? {
+                servers.push(server);
+            }
+        }
+        servers.sort_by(|left, right| {
+            left.endpoint
+                .cmp(&right.endpoint)
+                .then_with(|| left.pid.cmp(&right.pid))
+        });
+        Ok(servers)
+    }
+
+    async fn parse_ss_codex_listener(line: &str) -> Result<Option<LocalCodexAppServer>> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains("users:(") {
+            return Ok(None);
+        }
+
+        let columns = trimmed.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 6 {
+            return Ok(None);
+        }
+        let listen_address = columns[3].to_string();
+        let Some(users_index) = trimmed.find("users:(") else {
+            return Ok(None);
+        };
+        let users = &trimmed[users_index..];
+        let Some(process_name) = Self::extract_quoted_value(users) else {
+            return Ok(None);
+        };
+        if process_name != "codex" {
+            return Ok(None);
+        }
+        let Some(pid) = Self::extract_pid(users) else {
+            return Ok(None);
+        };
+
+        let command_line = Self::read_process_cmdline(pid)
+            .await
+            .unwrap_or_else(|| process_name.to_string());
+        if !(command_line.contains("app-server") || command_line.contains("--listen")) {
+            return Ok(None);
+        }
+
+        let environment = Self::read_process_environment(pid)
+            .await
+            .unwrap_or_default();
+        let parent_pid = Self::read_process_status_number(pid, "PPid:").await;
+        let owner_pid = environment
+            .get(ORCAS_APP_SERVER_OWNER_PID_ENV)
+            .and_then(|value| value.parse().ok());
+        let owner_pid_running = owner_pid.map(Self::process_exists);
+        let managed = environment
+            .get(ORCAS_APP_SERVER_TAG_ENV)
+            .is_some_and(|value| value == ORCAS_APP_SERVER_TAG_VALUE);
+        let owner_kind = environment.get(ORCAS_APP_SERVER_OWNER_KIND_ENV).cloned();
+        let owner_listen_url = environment.get(ORCAS_APP_SERVER_LISTEN_URL_ENV).cloned();
+        let owner_started_at = environment.get(ORCAS_APP_SERVER_STARTED_AT_ENV).cloned();
+        let orphaned = parent_pid == Some(1);
+        let reap_hint = if managed {
+            if owner_pid_running == Some(false) || owner_pid.is_none() {
+                "safe-tagged-owner-dead"
+            } else {
+                "tagged-owner-alive"
+            }
+        } else if orphaned {
+            "untagged-orphan-manual-review"
+        } else {
+            "untagged-manual-review"
+        };
+
+        Ok(Some(LocalCodexAppServer {
+            endpoint: format!("ws://{listen_address}"),
+            listen_address,
+            pid,
+            parent_pid,
+            process_name: process_name.to_string(),
+            command_line,
+            managed,
+            owner_kind,
+            owner_pid,
+            owner_pid_running,
+            owner_listen_url,
+            owner_started_at,
+            reap_hint: reap_hint.to_string(),
+        }))
+    }
+
+    fn extract_quoted_value(text: &str) -> Option<&str> {
+        let start = text.find('"')?;
+        let rest = &text[start + 1..];
+        let end = rest.find('"')?;
+        Some(&rest[..end])
+    }
+
+    fn extract_pid(text: &str) -> Option<u32> {
+        let pid_marker = "pid=";
+        let start = text.find(pid_marker)? + pid_marker.len();
+        let digits = text[start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        digits.parse().ok()
+    }
+
+    async fn read_process_cmdline(pid: u32) -> Option<String> {
+        let path = format!("/proc/{pid}/cmdline");
+        let bytes = tokio::fs::read(path).await.ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        let parts = bytes
+            .split(|byte| *byte == 0)
+            .filter(|part| !part.is_empty())
+            .map(|part| String::from_utf8_lossy(part).into_owned())
+            .collect::<Vec<_>>();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+
+    async fn read_process_environment(pid: u32) -> Option<BTreeMap<String, String>> {
+        let path = format!("/proc/{pid}/environ");
+        let bytes = tokio::fs::read(path).await.ok()?;
+        if bytes.is_empty() {
+            return Some(BTreeMap::new());
+        }
+
+        let mut env = BTreeMap::new();
+        for entry in bytes
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+        {
+            let text = String::from_utf8_lossy(entry);
+            let Some((key, value)) = text.split_once('=') else {
+                continue;
+            };
+            env.insert(key.to_string(), value.to_string());
+        }
+        Some(env)
+    }
+
+    async fn read_process_status_number(pid: u32, key: &str) -> Option<u32> {
+        let path = format!("/proc/{pid}/status");
+        let contents = tokio::fs::read_to_string(path).await.ok()?;
+        contents.lines().find_map(|line| {
+            let value = line.strip_prefix(key)?.trim();
+            value.parse().ok()
+        })
+    }
+
+    fn process_exists(pid: u32) -> bool {
+        Path::new(&format!("/proc/{pid}")).exists()
     }
 
     fn print_proposal_record(proposal: &SupervisorProposalRecord) {

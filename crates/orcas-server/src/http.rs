@@ -10,45 +10,38 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::time::{Duration, Instant, sleep};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use crate::delivery::WebPushNotificationDeliveryTransport;
 use crate::delivery::{LogNotificationDeliveryTransport, MockNotificationDeliveryTransport};
 use orcas_core::ipc::{
-    AssignmentStartRequest, AssignmentStartResponse,
-    AuthorityDeletePlanRequest, AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest,
-    AuthorityHierarchyGetResponse, AuthorityTrackedThreadCreateRequest,
+    AssignmentStartRequest, AssignmentStartResponse, AuthorityDeletePlanRequest,
+    AuthorityDeletePlanResponse, AuthorityHierarchyGetRequest, AuthorityHierarchyGetResponse,
+    AuthorityTrackedThreadCreateRequest, AuthorityTrackedThreadCreateResponse,
+    AuthorityTrackedThreadDeleteRequest, AuthorityTrackedThreadDeleteResponse,
     AuthorityTrackedThreadEditRequest, AuthorityTrackedThreadEditResponse,
-    AuthorityTrackedThreadCreateResponse, AuthorityTrackedThreadDeleteRequest,
-    AuthorityTrackedThreadDeleteResponse, AuthorityWorkstreamCreateRequest,
-    AuthorityWorkstreamCreateResponse, AuthorityWorkstreamDeleteRequest,
-    AuthorityWorkstreamDeleteResponse, AuthorityWorkstreamEditRequest,
-    AuthorityWorkstreamEditResponse, AuthorityWorkunitCreateRequest,
-    AuthorityWorkunitCreateResponse, AuthorityWorkunitDeleteRequest,
-    AuthorityWorkunitDeleteResponse, AuthorityWorkunitEditRequest,
-    AuthorityWorkunitEditResponse, AuthorityWorkunitGetRequest,
-    AuthorityWorkunitGetResponse, AuthorityTrackedThreadGetRequest,
-    AuthorityTrackedThreadGetResponse, PlanningSessionCreateRequest,
-    PlanningSessionCreateResponse, PlanningSessionRequestSupervisorContextRequest,
-    PlanningSessionRequestSupervisorContextResponse, PlanningSessionRequestResearchRequest,
-    PlanningSessionRequestResearchResponse, PlanningSessionMarkReadyForReviewRequest,
-    PlanningSessionMarkReadyForReviewResponse, PlanningSessionApproveRequest,
-    PlanningSessionApproveResponse, PlanningSessionRejectRequest,
-    PlanningSessionRejectResponse, PlanningSessionListRequest,
-    PlanningSessionListResponse,
-    NotificationDeliveryJobGetRequest, NotificationDeliveryJobGetResponse,
-    NotificationDeliveryJobListRequest, NotificationDeliveryJobListResponse,
-    NotificationDeliveryRunPendingRequest, NotificationDeliveryRunPendingResponse,
-    NotificationRecipientListRequest, NotificationRecipientListResponse,
-    NotificationRecipientUpsertRequest, NotificationRecipientUpsertResponse,
-    NotificationSubscriptionListRequest, NotificationSubscriptionListResponse,
-    NotificationSubscriptionSetEnabledRequest, NotificationSubscriptionSetEnabledResponse,
-    NotificationSubscriptionUpsertRequest, NotificationSubscriptionUpsertResponse,
-    NotificationTransportKind, OperatorInboxMirrorApplyRequest, OperatorInboxMirrorApplyResponse,
+    AuthorityTrackedThreadGetRequest, AuthorityTrackedThreadGetResponse,
+    AuthorityWorkstreamCreateRequest, AuthorityWorkstreamCreateResponse,
+    AuthorityWorkstreamDeleteRequest, AuthorityWorkstreamDeleteResponse,
+    AuthorityWorkstreamEditRequest, AuthorityWorkstreamEditResponse,
+    AuthorityWorkunitCreateRequest, AuthorityWorkunitCreateResponse,
+    AuthorityWorkunitDeleteRequest, AuthorityWorkunitDeleteResponse, AuthorityWorkunitEditRequest,
+    AuthorityWorkunitEditResponse, AuthorityWorkunitGetRequest, AuthorityWorkunitGetResponse,
+    CodexAssignmentPauseRequest, CodexAssignmentPauseResponse, CodexAssignmentResumeRequest,
+    CodexAssignmentResumeResponse, NotificationDeliveryJobGetRequest,
+    NotificationDeliveryJobGetResponse, NotificationDeliveryJobListRequest,
+    NotificationDeliveryJobListResponse, NotificationDeliveryRunPendingRequest,
+    NotificationDeliveryRunPendingResponse, NotificationRecipientListRequest,
+    NotificationRecipientListResponse, NotificationRecipientUpsertRequest,
+    NotificationRecipientUpsertResponse, NotificationSubscriptionListRequest,
+    NotificationSubscriptionListResponse, NotificationSubscriptionSetEnabledRequest,
+    NotificationSubscriptionSetEnabledResponse, NotificationSubscriptionUpsertRequest,
+    NotificationSubscriptionUpsertResponse, NotificationTransportKind,
+    OperatorInboxMirrorApplyRequest, OperatorInboxMirrorApplyResponse,
     OperatorInboxMirrorCheckpointQueryRequest, OperatorInboxMirrorCheckpointQueryResponse,
     OperatorInboxMirrorGetResponse, OperatorInboxMirrorListResponse,
     OperatorInboxWaitForCheckpointRequest, OperatorInboxWaitForCheckpointResponse,
@@ -64,12 +57,18 @@ use orcas_core::ipc::{
     OperatorRemoteActionFailRequest, OperatorRemoteActionFailResponse,
     OperatorRemoteActionGetRequest, OperatorRemoteActionGetResponse,
     OperatorRemoteActionListRequest, OperatorRemoteActionListResponse,
-    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse, ProposalApproveRequest,
+    OperatorRemoteActionWaitRequest, OperatorRemoteActionWaitResponse,
+    PlanningSessionApproveRequest, PlanningSessionApproveResponse, PlanningSessionCreateRequest,
+    PlanningSessionCreateResponse, PlanningSessionListRequest, PlanningSessionListResponse,
+    PlanningSessionMarkReadyForReviewRequest, PlanningSessionMarkReadyForReviewResponse,
+    PlanningSessionRejectRequest, PlanningSessionRejectResponse,
+    PlanningSessionRequestResearchRequest, PlanningSessionRequestResearchResponse,
+    PlanningSessionRequestSupervisorContextRequest,
+    PlanningSessionRequestSupervisorContextResponse, ProposalApproveRequest,
     ProposalApproveResponse, ProposalArtifactDetailGetRequest, ProposalArtifactDetailGetResponse,
     ProposalCreateRequest, ProposalCreateResponse, ProposalGetRequest, ProposalGetResponse,
-    ProposalRejectRequest, ProposalRejectResponse, StateGetRequest, StateGetResponse, ThreadGetRequest,
-    ThreadGetResponse, CodexAssignmentPauseRequest, CodexAssignmentPauseResponse,
-    CodexAssignmentResumeRequest, CodexAssignmentResumeResponse,
+    ProposalRejectRequest, ProposalRejectResponse, StateGetRequest, StateGetResponse,
+    ThreadGetRequest, ThreadGetResponse,
 };
 use orcas_core::jsonrpc::{JsonRpcMessage, JsonRpcRequest, RequestId};
 use orcas_core::{AppPaths, OrcasResult};
@@ -281,17 +280,29 @@ impl InboxMirrorServer {
             )
             .route("/operator-actions/fail", post(fail_remote_action_request))
             .route("/operator-runtime/state/get", post(state_get))
-            .route("/operator-runtime/assignments/start", post(assignment_start))
+            .route(
+                "/operator-runtime/assignments/start",
+                post(assignment_start),
+            )
             .route("/operator-runtime/proposals/create", post(proposal_create))
             .route("/operator-runtime/proposals/get", post(proposal_get))
             .route(
                 "/operator-runtime/proposals/artifact-detail",
                 post(proposal_artifact_detail_get),
             )
-            .route("/operator-runtime/proposals/approve", post(proposal_approve))
+            .route(
+                "/operator-runtime/proposals/approve",
+                post(proposal_approve),
+            )
             .route("/operator-runtime/proposals/reject", post(proposal_reject))
-            .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
-            .route("/operator-authority/delete-plan", post(authority_delete_plan))
+            .route(
+                "/operator-authority/hierarchy/get",
+                post(authority_hierarchy_get),
+            )
+            .route(
+                "/operator-authority/delete-plan",
+                post(authority_delete_plan),
+            )
             .route(
                 "/operator-authority/workstreams/create",
                 post(authority_workstream_create),
@@ -421,15 +432,14 @@ where
         .daemon_socket_file
         .as_ref()
         .ok_or_else(|| "daemon socket is not configured for this server".to_string())?;
-    let mut stream = UnixStream::connect(socket_path)
-        .await
-        .map_err(|error| format!("failed to connect to daemon socket {}: {error}", socket_path.display()))?;
+    let mut stream = UnixStream::connect(socket_path).await.map_err(|error| {
+        format!(
+            "failed to connect to daemon socket {}: {error}",
+            socket_path.display()
+        )
+    })?;
     let payload = serde_json::to_value(params).map_err(|error| error.to_string())?;
-    let request = JsonRpcRequest::new(
-        RequestId::Integer(1),
-        method,
-        Some(payload),
-    );
+    let request = JsonRpcRequest::new(RequestId::Integer(1), method, Some(payload));
     let mut line = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     line.push(b'\n');
     stream
@@ -1216,8 +1226,12 @@ async fn codex_assignment_pause(
     Json(request): Json<CodexAssignmentPauseRequest>,
 ) -> Result<Json<CodexAssignmentPauseResponse>, String> {
     Ok(Json(
-        daemon_request(&state, orcas_core::ipc::methods::CODEX_ASSIGNMENT_PAUSE, &request)
-            .await?,
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::CODEX_ASSIGNMENT_PAUSE,
+            &request,
+        )
+        .await?,
     ))
 }
 
@@ -1226,8 +1240,12 @@ async fn codex_assignment_resume(
     Json(request): Json<CodexAssignmentResumeRequest>,
 ) -> Result<Json<CodexAssignmentResumeResponse>, String> {
     Ok(Json(
-        daemon_request(&state, orcas_core::ipc::methods::CODEX_ASSIGNMENT_RESUME, &request)
-            .await?,
+        daemon_request(
+            &state,
+            orcas_core::ipc::methods::CODEX_ASSIGNMENT_RESUME,
+            &request,
+        )
+        .await?,
     ))
 }
 
@@ -1321,12 +1339,24 @@ pub fn app_with_operator_api_token(
         )
         .route("/operator-actions/fail", post(fail_remote_action_request))
         .route("/operator-runtime/state/get", post(state_get))
-        .route("/operator-runtime/assignments/start", post(assignment_start))
+        .route(
+            "/operator-runtime/assignments/start",
+            post(assignment_start),
+        )
         .route("/operator-runtime/proposals/create", post(proposal_create))
-        .route("/operator-runtime/proposals/approve", post(proposal_approve))
+        .route(
+            "/operator-runtime/proposals/approve",
+            post(proposal_approve),
+        )
         .route("/operator-runtime/proposals/reject", post(proposal_reject))
-        .route("/operator-authority/hierarchy/get", post(authority_hierarchy_get))
-        .route("/operator-authority/delete-plan", post(authority_delete_plan))
+        .route(
+            "/operator-authority/hierarchy/get",
+            post(authority_hierarchy_get),
+        )
+        .route(
+            "/operator-authority/delete-plan",
+            post(authority_delete_plan),
+        )
         .route(
             "/operator-authority/workstreams/create",
             post(authority_workstream_create),

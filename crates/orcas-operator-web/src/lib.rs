@@ -921,7 +921,8 @@ fn PlanningThreadMonitorBlock(
     let turn_count = detail.turns.len();
     let latest_turn = detail.turns.into_iter().rev().next();
     let activity_summary = thread_activity_summary(&detail.summary);
-    let planning_summary = planning_summary_line(&session.status, &session.latest_structured_summary);
+    let planning_summary =
+        planning_summary_line(&session.status, &session.latest_structured_summary);
 
     view! {
         <div class="detail-block">

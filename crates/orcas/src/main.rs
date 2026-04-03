@@ -90,13 +90,13 @@ enum TopCommand {
         command: DaemonCommand,
     },
     Doctor,
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     Remote {
         #[command(subcommand)]
         command: RemoteCommand,
-    },
-    Models {
-        #[command(subcommand)]
-        command: ModelsCommand,
     },
     Threads {
         #[command(subcommand)]
@@ -105,6 +105,10 @@ enum TopCommand {
     Turns {
         #[command(subcommand)]
         command: TurnsCommand,
+    },
+    Events {
+        #[command(subcommand)]
+        command: EventsCommand,
     },
     Workstreams {
         #[command(subcommand)]
@@ -153,6 +157,8 @@ enum DaemonCommand {
     Status,
     Restart,
     Stop,
+    DiscoverAppServers,
+    ReapAppServers(DaemonReapAppServersArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -161,17 +167,34 @@ enum ModelsCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum ThreadsCommand {
-    List,
+enum CodexThreadsCommand {
     Read(ThreadRefArgs),
     Start(ThreadStartArgs),
     Resume(ThreadResumeArgs),
 }
 
 #[derive(Debug, Subcommand)]
+enum SessionCommand {
+    Active,
+}
+
+#[derive(Debug, Subcommand)]
+enum ThreadsCommand {
+    List,
+    ListLoaded,
+}
+
+#[derive(Debug, Subcommand)]
 enum TurnsCommand {
     ListActive,
+    Recent(TurnsRecentArgs),
     Get(TurnRefArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum EventsCommand {
+    Recent(EventsRecentArgs),
+    Watch(EventsWatchArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -271,6 +294,14 @@ enum ProposalsCommand {
 
 #[derive(Debug, Subcommand)]
 enum CodexCommand {
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
+    Threads {
+        #[command(subcommand)]
+        command: CodexThreadsCommand,
+    },
     Review {
         #[command(subcommand)]
         command: CodexReviewCommand,
@@ -323,6 +354,40 @@ struct TurnRefArgs {
     thread: String,
     #[arg(long)]
     turn: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct TurnsRecentArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+struct EventsRecentArgs {
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+struct EventsWatchArgs {
+    #[arg(long, default_value_t = false)]
+    snapshot: bool,
+    #[arg(long)]
+    count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DaemonReapAppServersArgs {
+    #[arg(long, default_value_t = false)]
+    apply: bool,
+    #[arg(long, default_value_t = false)]
+    all_tagged: bool,
+    #[arg(long, default_value_t = false)]
+    include_untagged: bool,
+    #[arg(long)]
+    pid: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1234,40 +1299,53 @@ async fn main() -> Result<()> {
                 DaemonCommand::Status => service.daemon_status().await?,
                 DaemonCommand::Restart => service.daemon_restart().await?,
                 DaemonCommand::Stop => service.daemon_stop().await?,
+                DaemonCommand::DiscoverAppServers => service.daemon_discover_app_servers().await?,
+                DaemonCommand::ReapAppServers(args) => {
+                    service
+                        .daemon_reap_app_servers(
+                            args.apply,
+                            args.all_tagged,
+                            args.include_untagged,
+                            &args.pid,
+                        )
+                        .await?
+                }
             }
         }
         TopCommand::Doctor => {
             let service = SupervisorService::load(&overrides).await?;
             service.doctor().await?;
         }
-        TopCommand::Models { command } => {
+        TopCommand::Session { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
-                ModelsCommand::List => service.models_list().await?,
+                SessionCommand::Active => service.session_active().await?,
             }
         }
         TopCommand::Threads { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
                 ThreadsCommand::List => service.threads_list().await?,
-                ThreadsCommand::Read(args) => service.thread_read(&args.thread).await?,
-                ThreadsCommand::Start(args) => {
-                    service
-                        .thread_start(args.cwd, args.model, args.ephemeral)
-                        .await?;
-                }
-                ThreadsCommand::Resume(args) => {
-                    service
-                        .thread_resume(&args.thread, args.cwd, args.model)
-                        .await?;
-                }
+                ThreadsCommand::ListLoaded => service.threads_list_loaded().await?,
             }
         }
         TopCommand::Turns { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
                 TurnsCommand::ListActive => service.turns_list_active().await?,
+                TurnsCommand::Recent(args) => {
+                    service.turns_recent(&args.thread, args.limit).await?
+                }
                 TurnsCommand::Get(args) => service.turn_get(&args.thread, &args.turn).await?,
+            }
+        }
+        TopCommand::Events { command } => {
+            let service = SupervisorService::load(&overrides).await?;
+            match command {
+                EventsCommand::Recent(args) => service.events_recent(args.limit).await?,
+                EventsCommand::Watch(args) => {
+                    service.events_watch(args.snapshot, args.count).await?
+                }
             }
         }
         TopCommand::Workstreams { command } => {
@@ -1642,6 +1720,22 @@ async fn main() -> Result<()> {
         TopCommand::Codex { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
+                CodexCommand::Models { command } => match command {
+                    ModelsCommand::List => service.models_list().await?,
+                },
+                CodexCommand::Threads { command } => match command {
+                    CodexThreadsCommand::Read(args) => service.thread_read(&args.thread).await?,
+                    CodexThreadsCommand::Start(args) => {
+                        service
+                            .thread_start(args.cwd, args.model, args.ephemeral)
+                            .await?;
+                    }
+                    CodexThreadsCommand::Resume(args) => {
+                        service
+                            .thread_resume(&args.thread, args.cwd, args.model)
+                            .await?;
+                    }
+                },
                 CodexCommand::Review { command } => match command {
                     CodexReviewCommand::List(args) => {
                         service
@@ -1842,11 +1936,93 @@ mod tests {
     }
 
     #[test]
+    fn parses_top_level_daemon_discover_app_servers_command() {
+        let cli = Cli::parse_from(["orcas", "daemon", "discover-app-servers"]);
+
+        match cli.command {
+            TopCommand::Daemon {
+                command: DaemonCommand::DiscoverAppServers,
+            } => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_daemon_reap_app_servers_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "daemon",
+            "reap-app-servers",
+            "--apply",
+            "--all-tagged",
+            "--include-untagged",
+            "--pid",
+            "1234",
+            "--pid",
+            "5678",
+        ]);
+
+        match cli.command {
+            TopCommand::Daemon {
+                command: DaemonCommand::ReapAppServers(args),
+            } => {
+                assert!(args.apply);
+                assert!(args.all_tagged);
+                assert!(args.include_untagged);
+                assert_eq!(args.pid, vec![1234, 5678]);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_top_level_doctor_command() {
         let cli = Cli::parse_from(["orcas", "doctor"]);
 
         match cli.command {
             TopCommand::Doctor => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_session_active_command() {
+        let cli = Cli::parse_from(["orcas", "session", "active"]);
+
+        match cli.command {
+            TopCommand::Session {
+                command: SessionCommand::Active,
+            } => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_turns_recent_command() {
+        let cli = Cli::parse_from(["orcas", "turns", "recent", "--thread", "thread-1"]);
+
+        match cli.command {
+            TopCommand::Turns {
+                command: TurnsCommand::Recent(args),
+            } => {
+                assert_eq!(args.thread, "thread-1");
+                assert_eq!(args.limit, 10);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_events_watch_command() {
+        let cli = Cli::parse_from(["orcas", "events", "watch", "--snapshot", "--count", "5"]);
+
+        match cli.command {
+            TopCommand::Events {
+                command: EventsCommand::Watch(args),
+            } => {
+                assert!(args.snapshot);
+                assert_eq!(args.count, Some(5));
+            }
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
@@ -1974,6 +2150,117 @@ mod tests {
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_codex_models_list_command() {
+        let cli = Cli::parse_from(["orcas", "codex", "models", "list"]);
+
+        match cli.command {
+            TopCommand::Codex {
+                command:
+                    CodexCommand::Models {
+                        command: ModelsCommand::List,
+                    },
+            } => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_threads_start_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "codex",
+            "threads",
+            "start",
+            "--cwd",
+            "/tmp/orcas",
+            "--model",
+            "gpt-5.4",
+            "--ephemeral",
+        ]);
+
+        match cli.command {
+            TopCommand::Codex {
+                command:
+                    CodexCommand::Threads {
+                        command: CodexThreadsCommand::Start(args),
+                    },
+            } => {
+                assert_eq!(args.cwd, Some(PathBuf::from("/tmp/orcas")));
+                assert_eq!(args.model.as_deref(), Some("gpt-5.4"));
+                assert!(args.ephemeral);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_threads_resume_command() {
+        let cli = Cli::parse_from([
+            "orcas", "codex", "threads", "resume", "--thread", "thread-1", "--model", "gpt-5.4",
+        ]);
+
+        match cli.command {
+            TopCommand::Codex {
+                command:
+                    CodexCommand::Threads {
+                        command: CodexThreadsCommand::Resume(args),
+                    },
+            } => {
+                assert_eq!(args.thread, "thread-1");
+                assert_eq!(args.model.as_deref(), Some("gpt-5.4"));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_threads_read_command() {
+        let cli = Cli::parse_from(["orcas", "codex", "threads", "read", "--thread", "thread-1"]);
+
+        match cli.command {
+            TopCommand::Codex {
+                command:
+                    CodexCommand::Threads {
+                        command: CodexThreadsCommand::Read(args),
+                    },
+            } => {
+                assert_eq!(args.thread, "thread-1");
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_removed_top_level_models_namespace() {
+        assert!(Cli::try_parse_from(["orcas", "models", "list"]).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_top_level_thread_runtime_commands() {
+        assert!(Cli::try_parse_from(["orcas", "threads", "read", "--thread", "thread-1"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "threads", "start"]).is_err());
+        assert!(
+            Cli::try_parse_from(["orcas", "threads", "resume", "--thread", "thread-1"]).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_removed_app_server_namespace() {
+        assert!(Cli::try_parse_from(["orcas", "app-server", "models", "list"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "orcas",
+                "app-server",
+                "threads",
+                "read",
+                "--thread",
+                "thread-1"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -10,7 +11,11 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use url::Url;
 
-use orcas_core::{AppPaths, CodexDaemonConfig, OrcasError, OrcasResult};
+use orcas_core::{
+    AppPaths, CodexDaemonConfig, ORCAS_APP_SERVER_LISTEN_URL_ENV, ORCAS_APP_SERVER_OWNER_KIND_ENV,
+    ORCAS_APP_SERVER_OWNER_PID_ENV, ORCAS_APP_SERVER_STARTED_AT_ENV, ORCAS_APP_SERVER_TAG_ENV,
+    ORCAS_APP_SERVER_TAG_VALUE, OrcasError, OrcasResult,
+};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Copy)]
@@ -134,7 +139,19 @@ impl CodexDaemonManager for LocalCodexDaemonManager {
         for override_kv in &self.config.config_overrides {
             command.arg("--config").arg(override_kv);
         }
+        let started_at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs().to_string())
+            .unwrap_or_else(|_| "0".to_string());
         command
+            .env(ORCAS_APP_SERVER_TAG_ENV, ORCAS_APP_SERVER_TAG_VALUE)
+            .env(ORCAS_APP_SERVER_OWNER_KIND_ENV, "orcasd")
+            .env(
+                ORCAS_APP_SERVER_OWNER_PID_ENV,
+                std::process::id().to_string(),
+            )
+            .env(ORCAS_APP_SERVER_LISTEN_URL_ENV, &self.config.listen_url)
+            .env(ORCAS_APP_SERVER_STARTED_AT_ENV, started_at)
             .arg("app-server")
             .arg("--listen")
             .arg(&self.config.listen_url)

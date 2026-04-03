@@ -41,24 +41,27 @@ pub fn inferred_live_thread_for_assignment(
                 .cloned()
         })
         .or_else(|| {
-            assignment.tracked_thread_id.as_ref().and_then(|tracked_thread_id| {
-                dashboard
-                    .hierarchy
-                    .workstreams
-                    .iter()
-                    .flat_map(|workstream| workstream.work_units.iter())
-                    .flat_map(|work_unit| work_unit.tracked_threads.iter())
-                    .find(|tracked_thread| tracked_thread.id.as_str() == tracked_thread_id)
-                    .and_then(|tracked_thread| tracked_thread.upstream_thread_id.as_ref())
-                    .and_then(|thread_id| {
-                        dashboard
-                            .snapshot
-                            .threads
-                            .iter()
-                            .find(|thread| thread.id == *thread_id)
-                            .cloned()
-                    })
-            })
+            assignment
+                .tracked_thread_id
+                .as_ref()
+                .and_then(|tracked_thread_id| {
+                    dashboard
+                        .hierarchy
+                        .workstreams
+                        .iter()
+                        .flat_map(|workstream| workstream.work_units.iter())
+                        .flat_map(|work_unit| work_unit.tracked_threads.iter())
+                        .find(|tracked_thread| tracked_thread.id.as_str() == tracked_thread_id)
+                        .and_then(|tracked_thread| tracked_thread.upstream_thread_id.as_ref())
+                        .and_then(|thread_id| {
+                            dashboard
+                                .snapshot
+                                .threads
+                                .iter()
+                                .find(|thread| thread.id == *thread_id)
+                                .cloned()
+                        })
+                })
         })
         .or_else(|| {
             dashboard
@@ -104,14 +107,17 @@ pub fn tracked_thread_runtime_status(
     thread: &authority::TrackedThreadSummary,
     dashboard: &WorkstreamsDashboardData,
 ) -> TrackedThreadRuntimeStatusView {
-    let live_thread = thread.upstream_thread_id.as_ref().and_then(|upstream_thread_id| {
-        dashboard
-            .snapshot
-            .threads
-            .iter()
-            .find(|candidate| candidate.id == *upstream_thread_id)
-            .cloned()
-    });
+    let live_thread = thread
+        .upstream_thread_id
+        .as_ref()
+        .and_then(|upstream_thread_id| {
+            dashboard
+                .snapshot
+                .threads
+                .iter()
+                .find(|candidate| candidate.id == *upstream_thread_id)
+                .cloned()
+        });
     let codex_assignment = dashboard
         .snapshot
         .collaboration
@@ -123,61 +129,69 @@ pub fn tracked_thread_runtime_status(
                 || assignment.active
         })
         .cloned();
-    let assignment = codex_assignment.as_ref().and_then(|codex_assignment| {
-        dashboard
-            .snapshot
-            .collaboration
-            .assignments
-            .iter()
-            .find(|assignment| assignment.id == codex_assignment.assignment_id)
-            .cloned()
-    }).or_else(|| {
-        let assignments = dashboard
-            .snapshot
-            .collaboration
-            .assignments
-            .iter()
-            .filter(|assignment| assignment.work_unit_id == thread.work_unit_id.as_str())
-            .cloned()
-            .collect::<Vec<_>>();
-        (assignments.len() == 1).then(|| assignments.into_iter().next()).flatten()
-    });
+    let assignment = codex_assignment
+        .as_ref()
+        .and_then(|codex_assignment| {
+            dashboard
+                .snapshot
+                .collaboration
+                .assignments
+                .iter()
+                .find(|assignment| assignment.id == codex_assignment.assignment_id)
+                .cloned()
+        })
+        .or_else(|| {
+            let assignments = dashboard
+                .snapshot
+                .collaboration
+                .assignments
+                .iter()
+                .filter(|assignment| assignment.work_unit_id == thread.work_unit_id.as_str())
+                .cloned()
+                .collect::<Vec<_>>();
+            (assignments.len() == 1)
+                .then(|| assignments.into_iter().next())
+                .flatten()
+        });
     let open_decision = codex_assignment.as_ref().and_then(|codex_assignment| {
         dashboard
             .snapshot
             .collaboration
             .supervisor_turn_decisions
             .iter()
-            .filter(|decision| decision.assignment_id == codex_assignment.assignment_id && decision.open)
+            .filter(|decision| {
+                decision.assignment_id == codex_assignment.assignment_id && decision.open
+            })
             .max_by_key(|decision| decision.created_at)
             .cloned()
     });
 
-    let headline = if assignment
-        .as_ref()
-        .is_some_and(|assignment| assignment.status == orcas_core::AssignmentStatus::AwaitingDecision)
-        || open_decision.as_ref().is_some_and(|decision| {
-            matches!(
-                decision.status,
-                orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman
-                    | orcas_core::SupervisorTurnDecisionStatus::Approved
-            )
-        }) {
+    let headline = if assignment.as_ref().is_some_and(|assignment| {
+        assignment.status == orcas_core::AssignmentStatus::AwaitingDecision
+    }) || open_decision.as_ref().is_some_and(|decision| {
+        matches!(
+            decision.status,
+            orcas_core::SupervisorTurnDecisionStatus::ProposedToHuman
+                | orcas_core::SupervisorTurnDecisionStatus::Approved
+        )
+    }) {
         "Waiting for supervisor".to_string()
-    } else if assignment.as_ref().is_some_and(|assignment| {
-        assignment.status == orcas_core::AssignmentStatus::Running
-    }) || codex_assignment.as_ref().is_some_and(|assignment| {
-        assignment.status == orcas_core::CodexThreadAssignmentStatus::Active
-    }) {
-        "In progress".to_string()
-    } else if assignment.as_ref().is_some_and(|assignment| {
-        assignment.status == orcas_core::AssignmentStatus::Created
-    }) {
-        "Queued".to_string()
-    } else if codex_assignment
+    } else if assignment
         .as_ref()
-        .is_some_and(|assignment| assignment.status == orcas_core::CodexThreadAssignmentStatus::Paused)
+        .is_some_and(|assignment| assignment.status == orcas_core::AssignmentStatus::Running)
+        || codex_assignment.as_ref().is_some_and(|assignment| {
+            assignment.status == orcas_core::CodexThreadAssignmentStatus::Active
+        })
     {
+        "In progress".to_string()
+    } else if assignment
+        .as_ref()
+        .is_some_and(|assignment| assignment.status == orcas_core::AssignmentStatus::Created)
+    {
+        "Queued".to_string()
+    } else if codex_assignment.as_ref().is_some_and(|assignment| {
+        assignment.status == orcas_core::CodexThreadAssignmentStatus::Paused
+    }) {
         "Paused".to_string()
     } else if assignment.as_ref().is_some_and(|assignment| {
         matches!(
@@ -209,7 +223,10 @@ pub fn tracked_thread_runtime_status(
         "Stopped".to_string()
     } else if thread.deleted_at.is_some() {
         "Removed".to_string()
-    } else if live_thread.as_ref().is_some_and(|thread| thread.turn_in_flight || thread.status == "active") {
+    } else if live_thread
+        .as_ref()
+        .is_some_and(|thread| thread.turn_in_flight || thread.status == "active")
+    {
         "In progress".to_string()
     } else if thread.binding_state == authority::TrackedThreadBindingState::Missing {
         "Missing".to_string()
@@ -238,10 +255,9 @@ pub fn tracked_thread_runtime_status(
             )
         ));
     }
-    let supervisor_waiting = assignment
-        .as_ref()
-        .is_some_and(|assignment| assignment.status == orcas_core::AssignmentStatus::AwaitingDecision)
-        || open_decision.is_some();
+    let supervisor_waiting = assignment.as_ref().is_some_and(|assignment| {
+        assignment.status == orcas_core::AssignmentStatus::AwaitingDecision
+    }) || open_decision.is_some();
 
     if let Some(live_thread) = live_thread.as_ref() {
         if supervisor_waiting && live_thread.status == "idle" {
@@ -313,7 +329,9 @@ pub fn live_thread_linkage(
         .iter()
         .flat_map(|workstream| workstream.work_units.iter())
         .flat_map(|work_unit| work_unit.tracked_threads.iter())
-        .find(|tracked_thread| tracked_thread.upstream_thread_id.as_deref() == Some(thread.id.as_str()))
+        .find(|tracked_thread| {
+            tracked_thread.upstream_thread_id.as_deref() == Some(thread.id.as_str())
+        })
         .cloned();
     let codex_assignment = dashboard
         .snapshot
@@ -337,7 +355,9 @@ pub fn live_thread_linkage(
             .collaboration
             .supervisor_turn_decisions
             .iter()
-            .filter(|decision| decision.assignment_id == codex_assignment.assignment_id && decision.open)
+            .filter(|decision| {
+                decision.assignment_id == codex_assignment.assignment_id && decision.open
+            })
             .max_by_key(|decision| decision.created_at)
             .cloned()
     });
@@ -354,8 +374,10 @@ pub fn live_thread_linkage(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use orcas_core::authority::{
+        TrackedThreadBackendKind, TrackedThreadBindingState, TrackedThreadId, WorkUnitId,
+    };
     use orcas_core::events::ConnectionState;
-    use orcas_core::authority::{TrackedThreadBackendKind, TrackedThreadBindingState, TrackedThreadId, WorkUnitId};
     use orcas_core::ipc::{
         AssignmentSummary, CodexThreadAssignmentSummary, DaemonRuntimeMetadata, OperatorInboxState,
         SessionState, StateSnapshot, SupervisorTurnDecisionSummary,
@@ -417,23 +439,26 @@ mod tests {
     #[test]
     fn reports_waiting_for_supervisor_when_assignment_awaits_decision() {
         let mut snapshot = empty_snapshot();
-        snapshot.collaboration.codex_thread_assignments.push(CodexThreadAssignmentSummary {
-            assignment_id: "assign-1".to_string(),
-            codex_thread_id: "codex-thread-1".to_string(),
-            workstream_id: "ws-1".to_string(),
-            work_unit_id: "wu-1".to_string(),
-            supervisor_id: "sup-1".to_string(),
-            assigned_by: "daemon".to_string(),
-            assigned_at: Utc::now(),
-            updated_at: Utc::now(),
-            status: orcas_core::CodexThreadAssignmentStatus::Active,
-            send_policy: orcas_core::CodexThreadSendPolicy::HumanApprovalRequired,
-            bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
-            latest_basis_turn_id: None,
-            latest_decision_id: None,
-            notes: None,
-            active: true,
-        });
+        snapshot
+            .collaboration
+            .codex_thread_assignments
+            .push(CodexThreadAssignmentSummary {
+                assignment_id: "assign-1".to_string(),
+                codex_thread_id: "codex-thread-1".to_string(),
+                workstream_id: "ws-1".to_string(),
+                work_unit_id: "wu-1".to_string(),
+                supervisor_id: "sup-1".to_string(),
+                assigned_by: "daemon".to_string(),
+                assigned_at: Utc::now(),
+                updated_at: Utc::now(),
+                status: orcas_core::CodexThreadAssignmentStatus::Active,
+                send_policy: orcas_core::CodexThreadSendPolicy::HumanApprovalRequired,
+                bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
+                latest_basis_turn_id: None,
+                latest_decision_id: None,
+                notes: None,
+                active: true,
+            });
         snapshot.collaboration.assignments.push(AssignmentSummary {
             id: "assign-1".to_string(),
             work_unit_id: "wu-1".to_string(),
@@ -479,23 +504,26 @@ mod tests {
             attempt_number: 1,
             updated_at: Utc::now(),
         });
-        snapshot.collaboration.codex_thread_assignments.push(CodexThreadAssignmentSummary {
-            assignment_id: "assign-1".to_string(),
-            codex_thread_id: "codex-thread-1".to_string(),
-            workstream_id: "ws-1".to_string(),
-            work_unit_id: "wu-1".to_string(),
-            supervisor_id: "sup-1".to_string(),
-            assigned_by: "daemon".to_string(),
-            assigned_at: Utc::now(),
-            updated_at: Utc::now(),
-            status: orcas_core::CodexThreadAssignmentStatus::Active,
-            send_policy: orcas_core::CodexThreadSendPolicy::SupervisorMaySend,
-            bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
-            latest_basis_turn_id: None,
-            latest_decision_id: None,
-            notes: None,
-            active: true,
-        });
+        snapshot
+            .collaboration
+            .codex_thread_assignments
+            .push(CodexThreadAssignmentSummary {
+                assignment_id: "assign-1".to_string(),
+                codex_thread_id: "codex-thread-1".to_string(),
+                workstream_id: "ws-1".to_string(),
+                work_unit_id: "wu-1".to_string(),
+                supervisor_id: "sup-1".to_string(),
+                assigned_by: "daemon".to_string(),
+                assigned_at: Utc::now(),
+                updated_at: Utc::now(),
+                status: orcas_core::CodexThreadAssignmentStatus::Active,
+                send_policy: orcas_core::CodexThreadSendPolicy::SupervisorMaySend,
+                bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
+                latest_basis_turn_id: None,
+                latest_decision_id: None,
+                notes: None,
+                active: true,
+            });
 
         let dashboard = WorkstreamsDashboardData {
             hierarchy: authority::HierarchySnapshot::default(),
@@ -510,23 +538,26 @@ mod tests {
     #[test]
     fn reports_waiting_for_supervisor_when_open_decision_exists() {
         let mut snapshot = empty_snapshot();
-        snapshot.collaboration.codex_thread_assignments.push(CodexThreadAssignmentSummary {
-            assignment_id: "assign-1".to_string(),
-            codex_thread_id: "codex-thread-1".to_string(),
-            workstream_id: "ws-1".to_string(),
-            work_unit_id: "wu-1".to_string(),
-            supervisor_id: "sup-1".to_string(),
-            assigned_by: "daemon".to_string(),
-            assigned_at: Utc::now(),
-            updated_at: Utc::now(),
-            status: orcas_core::CodexThreadAssignmentStatus::Active,
-            send_policy: orcas_core::CodexThreadSendPolicy::HumanApprovalRequired,
-            bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
-            latest_basis_turn_id: None,
-            latest_decision_id: Some("decision-1".to_string()),
-            notes: None,
-            active: true,
-        });
+        snapshot
+            .collaboration
+            .codex_thread_assignments
+            .push(CodexThreadAssignmentSummary {
+                assignment_id: "assign-1".to_string(),
+                codex_thread_id: "codex-thread-1".to_string(),
+                workstream_id: "ws-1".to_string(),
+                work_unit_id: "wu-1".to_string(),
+                supervisor_id: "sup-1".to_string(),
+                assigned_by: "daemon".to_string(),
+                assigned_at: Utc::now(),
+                updated_at: Utc::now(),
+                status: orcas_core::CodexThreadAssignmentStatus::Active,
+                send_policy: orcas_core::CodexThreadSendPolicy::HumanApprovalRequired,
+                bootstrap_state: orcas_core::CodexThreadBootstrapState::Sent,
+                latest_basis_turn_id: None,
+                latest_decision_id: Some("decision-1".to_string()),
+                notes: None,
+                active: true,
+            });
         snapshot
             .collaboration
             .supervisor_turn_decisions
