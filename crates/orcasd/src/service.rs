@@ -27974,6 +27974,34 @@ Boundedness note: Stay within the legacy compatibility boundary."#
     }
 
     #[tokio::test]
+    async fn initialize_state_leaves_canonical_state_json_unchanged() {
+        let base = std::env::temp_dir().join(format!("orcas-collab-test-{}", Uuid::new_v4()));
+        let state_file = base.join("data/state.json");
+        tokio::fs::create_dir_all(state_file.parent().expect("state dir"))
+            .await
+            .expect("create data dir");
+        let canonical = StoredState::default()
+            .to_pretty_json()
+            .expect("serialize canonical state");
+        let mut canonical_with_newline = canonical.clone();
+        canonical_with_newline.push('\n');
+        tokio::fs::write(&state_file, &canonical_with_newline)
+            .await
+            .expect("seed canonical state");
+
+        let _service = test_service_at_with_reasoner(
+            base.clone(),
+            Arc::new(StaticSupervisorReasoner::default()),
+        )
+        .await;
+
+        let rewritten = tokio::fs::read_to_string(&state_file)
+            .await
+            .expect("read canonical state");
+        assert_eq!(rewritten, canonical_with_newline);
+    }
+
+    #[tokio::test]
     async fn snapshot_includes_collaboration_summaries_after_creation() {
         let service = test_service().await;
         let workstream = service

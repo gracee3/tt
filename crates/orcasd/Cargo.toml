@@ -32,6 +32,7 @@ uuid.workspace = true
 axum = "0.8.6"
 futures.workspace = true
 orcas-server = { path = "../orcas-server" }
+tempfile = "3.23.0"
 tokio-tungstenite.workspace = true
 
 [lints]
