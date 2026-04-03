@@ -18,7 +18,7 @@ sleep 5
 workstream_output="$(e2e_orcas workstreams create --title "E2E Planning" --objective "Validate supervisor planning flow" --priority normal)"
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
-workunit_output="$(e2e_orcas workunits create --workstream "$workstream_id" --title "Planning work unit" --task "Draft a short implementation plan before execution")"
+workunit_output="$(e2e_orcas workunit create --workstream "$workstream_id" --title "Planning work unit" --task "Draft a short implementation plan before execution")"
 workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
 planning_create_output="$E2E_SCENARIO_REPORTS_DIR/planning-create.txt"

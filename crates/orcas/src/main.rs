@@ -102,9 +102,13 @@ enum TopCommand {
         #[command(subcommand)]
         command: WorkstreamsCommand,
     },
-    Workunits {
+    Workunit {
         #[command(subcommand)]
-        command: WorkunitsCommand,
+        command: WorkunitCommand,
+    },
+    AppServer {
+        #[command(subcommand)]
+        command: AppServerCommand,
     },
     Supervisor {
         #[command(subcommand)]
@@ -125,8 +129,14 @@ enum DaemonCommand {
     Status,
     Restart,
     Stop,
-    DiscoverAppServers,
-    ReapAppServers(DaemonReapAppServersArgs),
+}
+
+#[derive(Debug, Subcommand)]
+#[command(about = "Inspect and reap local Codex app-server listeners")]
+enum AppServerCommand {
+    List,
+    Reap(AppServerReapArgs),
+    Info,
 }
 
 #[derive(Debug, Subcommand)]
@@ -166,15 +176,15 @@ enum WorkstreamsCommand {
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Canonical authority-backed CRUD for planning work units")]
-enum WorkunitsCommand {
+enum WorkunitCommand {
     Create(WorkunitCreateArgs),
     Edit(WorkunitEditArgs),
     Delete(WorkunitRefArgs),
     List(WorkunitListArgs),
     Get(WorkunitRefArgs),
-    Threads {
+    Thread {
         #[command(subcommand)]
-        command: WorkunitThreadsCommand,
+        command: WorkunitThreadCommand,
     },
     Workspace {
         #[command(subcommand)]
@@ -184,10 +194,10 @@ enum WorkunitsCommand {
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Canonical authority-backed CRUD for tracked-thread planning records")]
-enum WorkunitThreadsCommand {
-    Create(TrackedThreadCreateArgs),
-    Edit(TrackedThreadEditArgs),
-    Delete(TrackedThreadRefArgs),
+enum WorkunitThreadCommand {
+    Add(TrackedThreadCreateArgs),
+    Set(TrackedThreadEditArgs),
+    Remove(TrackedThreadRefArgs),
     List(TrackedThreadListArgs),
     Get(TrackedThreadRefArgs),
 }
@@ -396,7 +406,7 @@ struct EventsWatchArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-struct DaemonReapAppServersArgs {
+struct AppServerReapArgs {
     #[arg(long, default_value_t = false)]
     apply: bool,
     #[arg(long, default_value_t = false)]
@@ -1316,8 +1326,13 @@ async fn main() -> Result<()> {
                 DaemonCommand::Status => service.daemon_status().await?,
                 DaemonCommand::Restart => service.daemon_restart().await?,
                 DaemonCommand::Stop => service.daemon_stop().await?,
-                DaemonCommand::DiscoverAppServers => service.daemon_discover_app_servers().await?,
-                DaemonCommand::ReapAppServers(args) => {
+            }
+        }
+        TopCommand::AppServer { command } => {
+            let service = SupervisorService::load(&overrides).await?;
+            match command {
+                AppServerCommand::List => service.daemon_discover_app_servers().await?,
+                AppServerCommand::Reap(args) => {
                     service
                         .daemon_reap_app_servers(
                             args.apply,
@@ -1327,6 +1342,7 @@ async fn main() -> Result<()> {
                         )
                         .await?
                 }
+                AppServerCommand::Info => service.daemon_status().await?,
             }
         }
         TopCommand::Doctor => {
@@ -1368,15 +1384,15 @@ async fn main() -> Result<()> {
                 WorkstreamsCommand::Get(args) => service.workstream_get(&args.workstream).await?,
             }
         }
-        TopCommand::Workunits { command } => {
+        TopCommand::Workunit { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
-                WorkunitsCommand::Create(args) => {
+                WorkunitCommand::Create(args) => {
                     service
                         .workunit_create(&args.workstream, args.title, args.task, args.dependencies)
                         .await?;
                 }
-                WorkunitsCommand::Edit(args) => {
+                WorkunitCommand::Edit(args) => {
                     service
                         .workunit_edit(
                             &args.workunit,
@@ -1386,15 +1402,15 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                WorkunitsCommand::Delete(args) => {
+                WorkunitCommand::Delete(args) => {
                     service.workunit_delete(&args.workunit).await?;
                 }
-                WorkunitsCommand::List(args) => {
+                WorkunitCommand::List(args) => {
                     service.workunit_list(args.workstream.as_deref()).await?;
                 }
-                WorkunitsCommand::Get(args) => service.workunit_get(&args.workunit).await?,
-                WorkunitsCommand::Threads { command } => match command {
-                    WorkunitThreadsCommand::Create(args) => {
+                WorkunitCommand::Get(args) => service.workunit_get(&args.workunit).await?,
+                WorkunitCommand::Thread { command } => match command {
+                    WorkunitThreadCommand::Add(args) => {
                         let tracked_thread_id = authority::TrackedThreadId::new();
                         let workspace = args
                             .workspace
@@ -1412,7 +1428,7 @@ async fn main() -> Result<()> {
                             )
                             .await?;
                     }
-                    WorkunitThreadsCommand::Edit(args) => {
+                    WorkunitThreadCommand::Set(args) => {
                         let tracked_thread_id =
                             authority::TrackedThreadId::parse(args.tracked_thread.clone())?;
                         let workspace = args
@@ -1431,17 +1447,17 @@ async fn main() -> Result<()> {
                             )
                             .await?;
                     }
-                    WorkunitThreadsCommand::Delete(args) => {
+                    WorkunitThreadCommand::Remove(args) => {
                         service.tracked_thread_delete(&args.tracked_thread).await?;
                     }
-                    WorkunitThreadsCommand::List(args) => {
+                    WorkunitThreadCommand::List(args) => {
                         service.tracked_thread_list(&args.workunit).await?;
                     }
-                    WorkunitThreadsCommand::Get(args) => {
+                    WorkunitThreadCommand::Get(args) => {
                         service.tracked_thread_get(&args.tracked_thread).await?;
                     }
                 },
-                WorkunitsCommand::Workspace { command } => match command {
+                WorkunitCommand::Workspace { command } => match command {
                     WorkunitWorkspaceCommand::PrepareWorkspace(args) => {
                         service
                             .tracked_thread_prepare_workspace(
@@ -1662,9 +1678,7 @@ async fn main() -> Result<()> {
                                 )
                                 .await?;
                         }
-                        ProposalsCommand::Get(args) => {
-                            service.proposal_get(&args.proposal).await?
-                        }
+                        ProposalsCommand::Get(args) => service.proposal_get(&args.proposal).await?,
                         ProposalsCommand::ArtifactSummary(args) => {
                             service
                                 .proposal_artifact_summary_get(&args.proposal)
@@ -1924,12 +1938,14 @@ mod tests {
         let help = Cli::command().render_help().to_string();
 
         assert!(help.contains("workstreams"));
-        assert!(help.contains("workunits"));
+        assert!(help.contains("workunit"));
+        assert!(help.contains("app-server"));
         assert!(help.contains("supervisor"));
         assert!(!help.contains("tracked-threads"));
         assert!(!help.contains("planning-sessions"));
         assert!(!help.contains("legacy-workstreams"));
         assert!(!help.contains("legacy-workunits"));
+        assert!(!help.contains("workunits"));
     }
 
     #[test]
@@ -1957,23 +1973,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_daemon_discover_app_servers_command() {
-        let cli = Cli::parse_from(["orcas", "daemon", "discover-app-servers"]);
+    fn parses_top_level_app_server_list_command() {
+        let cli = Cli::parse_from(["orcas", "app-server", "list"]);
 
         match cli.command {
-            TopCommand::Daemon {
-                command: DaemonCommand::DiscoverAppServers,
+            TopCommand::AppServer {
+                command: AppServerCommand::List,
             } => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
 
     #[test]
-    fn parses_top_level_daemon_reap_app_servers_command() {
+    fn parses_top_level_app_server_reap_command() {
         let cli = Cli::parse_from([
             "orcas",
-            "daemon",
-            "reap-app-servers",
+            "app-server",
+            "reap",
             "--apply",
             "--all-tagged",
             "--include-untagged",
@@ -1984,14 +2000,26 @@ mod tests {
         ]);
 
         match cli.command {
-            TopCommand::Daemon {
-                command: DaemonCommand::ReapAppServers(args),
+            TopCommand::AppServer {
+                command: AppServerCommand::Reap(args),
             } => {
                 assert!(args.apply);
                 assert!(args.all_tagged);
                 assert!(args.include_untagged);
                 assert_eq!(args.pid, vec![1234, 5678]);
             }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_app_server_info_command() {
+        let cli = Cli::parse_from(["orcas", "app-server", "info"]);
+
+        match cli.command {
+            TopCommand::AppServer {
+                command: AppServerCommand::Info,
+            } => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
@@ -2012,9 +2040,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Session {
-                    command: SessionCommand::Active,
-                },
+                command:
+                    SupervisorCommand::Session {
+                        command: SessionCommand::Active,
+                    },
             } => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
@@ -2061,12 +2090,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_workunits_threads_create_command() {
+    fn parses_workunit_thread_add_command() {
         let cli = Cli::parse_from([
             "orcas",
-            "workunits",
-            "threads",
-            "create",
+            "workunit",
+            "thread",
+            "add",
             "--workunit",
             "wu-1",
             "--title",
@@ -2088,10 +2117,10 @@ mod tests {
         ]);
 
         match cli.command {
-            TopCommand::Workunits {
+            TopCommand::Workunit {
                 command:
-                    WorkunitsCommand::Threads {
-                        command: WorkunitThreadsCommand::Create(args),
+                    WorkunitCommand::Thread {
+                        command: WorkunitThreadCommand::Add(args),
                     },
             } => {
                 assert_eq!(args.workunit, "wu-1");
@@ -2112,12 +2141,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_workunits_threads_edit_command() {
+    fn parses_workunit_thread_set_command() {
         let cli = Cli::parse_from([
             "orcas",
-            "workunits",
-            "threads",
-            "edit",
+            "workunit",
+            "thread",
+            "set",
             "--tracked-thread",
             "tt-1",
             "--binding-state",
@@ -2127,10 +2156,10 @@ mod tests {
         ]);
 
         match cli.command {
-            TopCommand::Workunits {
+            TopCommand::Workunit {
                 command:
-                    WorkunitsCommand::Threads {
-                        command: WorkunitThreadsCommand::Edit(args),
+                    WorkunitCommand::Thread {
+                        command: WorkunitThreadCommand::Set(args),
                     },
             } => {
                 assert_eq!(args.tracked_thread, "tt-1");
@@ -2145,10 +2174,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_workunits_workspace_merge_prep_command() {
+    fn parses_workunit_workspace_merge_prep_command() {
         let cli = Cli::parse_from([
             "orcas",
-            "workunits",
+            "workunit",
             "workspace",
             "merge-prep",
             "--tracked-thread",
@@ -2156,9 +2185,9 @@ mod tests {
         ]);
 
         match cli.command {
-            TopCommand::Workunits {
+            TopCommand::Workunit {
                 command:
-                    WorkunitsCommand::Workspace {
+                    WorkunitCommand::Workspace {
                         command: WorkunitWorkspaceCommand::MergePrep(args),
                     },
             } => {
@@ -2179,6 +2208,12 @@ mod tests {
     fn legacy_workunit_namespace_is_not_exposed() {
         assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "create"]).is_err());
         assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "list"]).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_workunits_namespace() {
+        assert!(Cli::try_parse_from(["orcas", "workunits", "list"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "workunits", "get", "--workunit", "wu-1"]).is_err());
     }
 
     #[test]
@@ -2210,9 +2245,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::ProposeSteer(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::ProposeSteer(args),
+                    },
             } => {
                 assert_eq!(args.thread, "thread-1");
                 assert_eq!(args.text, "stay focused");
@@ -2239,9 +2275,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Plan {
-                    command: PlanCommand::Create(args),
-                },
+                command:
+                    SupervisorCommand::Plan {
+                        command: PlanCommand::Create(args),
+                    },
             } => {
                 assert_eq!(args.workstream, "ws-1");
                 assert_eq!(args.summary.objective, "Plan a bounded change");
@@ -2266,9 +2303,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Plan {
-                    command: PlanCommand::MarkReadyForReview(args),
-                },
+                command:
+                    SupervisorCommand::Plan {
+                        command: PlanCommand::MarkReadyForReview(args),
+                    },
             } => {
                 assert_eq!(args.session, "ps-1");
                 assert_eq!(args.updated_by.as_deref(), Some("cli_user"));
@@ -2416,19 +2454,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_removed_app_server_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "app-server", "models", "list"]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "orcas",
-                "app-server",
-                "threads",
-                "read",
-                "--thread",
-                "thread-1"
-            ])
-            .is_err()
-        );
+    fn rejects_removed_daemon_app_server_namespace() {
+        assert!(Cli::try_parse_from(["orcas", "daemon", "discover-app-servers"]).is_err());
+        assert!(Cli::try_parse_from(["orcas", "daemon", "reap-app-servers"]).is_err());
     }
 
     #[test]
@@ -2452,9 +2480,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::ReplacePendingSteer(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::ReplacePendingSteer(args),
+                    },
             } => {
                 assert_eq!(args.decision, "std-7");
                 assert_eq!(args.text, "updated steer text");
@@ -2478,9 +2507,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::RecordNoAction(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::RecordNoAction(args),
+                    },
             } => {
                 assert_eq!(args.decision, "std-7");
                 assert_eq!(args.reviewed_by.as_deref(), Some("cli_user"));
@@ -2504,9 +2534,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::ManualRefresh(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::ManualRefresh(args),
+                    },
             } => {
                 assert_eq!(args.thread.as_deref(), Some("thread-1"));
                 assert_eq!(args.assignment, None);
@@ -2533,9 +2564,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::Queue(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::Queue(args),
+                    },
             } => {
                 assert_eq!(args.filters.workstream.as_deref(), Some("ws-1"));
                 assert!(matches!(
@@ -2563,9 +2595,10 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Review {
-                    command: ReviewCommand::History(args),
-                },
+                command:
+                    SupervisorCommand::Review {
+                        command: ReviewCommand::History(args),
+                    },
             } => {
                 assert_eq!(args.assignment.as_deref(), Some("cta-1"));
                 assert_eq!(args.limit, Some(20));
@@ -2589,11 +2622,13 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Work {
-                    command: SupervisorWorkCommand::Proposals {
-                        command: ProposalsCommand::ArtifactSummary(args),
+                command:
+                    SupervisorCommand::Work {
+                        command:
+                            SupervisorWorkCommand::Proposals {
+                                command: ProposalsCommand::ArtifactSummary(args),
+                            },
                     },
-                },
             } => {
                 assert_eq!(args.proposal, "proposal-1");
             }
@@ -2615,11 +2650,13 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Work {
-                    command: SupervisorWorkCommand::Proposals {
-                        command: ProposalsCommand::ArtifactDetail(args),
+                command:
+                    SupervisorCommand::Work {
+                        command:
+                            SupervisorWorkCommand::Proposals {
+                                command: ProposalsCommand::ArtifactDetail(args),
+                            },
                     },
-                },
             } => {
                 assert_eq!(args.proposal, "proposal-1");
             }
@@ -2645,11 +2682,13 @@ mod tests {
 
         match cli.command {
             TopCommand::Supervisor {
-                command: SupervisorCommand::Work {
-                    command: SupervisorWorkCommand::Proposals {
-                        command: ProposalsCommand::ArtifactExport(args),
+                command:
+                    SupervisorCommand::Work {
+                        command:
+                            SupervisorWorkCommand::Proposals {
+                                command: ProposalsCommand::ArtifactExport(args),
+                            },
                     },
-                },
             } => {
                 assert_eq!(args.proposal, "proposal-1");
                 assert!(matches!(args.format, ProposalArtifactExportFormatArg::Md));
@@ -2667,7 +2706,9 @@ mod tests {
         assert!(
             Cli::try_parse_from(["orcas", "proposals", "create", "--workunit", "wu-1"]).is_err()
         );
-        assert!(Cli::try_parse_from(["orcas", "decisions", "apply", "--workunit", "wu-1"]).is_err());
+        assert!(
+            Cli::try_parse_from(["orcas", "decisions", "apply", "--workunit", "wu-1"]).is_err()
+        );
         assert!(Cli::try_parse_from(["orcas", "review", "list"]).is_err());
         assert!(Cli::try_parse_from(["orcas", "session", "active"]).is_err());
     }

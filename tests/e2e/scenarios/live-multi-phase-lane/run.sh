@@ -104,7 +104,7 @@ workstream_output="$(
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
 workunit_output="$(
-  e2e_orcas workunits create \
+  e2e_orcas workunit create \
     --workstream "$workstream_id" \
     --title "Multi-phase tracked-thread lane" \
     --task "Phase 1: fix the greeting bug in main.c so make test passes. Keep the change bounded to main.c only. Phase 2 will be a separate bounded follow-up on the same tracked-thread worktree lane." \
@@ -112,7 +112,7 @@ workunit_output="$(
 workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
 tracked_output="$(
-  e2e_orcas tracked-threads create \
+  e2e_orcas workunit thread add \
     --workunit "$workunit_id" \
     --title "Live multi-phase lane" \
     --root-dir "$repo_root" \
@@ -132,7 +132,7 @@ tracked_output="$(
 tracked_thread_id="$(printf '%s\n' "$tracked_output" | awk -F': ' '/^tracked_thread_id:/ {print $2; exit}')"
 
 tracked_before_stdout="$reports_dir/tracked-thread-before-phase1.txt"
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$tracked_before_stdout"
+e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$tracked_before_stdout"
 
 phase1_assignment_stdout="$reports_dir/phase1-assignment-start.txt"
 timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
@@ -192,13 +192,13 @@ grep -q "assignment_id: $phase1_assignment_id" "$phase1_report_get_stdout"
 grep -q "report_id: $phase1_report_id" "$phase1_report_get_stdout"
 grep -q "status: AwaitingDecision" "$phase1_assignment_get_stdout"
 
-e2e_orcas tracked-threads edit \
+e2e_orcas workunit thread set \
   --tracked-thread "$tracked_thread_id" \
   --upstream-thread "$phase1_thread_id" \
   --binding-state bound \
   >"$phase1_tracked_thread_bind_stdout"
 
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$phase1_tracked_thread_after_stdout"
+e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$phase1_tracked_thread_after_stdout"
 grep -q "binding_state: Bound" "$phase1_tracked_thread_after_stdout"
 grep -q "workspace_worktree_path: $worktree_path" "$phase1_tracked_thread_after_stdout"
 grep -q "workspace_branch_name: $branch_name" "$phase1_tracked_thread_after_stdout"
@@ -303,7 +303,7 @@ test "$phase2_changed_count" -eq 1
 grep -q 'main.c' "$phase2_tree_diff_stdout"
 grep -q '^PASS$' "$phase2_make_test_stdout"
 
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$phase2_tracked_thread_after_stdout"
+e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$phase2_tracked_thread_after_stdout"
 grep -q "binding_state: Bound" "$phase2_tracked_thread_after_stdout"
 grep -q "workspace_worktree_path: $worktree_path" "$phase2_tracked_thread_after_stdout"
 grep -q "workspace_branch_name: $branch_name" "$phase2_tracked_thread_after_stdout"
@@ -323,7 +323,7 @@ test "$phase2_complete_workunit_status" = "Completed"
 grep -q "decision_type: MarkComplete" "$phase2_complete_stdout"
 grep -q "work_unit_status: Completed" "$phase2_complete_stdout"
 
-e2e_orcas workunits get --workunit "$workunit_id" >"$reports_dir/workunit-after-completion.txt"
+e2e_orcas workunit get --workunit "$workunit_id" >"$reports_dir/workunit-after-completion.txt"
 grep -q "tracked_threads: 1" "$reports_dir/workunit-after-completion.txt"
 grep -q "$tracked_thread_id" "$reports_dir/workunit-after-completion.txt"
 

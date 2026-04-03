@@ -52,7 +52,7 @@ setup_lane() {
   git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/${prefix}-git-worktree-add.txt" 2>&1
 
   workunit_output="$(
-    e2e_orcas workunits create \
+    e2e_orcas workunit create \
       --workstream "$workstream_id" \
       --title "$lane_title" \
       --task "$lane_task"
@@ -60,7 +60,7 @@ setup_lane() {
   workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
   tracked_output="$(
-    e2e_orcas tracked-threads create \
+    e2e_orcas workunit thread add \
       --workunit "$workunit_id" \
       --title "$lane_title" \
       --root-dir "$repo_root" \
@@ -157,13 +157,13 @@ run_lane() {
   grep -q "assignment_id: $assignment_id" "$report_get_stdout"
   grep -q "work_unit_id: $workunit_id" "$report_get_stdout"
 
-  e2e_orcas tracked-threads edit \
+  e2e_orcas workunit thread set \
     --tracked-thread "$tracked_thread_id" \
     --upstream-thread "$thread_id" \
     --binding-state bound \
     >"$tracked_thread_bind_stdout"
 
-  e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$tracked_thread_after_stdout"
+  e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$tracked_thread_after_stdout"
   grep -q "binding_state: Bound" "$tracked_thread_after_stdout"
   grep -q "workspace_worktree_path: $worktree_path" "$tracked_thread_after_stdout"
   grep -q "workspace_branch_name: $branch_name" "$tracked_thread_after_stdout"
@@ -279,8 +279,8 @@ eval "$(setup_lane lane_b "$workstream_id" \
 
 lane_a_tracked_before_stdout="$reports_dir/lane-a-tracked-thread-before.txt"
 lane_b_tracked_before_stdout="$reports_dir/lane-b-tracked-thread-before.txt"
-e2e_orcas tracked-threads get --tracked-thread "$lane_a_tracked_thread_id" >"$lane_a_tracked_before_stdout"
-e2e_orcas tracked-threads get --tracked-thread "$lane_b_tracked_thread_id" >"$lane_b_tracked_before_stdout"
+e2e_orcas workunit thread get --tracked-thread "$lane_a_tracked_thread_id" >"$lane_a_tracked_before_stdout"
+e2e_orcas workunit thread get --tracked-thread "$lane_b_tracked_thread_id" >"$lane_b_tracked_before_stdout"
 
 lane_a_assignment_start_stdout="$reports_dir/lane-a-assignment-start.txt"
 lane_b_assignment_start_stdout="$reports_dir/lane-b-assignment-start.txt"
@@ -380,19 +380,19 @@ grep -q "Hello, Lane B!" "$lane_b_worktree_path/tests/test.sh"
 ! grep -q "Hello, Lane B!" "$lane_a_worktree_path/main.c"
 ! grep -q "Hello, Lane A!" "$lane_b_worktree_path/main.c"
 
-e2e_orcas tracked-threads edit \
+e2e_orcas workunit thread set \
   --tracked-thread "$lane_a_tracked_thread_id" \
   --upstream-thread "$lane_a_thread_id" \
   --binding-state bound \
   >"$reports_dir/lane-a-tracked-thread-bind.txt"
-e2e_orcas tracked-threads edit \
+e2e_orcas workunit thread set \
   --tracked-thread "$lane_b_tracked_thread_id" \
   --upstream-thread "$lane_b_thread_id" \
   --binding-state bound \
   >"$reports_dir/lane-b-tracked-thread-bind.txt"
 
-e2e_orcas tracked-threads get --tracked-thread "$lane_a_tracked_thread_id" >"$lane_a_tracked_after_stdout"
-e2e_orcas tracked-threads get --tracked-thread "$lane_b_tracked_thread_id" >"$lane_b_tracked_after_stdout"
+e2e_orcas workunit thread get --tracked-thread "$lane_a_tracked_thread_id" >"$lane_a_tracked_after_stdout"
+e2e_orcas workunit thread get --tracked-thread "$lane_b_tracked_thread_id" >"$lane_b_tracked_after_stdout"
 grep -q "binding_state: Bound" "$lane_a_tracked_after_stdout"
 grep -q "binding_state: Bound" "$lane_b_tracked_after_stdout"
 grep -q "workspace_worktree_path: $lane_a_worktree_path" "$lane_a_tracked_after_stdout"
