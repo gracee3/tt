@@ -43,6 +43,13 @@ Lane contract:
 - the default daily deterministic lane is expected to work from a normal dirty developer checkout
 - scenarios that require a clean git tree are opt-in and must not be default-enabled
 
+Aligned live lane contract for the current tracked-thread/workspace migration:
+
+- lane-centric live scenarios create the workstream first, then declare the tracked-thread workspace before the first live assignment
+- the harness inspects the workstream runtime through `orcas workstreams runtime get` and `orcas codex threads list --workstream`
+- the first live assignment must auto-bind into the declared tracked-thread lane; the harness must not repair binding manually after the report appears
+- the currently aligned scenarios are `live-worker-direct-patch`, `live-worktree-lifecycle`, `live-multi-phase-lane`, and `live-concurrent-lanes`
+
 ## Running Scenarios
 
 Run the default deterministic lane:
@@ -113,6 +120,7 @@ Supported shared-lab scenarios:
 - `live-worker-direct-patch`
 - `live-supervisor-micro-proposal`
 - `live-reject-redirect`
+- `live-worktree-lifecycle`
 - `supervisor-planning`
 
 These scenarios reuse the existing lab daemon and lab XDG roots, so their workstreams, work units, assignments, reports, and bound threads appear in the UI immediately.
@@ -181,4 +189,4 @@ That removes `target/e2e/` and nothing else.
 - `live-multi-phase-lane`
 - `live-concurrent-lanes`
 
-The current migration keeps the existing behavior first, then grows the live lane through worker execution, supervisor approval, governed redirect flows, restart/recovery behavior, tracked-thread worktree lifecycle transitions, multi-phase lane continuity on the same tracked-thread/worktree path, and concurrent lane isolation across two live worktrees.
+The current migration now treats the workstream runtime as the app-server ownership unit and the tracked-thread workspace as the execution lane. The aligned live scenarios prove first-assignment lane binding, tracked-thread/worktree continuity, tracked-thread lifecycle transitions, and concurrent lane isolation on top of that model. Other live proposal/redirect/restart scenarios still follow as a separate migration slice.

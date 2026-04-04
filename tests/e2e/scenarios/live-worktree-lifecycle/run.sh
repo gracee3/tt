@@ -8,12 +8,6 @@ fixture_dir="$scenario_dir/fixture"
 e2e_load_scenario_metadata "$scenario_dir"
 e2e_prepare_scenario_dirs "$NAME"
 
-field_value() {
-  local key="$1"
-  local file="$2"
-  sed -n "s/^${key}: //p" "$file" | head -n1
-}
-
 capture_bootstrap_churn() {
   local output_file="$1"
   {
@@ -39,57 +33,7 @@ fail_bootstrap_churn() {
   exit 1
 }
 
-short_xdg_root="$e2e_output_root/xdg/$E2E_RUN_ID/lwl"
-short_xdg_data_home="$short_xdg_root/data"
-short_xdg_config_home="$short_xdg_root/config"
-short_xdg_runtime_home="$short_xdg_root/runtime"
-listen_port="$((5800 + ($(printf '%s' "$E2E_RUN_ID" | cksum | awk '{print $1}') % 1000)))"
-listen_url="ws://127.0.0.1:$listen_port"
-supervisor_base_url="${ORCAS_SUPERVISOR_BASE_URL:-http://127.0.0.1:8000/v1}"
-supervisor_model="${ORCAS_SUPERVISOR_MODEL:-gpt-oss-20b}"
-supervisor_api_key_env="${ORCAS_SUPERVISOR_API_KEY_ENV:-}"
-supervisor_reasoning_effort="${ORCAS_SUPERVISOR_REASONING_EFFORT:-}"
-supervisor_max_output_tokens="${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-16384}"
-codex_bin="${ORCAS_CODEX_BIN:-$(command -v codex)}"
-
-if ! e2e_using_shared_lab; then
-rm -rf "$short_xdg_root"
-mkdir -p "$short_xdg_data_home/orcas" "$short_xdg_config_home/orcas" "$short_xdg_runtime_home/orcas"
-chmod 700 "$short_xdg_runtime_home" || true
-
-cat >"$short_xdg_config_home/orcas/config.toml" <<EOF
-[codex]
-binary_path = "$codex_bin"
-listen_url = "$listen_url"
-connection_mode = "spawn_if_needed"
-config_overrides = []
-
-[codex.reconnect]
-initial_delay_ms = 150
-max_delay_ms = 5000
-multiplier = 2.0
-
-[supervisor]
-base_url = "$supervisor_base_url"
-api_key_env = "$supervisor_api_key_env"
-model = "$supervisor_model"
-reasoning_effort = "$supervisor_reasoning_effort"
-temperature = ${ORCAS_SUPERVISOR_TEMPERATURE:-0.0}
-max_output_tokens = $supervisor_max_output_tokens
-
-[supervisor.proposals]
-auto_create_on_report_recorded = false
-EOF
-
-export E2E_SCENARIO_XDG_DIR="$short_xdg_root"
-export E2E_SCENARIO_XDG_DATA_HOME="$short_xdg_data_home"
-export E2E_SCENARIO_XDG_CONFIG_HOME="$short_xdg_config_home"
-export E2E_SCENARIO_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
-export ORCAS_E2E_XDG_DATA_HOME="$short_xdg_data_home"
-export ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home"
-export ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
-export ORCAS_CODEX_LISTEN_URL="$listen_url"
-fi
+e2e_prepare_live_codex_environment "lwl" 5800 16384
 
 worktree_path="$E2E_SCENARIO_WORKTREES_DIR/lane"
 repo_root="$E2E_SCENARIO_WORKTREES_DIR/lane-repo"
@@ -100,17 +44,8 @@ base_ref="${ORCAS_E2E_GIT_BASE_REF:-main}"
 branch_suffix="${E2E_RUN_ID//[^a-zA-Z0-9]/-}"
 branch_name="orcas/$NAME/$branch_suffix"
 
-rm -rf "$worktree_path" "$repo_root"
 mkdir -p "$reports_dir" "$artifacts_dir" "$(dirname "$worktree_path")"
-
-mkdir -p "$repo_root"
-cp -R "$fixture_dir/." "$repo_root/"
-git -C "$repo_root" init -b "$base_ref" >"$reports_dir/git-init.txt" 2>&1
-git -C "$repo_root" config user.name "Orcas E2E"
-git -C "$repo_root" config user.email "orcas-e2e@example.com"
-git -C "$repo_root" add .
-git -C "$repo_root" commit -m "Initial tracked-thread fixture" >"$reports_dir/git-initial-commit.txt" 2>&1
-git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/git-worktree-add.txt" 2>&1
+e2e_prepare_fixture_repo_with_worktree "$fixture_dir" "$repo_root" "$worktree_path" "$branch_name" "$base_ref" "$reports_dir"
 
 e2e_start_managed_daemon "$daemon_log"
 cleanup() {
@@ -137,27 +72,29 @@ workunit_output="$(
 workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
 tracked_output="$(
-  e2e_orcas workunit thread add \
-    --workunit "$workunit_id" \
-    --title "Tracked thread worktree lifecycle" \
-    --root-dir "$repo_root" \
-    --notes "Dedicated tracked-thread worktree lane for live lifecycle validation" \
-    --workspace-repository-root "$repo_root" \
-    --workspace-worktree-path "$worktree_path" \
-    --workspace-branch-name "$branch_name" \
-    --workspace-base-ref "$base_ref" \
-    --workspace-base-commit "$(git -C "$repo_root" rev-parse HEAD)" \
-    --workspace-landing-target "$base_ref" \
-    --workspace-strategy dedicated-thread-worktree \
-    --workspace-landing-policy merge-to-main \
-    --workspace-sync-policy rebase-before-completion \
-    --workspace-cleanup-policy prune-after-merge \
-    --workspace-status ready \
+  e2e_add_tracked_thread_workspace \
+    "$workunit_id" \
+    "Tracked thread worktree lifecycle" \
+    "$repo_root" \
+    "Dedicated tracked-thread worktree lane for live lifecycle validation" \
+    "$repo_root" \
+    "$worktree_path" \
+    "$branch_name" \
+    "$base_ref" \
+    "$(git -C "$repo_root" rev-parse HEAD)" \
+    "$base_ref" \
+    rebase-before-completion \
+    prune-after-merge \
+    ready \
 )"
 tracked_thread_id="$(printf '%s\n' "$tracked_output" | awk -F': ' '/^tracked_thread_id:/ {print $2; exit}')"
 
 tracked_before_stdout="$reports_dir/tracked-thread-before-live.txt"
+runtime_before_stdout="$reports_dir/workstream-runtime-before-live.txt"
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$tracked_before_stdout"
+e2e_capture_workstream_runtime "$workstream_id" "$runtime_before_stdout"
+e2e_assert_workstream_runtime "$workstream_id" "$runtime_before_stdout"
+e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 
 bootstrap_assignment_stdout="$reports_dir/bootstrap-assignment-start.txt"
 timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
@@ -169,15 +106,7 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
   >"$bootstrap_assignment_stdout" 2>&1 &
 bootstrap_assignment_start_pid=$!
 
-bootstrap_report_id=""
-for _ in $(seq 1 120); do
-  reports_output="$("$e2e_bin_dir/orcas.sh" reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
-  bootstrap_report_id="$(printf '%s\n' "$reports_output" | awk -F'\t' '/^report-/ {print $1; exit}')"
-  [[ -n "$bootstrap_report_id" ]] && break
-  sleep 5
-done
-
-test -n "$bootstrap_report_id"
+e2e_wait_for_report_id "$workunit_id" bootstrap_report_id
 
 bootstrap_report_get_stdout="$reports_dir/bootstrap-report-get.txt"
 bootstrap_assignment_get_stdout="$reports_dir/bootstrap-assignment-get.txt"
@@ -186,11 +115,11 @@ bootstrap_git_status_stdout="$reports_dir/bootstrap-git-status.txt"
 bootstrap_churn_stdout="$reports_dir/bootstrap-churn.txt"
 
 e2e_orcas supervisor work reports get --report "$bootstrap_report_id" >"$bootstrap_report_get_stdout"
-bootstrap_assignment_id="$(field_value assignment_id "$bootstrap_report_get_stdout")"
-bootstrap_report_parse_result="$(field_value parse_result "$bootstrap_report_get_stdout")"
+bootstrap_assignment_id="$(e2e_field_value assignment_id "$bootstrap_report_get_stdout")"
+bootstrap_report_parse_result="$(e2e_field_value parse_result "$bootstrap_report_get_stdout")"
 
 e2e_orcas supervisor work assignments get --assignment "$bootstrap_assignment_id" >"$bootstrap_assignment_get_stdout"
-bootstrap_assignment_status="$(field_value status "$bootstrap_assignment_get_stdout")"
+bootstrap_assignment_status="$(e2e_field_value status "$bootstrap_assignment_get_stdout")"
 
 case "$bootstrap_report_parse_result" in
   Parsed|Ambiguous) ;;
@@ -227,18 +156,21 @@ grep -q "assignment_id: $bootstrap_assignment_id" "$bootstrap_report_get_stdout"
 grep -q "report_id: $bootstrap_report_id" "$bootstrap_assignment_get_stdout"
 wait "$bootstrap_assignment_start_pid" >/dev/null 2>&1 || true
 
-bootstrap_thread_id="$(field_value thread_id "$bootstrap_assignment_stdout")"
+bootstrap_thread_id="$(e2e_field_value thread_id "$bootstrap_assignment_stdout")"
 test -n "$bootstrap_thread_id"
-tracked_thread_bind_stdout="$reports_dir/tracked-thread-bind.txt"
-e2e_orcas workunit thread set \
-  --tracked-thread "$tracked_thread_id" \
-  --upstream-thread "$bootstrap_thread_id" \
-  --binding-state bound \
-  >"$tracked_thread_bind_stdout"
-
 tracked_thread_bound_stdout="$reports_dir/tracked-thread-bound.txt"
+runtime_after_bootstrap_stdout="$reports_dir/workstream-runtime-after-bootstrap.txt"
+threads_after_bootstrap_stdout="$reports_dir/workstream-threads-after-bootstrap.txt"
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$tracked_thread_bound_stdout"
+e2e_capture_workstream_runtime "$workstream_id" "$runtime_after_bootstrap_stdout"
+e2e_capture_workstream_threads "$workstream_id" "$threads_after_bootstrap_stdout"
+e2e_assert_workstream_runtime "$workstream_id" "$runtime_after_bootstrap_stdout"
+e2e_assert_runtime_thread_count "$runtime_after_bootstrap_stdout" 1
+e2e_assert_managed_thread_count "$threads_after_bootstrap_stdout" 1
 grep -q "binding_state: Bound" "$tracked_thread_bound_stdout"
+grep -q "upstream_thread_id: $bootstrap_thread_id" "$tracked_thread_bound_stdout"
+grep -q "workspace_worktree_path: $worktree_path" "$tracked_thread_bound_stdout"
+grep -q "workspace_branch_name: $branch_name" "$tracked_thread_bound_stdout"
 
 bootstrap_continue_stdout="$reports_dir/decision-continue-after-bootstrap.txt"
 timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
@@ -249,9 +181,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
   --instructions "Proceed with the next bounded tracked-thread workspace step for the declared worktree lane." \
   >"$bootstrap_continue_stdout" 2>&1
 
-bootstrap_continue_decision_id="$(field_value decision_id "$bootstrap_continue_stdout")"
-bootstrap_continue_next_assignment_id="$(field_value next_assignment_id "$bootstrap_continue_stdout")"
-bootstrap_continue_workunit_status="$(field_value work_unit_status "$bootstrap_continue_stdout")"
+bootstrap_continue_decision_id="$(e2e_field_value decision_id "$bootstrap_continue_stdout")"
+bootstrap_continue_next_assignment_id="$(e2e_field_value next_assignment_id "$bootstrap_continue_stdout")"
+bootstrap_continue_workunit_status="$(e2e_field_value work_unit_status "$bootstrap_continue_stdout")"
 test -n "$bootstrap_continue_decision_id"
 test -n "$bootstrap_continue_next_assignment_id"
 test "$bootstrap_continue_workunit_status" = "Ready"
@@ -264,9 +196,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prepare
   --request-note "Confirm the tracked-thread worktree is clean after the bounded fix and report the current workspace state. Do not make additional code changes." \
   >"$prepare_workspace_stdout" 2>&1 || true
 
-prepare_report_id="$(field_value workspace_operation_report_id "$prepare_workspace_stdout")"
-prepare_assignment_id="$(field_value workspace_operation_assignment_id "$prepare_workspace_stdout")"
-prepare_workspace_operation_status="$(field_value workspace_operation_status "$prepare_workspace_stdout")"
+prepare_report_id="$(e2e_field_value workspace_operation_report_id "$prepare_workspace_stdout")"
+prepare_assignment_id="$(e2e_field_value workspace_operation_assignment_id "$prepare_workspace_stdout")"
+prepare_workspace_operation_status="$(e2e_field_value workspace_operation_status "$prepare_workspace_stdout")"
 
 prepare_report_get_stdout="$reports_dir/prepare-report-get.txt"
 prepare_assignment_get_stdout="$reports_dir/prepare-assignment-get.txt"
@@ -276,11 +208,11 @@ prepare_git_status_stdout="$reports_dir/prepare-git-status.txt"
 prepare_git_log_stdout="$reports_dir/prepare-git-log.txt"
 
 e2e_orcas supervisor work reports get --report "$prepare_report_id" >"$prepare_report_get_stdout"
-prepare_report_assignment_id="$(field_value assignment_id "$prepare_report_get_stdout")"
-prepare_report_parse_result="$(field_value parse_result "$prepare_report_get_stdout")"
+prepare_report_assignment_id="$(e2e_field_value assignment_id "$prepare_report_get_stdout")"
+prepare_report_parse_result="$(e2e_field_value parse_result "$prepare_report_get_stdout")"
 
 e2e_orcas supervisor work assignments get --assignment "$prepare_assignment_id" >"$prepare_assignment_get_stdout"
-prepare_assignment_status="$(field_value status "$prepare_assignment_get_stdout")"
+prepare_assignment_status="$(e2e_field_value status "$prepare_assignment_get_stdout")"
 
 make -C "$worktree_path" test >"$prepare_make_test_stdout"
 make -C "$worktree_path" clean >/dev/null 2>&1 || true
@@ -322,9 +254,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
   --instructions "Proceed with the next bounded tracked-thread workspace step for the declared worktree lane." \
   >"$continue_after_prepare_stdout" 2>&1
 
-continue_after_prepare_decision_id="$(field_value decision_id "$continue_after_prepare_stdout")"
-continue_after_prepare_next_assignment_id="$(field_value next_assignment_id "$continue_after_prepare_stdout")"
-continue_after_prepare_workunit_status="$(field_value work_unit_status "$continue_after_prepare_stdout")"
+continue_after_prepare_decision_id="$(e2e_field_value decision_id "$continue_after_prepare_stdout")"
+continue_after_prepare_next_assignment_id="$(e2e_field_value next_assignment_id "$continue_after_prepare_stdout")"
+continue_after_prepare_workunit_status="$(e2e_field_value work_unit_status "$continue_after_prepare_stdout")"
 test -n "$continue_after_prepare_decision_id"
 test -n "$continue_after_prepare_next_assignment_id"
 test "$continue_after_prepare_workunit_status" = "Ready"
@@ -337,9 +269,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace merge-p
   --request-note "Confirm the tracked-thread worktree is clean, bounded, and ready for landing review. Do not make any additional code changes." \
   >"$merge_prep_stdout" 2>&1 || true
 
-merge_prep_report_id="$(field_value workspace_operation_report_id "$merge_prep_stdout")"
-merge_prep_assignment_id="$(field_value workspace_operation_assignment_id "$merge_prep_stdout")"
-merge_prep_readiness="$(field_value merge_prep_readiness "$merge_prep_stdout")"
+merge_prep_report_id="$(e2e_field_value workspace_operation_report_id "$merge_prep_stdout")"
+merge_prep_assignment_id="$(e2e_field_value workspace_operation_assignment_id "$merge_prep_stdout")"
+merge_prep_readiness="$(e2e_field_value merge_prep_readiness "$merge_prep_stdout")"
 merge_prep_report_get_stdout="$reports_dir/merge-prep-report-get.txt"
 merge_prep_assignment_get_stdout="$reports_dir/merge-prep-assignment-get.txt"
 merge_prep_thread_get_stdout="$reports_dir/tracked-thread-after-merge-prep.txt"
@@ -348,9 +280,9 @@ e2e_orcas supervisor work reports get --report "$merge_prep_report_id" >"$merge_
 e2e_orcas supervisor work assignments get --assignment "$merge_prep_assignment_id" >"$merge_prep_assignment_get_stdout"
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$merge_prep_thread_get_stdout"
 
-merge_prep_report_assignment_id="$(field_value assignment_id "$merge_prep_report_get_stdout")"
-merge_prep_report_parse_result="$(field_value parse_result "$merge_prep_report_get_stdout")"
-merge_prep_assignment_status="$(field_value status "$merge_prep_assignment_get_stdout")"
+merge_prep_report_assignment_id="$(e2e_field_value assignment_id "$merge_prep_report_get_stdout")"
+merge_prep_report_parse_result="$(e2e_field_value parse_result "$merge_prep_report_get_stdout")"
+merge_prep_assignment_status="$(e2e_field_value status "$merge_prep_assignment_get_stdout")"
 
 test -n "$merge_prep_report_id"
 test -n "$merge_prep_assignment_id"
@@ -375,9 +307,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace authori
   --request-note "Authorize landing for the already prepared tracked-thread worktree lane." \
   >"$authorize_stdout" 2>&1 || true
 
-landing_authorization_id="$(field_value landing_authorization_id "$authorize_stdout")"
-landing_authorization_status="$(field_value landing_authorization_status "$authorize_stdout")"
-landing_authorization_is_current="$(field_value landing_authorization_is_current "$authorize_stdout")"
+landing_authorization_id="$(e2e_field_value landing_authorization_id "$authorize_stdout")"
+landing_authorization_status="$(e2e_field_value landing_authorization_status "$authorize_stdout")"
+landing_authorization_is_current="$(e2e_field_value landing_authorization_is_current "$authorize_stdout")"
 authorize_thread_get_stdout="$reports_dir/tracked-thread-after-authorize.txt"
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$authorize_thread_get_stdout"
 
@@ -396,9 +328,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
   --instructions "Proceed with the next bounded tracked-thread workspace step for landing execution." \
   >"$continue_after_merge_prep_stdout" 2>&1
 
-continue_after_merge_prep_decision_id="$(field_value decision_id "$continue_after_merge_prep_stdout")"
-continue_after_merge_prep_next_assignment_id="$(field_value next_assignment_id "$continue_after_merge_prep_stdout")"
-continue_after_merge_prep_workunit_status="$(field_value work_unit_status "$continue_after_merge_prep_stdout")"
+continue_after_merge_prep_decision_id="$(e2e_field_value decision_id "$continue_after_merge_prep_stdout")"
+continue_after_merge_prep_next_assignment_id="$(e2e_field_value next_assignment_id "$continue_after_merge_prep_stdout")"
+continue_after_merge_prep_workunit_status="$(e2e_field_value work_unit_status "$continue_after_merge_prep_stdout")"
 test -n "$continue_after_merge_prep_decision_id"
 test -n "$continue_after_merge_prep_next_assignment_id"
 test "$continue_after_merge_prep_workunit_status" = "Ready"
@@ -411,11 +343,11 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace execute
   --request-note "Execute the authorized landing for the prepared tracked-thread worktree lane only." \
   >"$landing_stdout" 2>&1 || true
 
-landing_execution_id="$(field_value landing_execution_id "$landing_stdout")"
-landing_execution_status="$(field_value landing_execution_status "$landing_stdout")"
-landing_execution_matches_basis="$(field_value landing_execution_matches_authorization_basis "$landing_stdout")"
-landing_execution_result_status="$(field_value landing_execution_result_status "$landing_stdout")"
-landing_execution_report_id="$(field_value landing_execution_report_id "$landing_stdout")"
+landing_execution_id="$(e2e_field_value landing_execution_id "$landing_stdout")"
+landing_execution_status="$(e2e_field_value landing_execution_status "$landing_stdout")"
+landing_execution_matches_basis="$(e2e_field_value landing_execution_matches_authorization_basis "$landing_stdout")"
+landing_execution_result_status="$(e2e_field_value landing_execution_result_status "$landing_stdout")"
+landing_execution_report_id="$(e2e_field_value landing_execution_report_id "$landing_stdout")"
 landing_execution_thread_get_stdout="$reports_dir/tracked-thread-after-landing.txt"
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$landing_execution_thread_get_stdout"
 
@@ -436,9 +368,9 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
   --instructions "Proceed with the final bounded tracked-thread cleanup step for the declared worktree lane." \
   >"$continue_after_landing_stdout" 2>&1
 
-continue_after_landing_decision_id="$(field_value decision_id "$continue_after_landing_stdout")"
-continue_after_landing_next_assignment_id="$(field_value next_assignment_id "$continue_after_landing_stdout")"
-continue_after_landing_workunit_status="$(field_value work_unit_status "$continue_after_landing_stdout")"
+continue_after_landing_decision_id="$(e2e_field_value decision_id "$continue_after_landing_stdout")"
+continue_after_landing_next_assignment_id="$(e2e_field_value next_assignment_id "$continue_after_landing_stdout")"
+continue_after_landing_workunit_status="$(e2e_field_value work_unit_status "$continue_after_landing_stdout")"
 test -n "$continue_after_landing_decision_id"
 test -n "$continue_after_landing_next_assignment_id"
 test "$continue_after_landing_workunit_status" = "Ready"
@@ -451,10 +383,10 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prune \
   --request-note "Prune the tracked-thread workspace after the successful landing and report the observed cleanup state." \
   >"$prune_stdout" 2>&1 || true
 
-prune_operation_id="$(field_value prune_workspace_operation_id "$prune_stdout")"
-prune_workspace_result_status="$(field_value prune_workspace_result_status "$prune_stdout")"
-prune_workspace_result_worktree_removed="$(field_value prune_workspace_result_worktree_removed "$prune_stdout")"
-prune_workspace_result_branch_removed="$(field_value prune_workspace_result_branch_removed "$prune_stdout")"
+prune_operation_id="$(e2e_field_value prune_workspace_operation_id "$prune_stdout")"
+prune_workspace_result_status="$(e2e_field_value prune_workspace_result_status "$prune_stdout")"
+prune_workspace_result_worktree_removed="$(e2e_field_value prune_workspace_result_worktree_removed "$prune_stdout")"
+prune_workspace_result_branch_removed="$(e2e_field_value prune_workspace_result_branch_removed "$prune_stdout")"
 prune_thread_get_stdout="$reports_dir/tracked-thread-after-prune.txt"
 git_worktree_list_before_prune="$reports_dir/git-worktree-list-before-prune.txt"
 git_worktree_list_after_prune="$reports_dir/git-worktree-list-after-prune.txt"
@@ -483,8 +415,8 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
   --rationale "Close the tracked-thread lifecycle work unit after prune completed cleanly." \
   >"$complete_after_prune_stdout" 2>&1
 
-complete_after_prune_decision_id="$(field_value decision_id "$complete_after_prune_stdout")"
-complete_after_prune_workunit_status="$(field_value work_unit_status "$complete_after_prune_stdout")"
+complete_after_prune_decision_id="$(e2e_field_value decision_id "$complete_after_prune_stdout")"
+complete_after_prune_workunit_status="$(e2e_field_value work_unit_status "$complete_after_prune_stdout")"
 test -n "$complete_after_prune_decision_id"
 test "$complete_after_prune_workunit_status" = "Completed"
 grep -q "decision_type: MarkComplete" "$complete_after_prune_stdout"

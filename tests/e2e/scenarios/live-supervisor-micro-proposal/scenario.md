@@ -11,7 +11,8 @@ Verify that Orcas can take one real live worker report, generate a bounded super
 3. A shell-based test script and Makefile are present so the repository can prove the fix locally.
 4. The scenario writes a repo-local Orcas config that can target a local vLLM Responses endpoint by default, while still allowing an explicit hosted API override.
 5. Orcas daemon state is started and a single workstream/work unit is created.
-6. A direct live worker assignment is started against the fixture repo.
+6. A tracked-thread record is created before the first live assignment, with a declared repository root, worktree path, branch name, base ref, landing target, and cleanup policy.
+7. The harness inspects the workstream runtime before execution and expects zero live lane threads at that point.
 
 ## What Is Live
 
@@ -23,13 +24,14 @@ Verify that Orcas can take one real live worker report, generate a bounded super
 
 ## Live Boundary
 
-- Before execution begins, the harness may create the fixture repository, workstream, work unit, and initial assignment.
+- Before execution begins, the harness may create the fixture repository, workstream, work unit, tracked-thread workspace contract, and initial assignment.
 - After `assignment/start` begins, the harness must not patch the source file, seed a report, seed a proposal, or seed the approval result.
 - The harness may inspect durable CLI-visible state, request a proposal from the daemon, approve it, and verify the resulting next assignment.
 
 ## What This Proves
 
 - Orcas can finish a real bounded worker turn in the live lane.
+- Orcas can bind the first live assignment directly into the predeclared tracked-thread workspace lane and surface it as one managed workstream-runtime thread.
 - Orcas can persist the resulting report.
 - Orcas can generate a reviewable supervisor proposal from that report.
 - Operator approval can create the next assignment from the proposal path.
@@ -38,6 +40,8 @@ Verify that Orcas can take one real live worker report, generate a bounded super
 ## Pass Conditions
 
 - The first live assignment reaches `AwaitingDecision`.
+- The tracked-thread record exists before execution, then auto-binds to the live upstream thread.
+- The workstream runtime shows exactly one managed lane thread and no unmanaged external thread after the first live assignment runs.
 - A report exists and is linked to the assignment and work unit.
 - The report parse result is acceptable for a real live run.
 - `make test` passes in the fixture repository.
@@ -50,6 +54,7 @@ Verify that Orcas can take one real live worker report, generate a bounded super
 ## Fail Conditions
 
 - The first live assignment never reaches `AwaitingDecision`.
+- The tracked-thread lane does not bind automatically or the runtime view is inconsistent with the declared lane.
 - No report is persisted.
 - Proposal generation fails or produces an unreviewable proposal.
 - Approval fails.

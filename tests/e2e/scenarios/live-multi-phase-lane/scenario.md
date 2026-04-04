@@ -12,6 +12,7 @@ This scenario uses one declared tracked-thread lane, two bounded live assignment
 2. The repository contains a tiny C program, a shell test, and a Makefile with one obvious bug.
 3. Orcas daemon state is started and one work unit is created in a workstream.
 4. A tracked-thread record is created that points at the declared repository root, worktree path, branch name, base ref, landing target, strategy, sync policy, and cleanup policy before any live assignment begins.
+5. The harness inspects the workstream runtime before phase 1 and expects the lane to be declared but not yet running as an active runtime thread.
 
 ## What Is Live
 
@@ -26,12 +27,13 @@ This scenario uses one declared tracked-thread lane, two bounded live assignment
 ## Live Boundary
 
 - Before execution begins, the harness may create the tiny fixture, create the workstream and work unit, and create the tracked-thread record with its workspace contract.
-- After the first live worker turn begins, the harness must not patch the source file, seed a report, seed a proposal, or fake the second assignment.
+- After the first live worker turn begins, the harness must not patch the source file, seed a report, seed a proposal, fake a tracked-thread binding update, or fake the second assignment.
 - The harness may inspect CLI-visible state, request the next live phase through the supported proposal/decision path, and apply the final completion decision.
 
 ## What This Proves
 
 - Orcas can use one declared tracked-thread lane across multiple live assignments.
+- Orcas can keep that lane represented as exactly one managed workstream-runtime thread across both phases.
 - Orcas can preserve the same tracked-thread id, repository root, worktree path, and branch identity across phases.
 - Orcas can hand off from phase 1 to phase 2 through a real supervisor approval on the same work unit.
 - Orcas can keep the lane bounded while letting the worker make two separate, inspectable changes on the same worktree.
@@ -40,10 +42,12 @@ This scenario uses one declared tracked-thread lane, two bounded live assignment
 ## Pass Conditions
 
 - The tracked-thread record shows the expected workspace contract before execution.
+- The workstream runtime exists before phase 1 with zero active lane threads.
 - Phase 1 completes and produces a persisted report.
 - Phase 1 changes only `main.c` and `make test` passes.
 - Phase 1 proposal approval creates the next assignment on the same work unit.
 - The next assignment uses the same tracked-thread/worktree lane identity.
+- The same managed workstream-runtime thread stays attached to that lane across both phases.
 - Phase 2 completes and produces a persisted report.
 - Phase 2 changes remain bounded and stay inside the declared worktree lane.
 - The same tracked-thread id and worktree path are visible before phase 1, between phases, and after phase 2.
@@ -53,10 +57,11 @@ This scenario uses one declared tracked-thread lane, two bounded live assignment
 ## Fail Conditions
 
 - The tracked-thread record does not show the expected workspace contract.
+- The workstream runtime does not reflect the single-lane thread model before or during the two phases.
 - Phase 1 never reaches a terminal persisted state.
 - Phase 1 changes too many files or leaves the worktree outside the declared lane.
 - The phase 1 approval does not create the next assignment on the same work unit.
-- Phase 2 starts a different lane or creates a second worktree path.
+- Phase 2 starts a different lane, creates a second worktree path, or requires a harness-side rebind.
 - Phase 2 never reaches a terminal persisted state.
 - The second phase changes are not bounded.
 - The final completion decision fails.

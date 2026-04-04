@@ -11,7 +11,8 @@ Verify that Orcas can survive a daemon interruption during a live worker turn an
 3. A shell-based test script and Makefile are present so the repository can prove the fix locally.
 4. The scenario writes a repo-local Orcas config that can target a local vLLM Responses endpoint by default, while still allowing an explicit hosted API override.
 5. Orcas daemon state is started and a single workstream/work unit is created.
-6. A direct live worker assignment is started against the fixture repo.
+6. A tracked-thread record is created before the first live assignment, with a declared repository root, worktree path, branch name, base ref, landing target, and cleanup policy.
+7. The harness inspects the workstream runtime before execution and expects zero live lane threads at that point.
 
 ## What Is Live
 
@@ -28,13 +29,14 @@ Verify that Orcas can survive a daemon interruption during a live worker turn an
 
 ## Live Boundary
 
-- Before execution begins, the harness may create the fixture repository, workstream, work unit, and initial assignment.
+- Before execution begins, the harness may create the fixture repository, workstream, work unit, tracked-thread workspace contract, and initial assignment.
 - After `assignment/start` begins, the harness may only observe state, stop the daemon, restart the daemon, and verify durable state.
 - The harness must not patch the source file, seed a report, or rewrite persisted state to simulate recovery.
 
 ## What This Proves
 
 - Orcas can survive a controlled daemon interruption during a live assignment.
+- Orcas can bind the first live assignment directly into the predeclared tracked-thread workspace lane and recover that same lane after restart.
 - Orcas can restart against the same persisted local state.
 - Orcas can reconcile the in-flight workflow from durable/upstream truth instead of duplicating or losing it.
 - Orcas can converge to the correct persisted result after restart.
@@ -43,6 +45,8 @@ Verify that Orcas can survive a daemon interruption during a live worker turn an
 
 - A real live assignment is created.
 - There is clear evidence the live turn started before interruption.
+- The tracked-thread record exists before execution, auto-binds to the live upstream thread, and remains bound to that same lane after restart.
+- The workstream runtime shows exactly one managed lane thread and no unmanaged external thread before and after restart.
 - The daemon stops and restarts cleanly against the same local state.
 - The original assignment does not split into duplicates or corrupt the work unit state.
 - The workflow eventually converges to the correct persisted state.
@@ -54,6 +58,7 @@ Verify that Orcas can survive a daemon interruption during a live worker turn an
 ## Fail Conditions
 
 - The assignment never actually starts before interruption.
+- The tracked-thread lane does not bind automatically or the runtime view is inconsistent with the declared lane before or after restart.
 - Daemon restart fails.
 - The workflow remains permanently stuck after restart.
 - Duplicate reports or assignments are created by restart.
