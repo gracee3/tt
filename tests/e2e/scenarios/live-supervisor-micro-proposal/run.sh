@@ -91,7 +91,7 @@ workstream_output="$(
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
 workunit_output="$(
-  e2e_orcas workunits create \
+  e2e_orcas workunit create \
     --workstream "$workstream_id" \
     --title "Fix the tiny greeting bug" \
     --task "Inspect the tiny C program and failing shell test in the fixture repo. Make the smallest code change needed so make test passes. Do not refactor unrelated code."
@@ -130,11 +130,11 @@ next_assignment_get_stdout="$reports_dir/next-assignment-get.txt"
 make_test_stdout="$reports_dir/make-test.txt"
 tree_diff_stdout="$reports_dir/tree-diff.txt"
 
-e2e_orcas reports get --report "$report_id" >"$report_get_stdout"
+e2e_orcas supervisor work reports get --report "$report_id" >"$report_get_stdout"
 assignment_id="$(field_value assignment_id "$report_get_stdout")"
 report_parse_result="$(field_value parse_result "$report_get_stdout")"
 
-e2e_orcas assignments get --assignment "$assignment_id" >"$assignment_get_stdout"
+e2e_orcas supervisor work assignments get --assignment "$assignment_id" >"$assignment_get_stdout"
 assignment_status="$(field_value status "$assignment_get_stdout")"
 worker_session_id="$(field_value worker_session_id "$assignment_get_stdout")"
 
@@ -161,7 +161,7 @@ grep -q "status: AwaitingDecision" "$assignment_get_stdout"
 grep -Eq "parse_result: (Parsed|Ambiguous)" "$report_get_stdout"
 
 proposal_create_output="$(
-  e2e_orcas proposals create \
+  e2e_orcas supervisor work proposals create \
     --workunit "$workunit_id" \
     --report "$report_id" \
     --requested-by live-supervisor-micro-proposal \
@@ -170,7 +170,7 @@ proposal_create_output="$(
 )"
 proposal_id="$(printf '%s\n' "$proposal_create_output" | awk -F': ' '/^proposal_id:/ {print $2; exit}')"
 
-e2e_orcas proposals get --proposal "$proposal_id" >"$proposal_get_stdout"
+e2e_orcas supervisor work proposals get --proposal "$proposal_id" >"$proposal_get_stdout"
 proposal_status="$(field_value status "$proposal_get_stdout")"
 model_summary_headline="$(field_value model_summary_headline "$proposal_get_stdout")"
 model_proposed_decision_type="$(field_value model_proposed_decision_type "$proposal_get_stdout")"
@@ -188,12 +188,12 @@ grep -q "^model_summary_situation:" "$proposal_get_stdout"
 grep -q "^model_proposed_decision_type:" "$proposal_get_stdout"
 grep -q "^model_requires_assignment:" "$proposal_get_stdout"
 
-e2e_orcas proposals artifact-summary --proposal "$proposal_id" >"$proposal_summary_stdout"
+e2e_orcas supervisor work proposals artifact-summary --proposal "$proposal_id" >"$proposal_summary_stdout"
 grep -q '^prompt_artifact_present:' "$proposal_summary_stdout"
 grep -q '^response_artifact_present:' "$proposal_summary_stdout"
 
 proposal_approve_output="$(
-  e2e_orcas proposals approve \
+  e2e_orcas supervisor work proposals approve \
     --proposal "$proposal_id" \
     --reviewed-by live-supervisor-micro-proposal \
     --review-note "Approve the bounded follow-up generated from the live report." \
@@ -210,7 +210,7 @@ grep -q "status: Approved" "$proposal_approve_stdout"
 grep -q "decision_type: Continue" "$proposal_approve_stdout"
 grep -q "next_assignment_id: $next_assignment_id" "$proposal_approve_stdout"
 
-e2e_orcas proposals get --proposal "$proposal_id" >"$proposal_get_stdout"
+e2e_orcas supervisor work proposals get --proposal "$proposal_id" >"$proposal_get_stdout"
 grep -q "status: Approved" "$proposal_get_stdout"
 grep -q "approved_decision_id: $decision_id" "$proposal_get_stdout"
 grep -q "approved_assignment_id: $next_assignment_id" "$proposal_get_stdout"
@@ -218,7 +218,7 @@ grep -q "approval_edits_present: true" "$proposal_get_stdout"
 grep -q "approval_edit_decision_type: Continue" "$proposal_get_stdout"
 grep -q "approved_proposed_decision_type: Continue" "$proposal_get_stdout"
 
-e2e_orcas assignments get --assignment "$next_assignment_id" >"$next_assignment_get_stdout"
+e2e_orcas supervisor work assignments get --assignment "$next_assignment_id" >"$next_assignment_get_stdout"
 next_assignment_work_unit_id="$(field_value work_unit_id "$next_assignment_get_stdout")"
 next_assignment_status="$(field_value status "$next_assignment_get_stdout")"
 next_assignment_attempt="$(field_value attempt "$next_assignment_get_stdout")"

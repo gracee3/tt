@@ -62,7 +62,7 @@ workstream_output="$(
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
 workunit_output="$(
-  e2e_orcas workunits create \
+  e2e_orcas workunit create \
     --workstream "$workstream_id" \
     --title "Fix the tiny greeting bug" \
     --task "Inspect the tiny C program and failing shell test in the fixture repo. Make the smallest code change needed so make test passes. Do not refactor unrelated code."
@@ -96,7 +96,7 @@ report_get_stdout="$reports_dir/report-get.txt"
 make_test_stdout="$reports_dir/make-test.txt"
 tree_diff_stdout="$reports_dir/tree-diff.txt"
 
-e2e_orcas reports get --report "$report_id" >"$report_get_stdout"
+e2e_orcas supervisor work reports get --report "$report_id" >"$report_get_stdout"
 assignment_id="$(field_value assignment_id "$report_get_stdout")"
 report_parse_result="$(field_value parse_result "$report_get_stdout")"
 
@@ -109,7 +109,7 @@ changed_count="$(sed '/^$/d' "$tree_diff_stdout" | wc -l | tr -d ' ')"
 test "$changed_count" -eq 1
 grep -q 'main.c' "$tree_diff_stdout"
 
-e2e_orcas assignments get --assignment "$assignment_id" >"$assignment_get_stdout"
+e2e_orcas supervisor work assignments get --assignment "$assignment_id" >"$assignment_get_stdout"
 
 assignment_status="$(field_value status "$assignment_get_stdout")"
 worker_session_id="$(field_value worker_session_id "$assignment_get_stdout")"

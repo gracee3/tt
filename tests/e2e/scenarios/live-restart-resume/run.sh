@@ -107,7 +107,7 @@ workstream_output="$(
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
 workunit_output="$(
-  e2e_orcas workunits create \
+  e2e_orcas workunit create \
     --workstream "$workstream_id" \
     --title "Fix the tiny greeting bug" \
     --task "Inspect the tiny C program and failing shell test in the fixture repo. Make the smallest code change needed so make test passes. Do not refactor unrelated code."
@@ -146,7 +146,7 @@ test -n "$workunit_id"
 test -n "$thread_id"
 test -n "$turn_id"
 
-e2e_orcas threads read --thread "$thread_id" >"$threads_read_stdout"
+e2e_orcas codex threads read --thread "$thread_id" >"$threads_read_stdout"
 
 grep -q "turn_in_flight: true" "$threads_read_stdout"
 grep -q "$thread_id" "$turns_active_stdout"
@@ -181,11 +181,11 @@ done
 test -n "$report_id"
 report_count="$(printf '%s\n' "$reports_output_final" | sed '/^$/d' | wc -l | tr -d ' ')"
 test "$report_count" -eq 1
-e2e_orcas reports get --report "$report_id" >"$report_get_stdout"
+e2e_orcas supervisor work reports get --report "$report_id" >"$report_get_stdout"
 assignment_id="$(field_value assignment_id "$report_get_stdout")"
 report_parse_result="$(field_value parse_result "$report_get_stdout")"
 
-e2e_orcas assignments get --assignment "$assignment_id" >"$assignment_after_get_stdout"
+e2e_orcas supervisor work assignments get --assignment "$assignment_id" >"$assignment_after_get_stdout"
 assignment_status="$(field_value status "$assignment_after_get_stdout")"
 worker_session_id="$(field_value worker_session_id "$assignment_after_get_stdout")"
 

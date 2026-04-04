@@ -1033,7 +1033,7 @@ EOF
     test -n "$approved_assignment_id"
   fi
 
-  ./bin/orcas.sh workunits get --workunit "$workunit_id" >"$workunit_stdout"
+  ./bin/orcas.sh workunit get --workunit "$workunit_id" >"$workunit_stdout"
 
   if [[ "${phase_decisions[$phase]}" == "continue" ]]; then
     next_assignment_dir="$prompt_root/$(phase_label "$((phase + 1))" "${phase_titles[$((phase + 1))]}")"

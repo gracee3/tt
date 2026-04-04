@@ -88,6 +88,16 @@ High-value existing patterns:
 - fake supervisor `/responses` helper for deterministic proposal generation
 - CLI integration tests in `crates/orcas/tests/cli_socket.rs`
 
+The Codex contract inventory is checked in under `crates/orcas-codex/contracts/` and is regenerated with:
+
+```bash
+cargo run -p orcas-codex --bin codex-contract-sync -- \
+  --root /home/emmy/openai/codex/codex-rs \
+  --out crates/orcas-codex/contracts/codex-contract-index.json
+```
+
+The matching drift test is `contract::tests::contract_index_matches_current_codex_checkout` in `orcas-codex`.
+
 These are enough for most future additions. Prefer extending an existing harness over creating a new one.
 
 ## Standard Commands

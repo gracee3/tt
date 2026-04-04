@@ -44,13 +44,13 @@ workstream_output="$(e2e_orcas workstreams create \
   --priority normal)"
 workstream_id="$(printf '%s\n' "$workstream_output" | awk -F': ' '/^workstream_id:/ {print $2; exit}')"
 
-workunit_output="$(e2e_orcas workunits create \
+workunit_output="$(e2e_orcas workunit create \
   --workstream "$workstream_id" \
   --title "Tracked thread worktree lane" \
   --task "Prepare a dedicated tracked-thread worktree and write a small C program there")"
 workunit_id="$(printf '%s\n' "$workunit_output" | awk -F': ' '/^work_unit_id:/ {print $2; exit}')"
 
-tracked_output="$(e2e_orcas tracked-threads create \
+tracked_output="$(e2e_orcas workunit thread add \
   --workunit "$workunit_id" \
   --title "Worktree lane" \
   --root-dir "$e2e_repo_root" \
@@ -67,7 +67,7 @@ tracked_output="$(e2e_orcas tracked-threads create \
   --workspace-status requested)"
 tracked_thread_id="$(printf '%s\n' "$tracked_output" | awk -F': ' '/^tracked_thread_id:/ {print $2; exit}')"
 
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$reports_dir/tracked-thread-before-write.txt"
+e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$reports_dir/tracked-thread-before-write.txt"
 
 test -n "$workstream_id"
 test -n "$workunit_id"
@@ -107,6 +107,6 @@ EOF
 
 make -C "$worktree_path" test >"$reports_dir/build-and-test.txt"
 git -C "$worktree_path" status --short >"$reports_dir/git-status.txt"
-e2e_orcas tracked-threads get --tracked-thread "$tracked_thread_id" >"$reports_dir/tracked-thread-after-write.txt"
+e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$reports_dir/tracked-thread-after-write.txt"
 
 echo "PASS"
