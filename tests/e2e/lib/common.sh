@@ -228,7 +228,12 @@ e2e_prepare_scenario_dirs() {
     "$E2E_SCENARIO_LOGS_DIR" \
     "$E2E_SCENARIO_REPORTS_DIR" \
     "$E2E_SCENARIO_ARTIFACTS_DIR" \
-    "$E2E_SCENARIO_WORKTREES_DIR"
+    "$E2E_SCENARIO_WORKTREES_DIR" \
+    "$E2E_SCENARIO_XDG_DATA_HOME" \
+    "$E2E_SCENARIO_XDG_CONFIG_HOME" \
+    "$E2E_SCENARIO_XDG_RUNTIME_HOME" \
+    "$E2E_SCENARIO_ORCAS_HOME/logs" \
+    "$E2E_SCENARIO_ORCAS_HOME/runtime"
   chmod 700 "$E2E_SCENARIO_XDG_RUNTIME_HOME" || true
   e2e_link_legacy_xdg_views
 }
@@ -379,4 +384,168 @@ e2e_orcasd() {
 
   ORCAS_HOME="$orcas_home" \
     "$orcasd_bin" "$@"
+}
+
+e2e_field_value() {
+  local key="$1"
+  local file="$2"
+  sed -n "s/^${key}: //p" "$file" | head -n1
+}
+
+e2e_prepare_live_codex_environment() {
+  local suffix="$1"
+  local listen_port_base="$2"
+  local supervisor_max_output_tokens="${3:-${ORCAS_SUPERVISOR_MAX_OUTPUT_TOKENS:-4096}}"
+
+  if e2e_using_shared_lab; then
+    return 0
+  fi
+
+  local listen_port="$((listen_port_base + ($(printf '%s' "$E2E_RUN_ID" | cksum | awk '{print $1}') % 1000)))"
+  local listen_url="ws://127.0.0.1:$listen_port"
+  local supervisor_base_url="${ORCAS_SUPERVISOR_BASE_URL:-http://127.0.0.1:8000/v1}"
+  local supervisor_model="${ORCAS_SUPERVISOR_MODEL:-gpt-oss-20b}"
+  local supervisor_api_key_env="${ORCAS_SUPERVISOR_API_KEY_ENV:-}"
+  local supervisor_reasoning_effort="${ORCAS_SUPERVISOR_REASONING_EFFORT:-}"
+  local supervisor_temperature="${ORCAS_SUPERVISOR_TEMPERATURE:-0.0}"
+  local codex_bin="${ORCAS_CODEX_BIN:-$(command -v codex)}"
+
+  e2e_use_short_xdg_paths "$suffix"
+  mkdir -p "$E2E_SCENARIO_XDG_CONFIG_HOME/orcas"
+
+  cat >"$E2E_SCENARIO_XDG_CONFIG_HOME/orcas/config.toml" <<EOF
+[codex]
+binary_path = "$codex_bin"
+listen_url = "$listen_url"
+connection_mode = "spawn_if_needed"
+config_overrides = []
+
+[codex.reconnect]
+initial_delay_ms = 150
+max_delay_ms = 5000
+multiplier = 2.0
+
+[supervisor]
+base_url = "$supervisor_base_url"
+api_key_env = "$supervisor_api_key_env"
+model = "$supervisor_model"
+reasoning_effort = "$supervisor_reasoning_effort"
+temperature = $supervisor_temperature
+max_output_tokens = $supervisor_max_output_tokens
+
+[supervisor.proposals]
+auto_create_on_report_recorded = false
+EOF
+
+  export ORCAS_CODEX_LISTEN_URL="$listen_url"
+}
+
+e2e_prepare_fixture_repo_with_worktree() {
+  local fixture_dir="$1"
+  local repo_root="$2"
+  local worktree_path="$3"
+  local branch_name="$4"
+  local base_ref="$5"
+  local reports_dir="$6"
+  local prefix="${7:-git}"
+
+  rm -rf "$repo_root" "$worktree_path"
+  mkdir -p "$repo_root" "$(dirname "$worktree_path")"
+  cp -R "$fixture_dir/." "$repo_root/"
+
+  git -C "$repo_root" init -b "$base_ref" >"$reports_dir/${prefix}-git-init.txt" 2>&1
+  git -C "$repo_root" config user.name "Orcas E2E"
+  git -C "$repo_root" config user.email "orcas-e2e@example.com"
+  git -C "$repo_root" add .
+  git -C "$repo_root" commit -m "Initial tracked-thread fixture" >"$reports_dir/${prefix}-git-initial-commit.txt" 2>&1
+  git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >"$reports_dir/${prefix}-git-worktree-add.txt" 2>&1
+}
+
+e2e_add_tracked_thread_workspace() {
+  local workunit_id="$1"
+  local title="$2"
+  local root_dir="$3"
+  local notes="$4"
+  local repository_root="$5"
+  local worktree_path="$6"
+  local branch_name="$7"
+  local base_ref="$8"
+  local base_commit="$9"
+  local landing_target="${10}"
+  local sync_policy="${11}"
+  local cleanup_policy="${12}"
+  local workspace_status="${13}"
+
+  e2e_orcas workunit thread add \
+    --workunit "$workunit_id" \
+    --title "$title" \
+    --root-dir "$root_dir" \
+    --notes "$notes" \
+    --workspace-repository-root "$repository_root" \
+    --workspace-worktree-path "$worktree_path" \
+    --workspace-branch-name "$branch_name" \
+    --workspace-base-ref "$base_ref" \
+    --workspace-base-commit "$base_commit" \
+    --workspace-landing-target "$landing_target" \
+    --workspace-strategy dedicated-thread-worktree \
+    --workspace-landing-policy merge-to-main \
+    --workspace-sync-policy "$sync_policy" \
+    --workspace-cleanup-policy "$cleanup_policy" \
+    --workspace-status "$workspace_status"
+}
+
+e2e_wait_for_report_id() {
+  local workunit_id="$1"
+  local output_var="$2"
+  local attempts="${3:-120}"
+  local delay_seconds="${4:-5}"
+  local reports_output=""
+  local report_id=""
+
+  for _ in $(seq 1 "$attempts"); do
+    reports_output="$("$e2e_bin_dir/orcas.sh" reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
+    report_id="$(printf '%s\n' "$reports_output" | awk -F'\t' '/^report-/ {print $1; exit}')"
+    [[ -n "$report_id" ]] && break
+    sleep "$delay_seconds"
+  done
+
+  test -n "$report_id"
+  printf -v "$output_var" '%s' "$report_id"
+}
+
+e2e_capture_workstream_runtime() {
+  local workstream_id="$1"
+  local output_file="$2"
+  e2e_orcas workstreams runtime get --workstream "$workstream_id" >"$output_file"
+}
+
+e2e_assert_workstream_runtime() {
+  local workstream_id="$1"
+  local output_file="$2"
+  grep -q "runtime_workstream_id: $workstream_id" "$output_file"
+  grep -q '^runtime_status: ' "$output_file"
+  grep -q '^runtime_thread_count: ' "$output_file"
+}
+
+e2e_assert_runtime_thread_count() {
+  local output_file="$1"
+  local expected_count="$2"
+  local actual_count
+  actual_count="$(e2e_field_value runtime_thread_count "$output_file")"
+  test "$actual_count" = "$expected_count"
+}
+
+e2e_capture_workstream_threads() {
+  local workstream_id="$1"
+  local output_file="$2"
+  e2e_orcas codex threads list --workstream "$workstream_id" >"$output_file"
+}
+
+e2e_assert_managed_thread_count() {
+  local output_file="$1"
+  local expected_count="$2"
+  local actual_count
+  actual_count="$(grep -c 'management=managed' "$output_file" || true)"
+  test "$actual_count" -eq "$expected_count"
+  ! grep -q 'management=observed_unmanaged' "$output_file"
 }

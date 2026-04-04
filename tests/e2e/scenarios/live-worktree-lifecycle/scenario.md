@@ -10,6 +10,7 @@ Verify that Orcas can use a real tracked-thread worktree lane, land a bounded co
 2. The worktree contains a tiny C program, a shell test, and a Makefile with one obvious bug.
 3. Orcas daemon state is started and one work unit is created in the workstream.
 4. The tracked-thread record points at the declared worktree path, branch name, base ref, landing target, strategy, sync policy, and cleanup policy before any tracked-thread lifecycle step begins.
+5. The harness inspects the workstream runtime before the first live assignment and expects the lane to exist only as declared state, not as an active runtime thread yet.
 
 ## What Is Live
 
@@ -26,12 +27,13 @@ Verify that Orcas can use a real tracked-thread worktree lane, land a bounded co
 ## Live Boundary
 
 - Before execution begins, the harness may create the worktree, populate the tiny fixture files, create the work unit, and create the tracked-thread record with its workspace contract.
-- After the first live worker turn begins, the harness must not patch the source file, seed a report, or fake any landing/cleanup result.
+- After the first live worker turn begins, the harness must not patch the source file, seed a report, fake any tracked-thread binding update, or fake any landing/cleanup result.
 - The harness may inspect CLI-visible state, request the next lifecycle step through the supported decision path, authorize landing, execute landing, and prune the workspace.
 
 ## What This Proves
 
 - Orcas can operate inside a tracked-thread worktree lane that is explicitly declared in authority state.
+- Orcas can bind that lane automatically on the first live assignment and reflect it immediately through the workstream runtime view.
 - Orcas can land a bounded code change into that lane and keep the local git state inspectable.
 - Orcas can advance the lane through prepare-workspace to merge-prep to landing authorization to landing execution to prune cleanup.
 - Orcas can reopen the lane between steps through persisted decision state without losing the tracked-thread binding.
@@ -40,10 +42,12 @@ Verify that Orcas can use a real tracked-thread worktree lane, land a bounded co
 ## Pass Conditions
 
 - The tracked-thread record shows the expected workspace contract before execution.
+- The workstream runtime exists before execution with zero active lane threads.
 - The bootstrap live turn completes and produces a persisted report.
 - The bounded code change lands in the declared worktree and `make test` passes there.
 - The bootstrap turn leaves exactly one expected source edit in the worktree and no unexpected churn.
-- The tracked-thread binding is present before lifecycle operations begin.
+- The tracked-thread binding is present automatically before lifecycle operations begin.
+- The workstream runtime shows exactly one managed lane thread and no unmanaged external thread before lifecycle operations begin.
 - Prepare workspace completes and produces a persisted report.
 - A `Continue` decision reopens the work unit for the next step.
 - Merge prep reaches a ready state for landing.
@@ -59,10 +63,11 @@ Verify that Orcas can use a real tracked-thread worktree lane, land a bounded co
 ## Fail Conditions
 
 - The tracked-thread record does not show the expected workspace contract.
+- The runtime does not reflect the workstream/lane before lifecycle operations begin.
 - The bootstrap live turn never reaches a terminal persisted state.
 - The code change lands outside the declared worktree path or changes too many files.
 - `make test` still fails after the turn.
-- The tracked-thread binding is missing before lifecycle operations begin.
+- The tracked-thread binding is missing or requires a harness-side repair before lifecycle operations begin.
 - Prepare workspace, merge prep, landing authorization, landing execution, or prune workspace fails.
 - The decision steps do not reopen the work unit.
 - The final persisted tracked-thread state contradicts the actual worktree cleanup outcome.

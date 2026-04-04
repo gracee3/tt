@@ -13,6 +13,7 @@ This scenario uses two tracked-thread lanes in the same run, two separate worktr
 3. Orcas daemon state is started and one workstream is created.
 4. Two work units are created in that workstream, one per lane.
 5. Two tracked-thread records are created, each with its own repository root, worktree path, branch name, base ref, landing target, and cleanup policy before any live assignment begins.
+6. The harness inspects the workstream runtime before execution and expects zero active lane threads at that point.
 
 ## What Is Live
 
@@ -20,12 +21,13 @@ This scenario uses two tracked-thread lanes in the same run, two separate worktr
 - Lane B is a real live worker turn on its own tracked-thread/worktree lane.
 - Both assignments are launched in the same run before the harness waits for either one, so their active windows overlap.
 - Each lane produces a real persisted report, a real final decision, and a real tracked-thread record.
+- The workstream runtime surfaces both lanes as managed Codex threads rather than unmanaged runtime threads.
 
 ## Live Boundary
 
 - Before execution begins, the harness may create the tiny fixtures, create the workstream and work units, and create the two tracked-thread records with their workspace contracts.
-- After the live worker turns begin, the harness must not patch either source tree, seed reports, seed decisions, or fake the second lane.
-- The harness may inspect CLI-visible state, bind each tracked thread to its upstream thread after the report exists, and apply the final completion decision for each lane.
+- After the live worker turns begin, the harness must not patch either source tree, seed reports, seed decisions, fake a tracked-thread binding update, or fake the second lane.
+- The harness may inspect CLI-visible state and apply the final completion decision for each lane.
 
 ## What This Proves
 
@@ -33,12 +35,14 @@ This scenario uses two tracked-thread lanes in the same run, two separate worktr
 - Orcas can keep two worktree paths and branch identities distinct in the same run.
 - Orcas can keep report and decision lineage isolated by lane.
 - Orcas can let two live assignments overlap without cross-lane contamination.
+- Orcas can surface both lanes on the same workstream runtime as two managed threads with no unmanaged runtime thread leak.
 - Orcas can complete both lanes cleanly using persisted evidence from each lane independently.
 
 ## Pass Conditions
 
 - Lane A and lane B have different tracked-thread ids.
 - Lane A and lane B have different worktree paths and branch names.
+- The workstream runtime exists before execution with zero active lane threads, then shows exactly two managed lane threads and no unmanaged external thread after both live assignments run.
 - Each lane produces a persisted report linked to the correct assignment and work unit.
 - Each lane changes only its own expected bounded files and does not pick up the other lane’s string.
 - Each lane’s final decision is recorded against the correct work unit and report.
@@ -48,11 +52,12 @@ This scenario uses two tracked-thread lanes in the same run, two separate worktr
 ## Fail Conditions
 
 - The two lanes share a tracked-thread id, worktree path, or branch name.
+- The workstream runtime does not reflect the two-lane managed-thread model.
 - A report or decision from one lane is attached to the other lane.
 - One lane writes into the other lane’s worktree.
 - Either lane fails to produce a persisted report.
 - Either lane fails to produce a final completion decision.
-- The final persisted tracked-thread state contradicts the observed lane identity.
+- The final persisted tracked-thread state contradicts the observed lane identity or requires a harness-side rebind.
 
 ## Why This Exists In Addition To The Other Live Scenarios
 
