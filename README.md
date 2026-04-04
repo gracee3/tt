@@ -111,20 +111,20 @@ cargo build -p codex-cli --bin codex
 
 ## Paths and configuration
 
-Orcas follows the XDG layout on Linux. The user configuration file lives at `~/.config/orcas/config.toml`. State, logs, and runtime files live under the same user-scoped XDG directories for the CLI and the packaged systemd user service.
+By default, Orcas keeps its user-scoped config, state, and logs under a single home root at `~/.orcas`. Set `ORCAS_HOME` to point Orcas at a different root when you want an isolated lab, test, or operator session.
 
 ```text
-config:  ~/.config/orcas/config.toml
-state:   ~/.local/share/orcas/state.json
-db:      ~/.local/share/orcas/state.db
-logs:    ~/.local/share/orcas/logs/
-socket:  ${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.sock
-meta:    ${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.json
+config:  ~/.orcas/config.toml
+state:   ~/.orcas/state.json
+db:      ~/.orcas/state.db
+logs:    ~/.orcas/logs/
+socket:  ${ORCAS_HOME:-~/.orcas}/runtime/orcasd.sock
+meta:    ${ORCAS_HOME:-~/.orcas}/runtime/orcasd.json
 ```
 
 `state.json` remains the live collaboration and thread/turn mirror store. `state.db` is the live authority store for authority workstreams, authority work units, and tracked threads.
 
-The packaged `orcas-daemon.service` unit is a user service, not a root-owned global daemon. It is intended to run under `systemctl --user` so the daemon and CLI resolve the same XDG config, data, log, and socket paths.
+The packaged `orcas-daemon.service` unit is a user service, not a root-owned global daemon. It is intended to run under `systemctl --user` so the daemon and CLI resolve the same user-scoped config, data, log, and socket paths.
 
 For source installs, `make install-systemd` writes that user unit into your user manager directory and rewrites `ExecStart` to the current install prefix so it follows the binary path you actually chose.
 

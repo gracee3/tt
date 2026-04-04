@@ -2,7 +2,7 @@
 
 ## Configuration Overview
 
-Orcas uses a small TOML configuration file for durable defaults and environment variables for runtime overrides. The current user-level config file is created automatically on first launch at `~/.config/orcas/config.toml`.
+Orcas uses a small TOML configuration file for durable defaults and environment variables for runtime overrides. The current user-level config file is created automatically on first launch at `~/.orcas/config.toml`.
 
 The practical rule is:
 
@@ -10,7 +10,7 @@ The practical rule is:
 2. Use environment variables for per-process overrides.
 3. Use CLI flags for one-off operator sessions.
 
-The current packaged systemd unit is a user service. It inherits the same XDG config, data, log, and runtime directories as the CLI rather than introducing a separate root-owned config layer.
+The current packaged systemd unit is a user service. It inherits the same user-scoped config, data, log, and runtime directories as the CLI rather than introducing a separate root-owned config layer.
 
 ## Environment Variables
 
@@ -71,10 +71,10 @@ The current source tree ships a development-oriented default for `codex.binary_p
 
 Orcas binaries write structured tracing output to per-component log files under the data directory rather than to stdout or stderr.
 
-The current log directory is:
+The current default log directory is:
 
 ```bash
-${XDG_DATA_HOME:-~/.local/share}/orcas/logs/
+~/.orcas/logs/
 ```
 
 The current files are:
@@ -91,14 +91,14 @@ To increase verbosity, set `RUST_LOG=debug` or use a component-specific filter s
 
 ## Networking And IPC Assumptions
 
-Orcas itself does not listen on a public network port. The daemon binds a local Unix domain socket at the runtime path derived from the XDG runtime directory, with a fallback under the data directory when no runtime directory is available.
+Orcas itself does not listen on a public network port. The daemon binds a local Unix domain socket under `ORCAS_HOME/runtime`, with `ORCAS_HOME` defaulting to `~/.orcas`.
 
 The current socket path pattern is:
 
 ```bash
-${XDG_RUNTIME_DIR:-~/.local/share/orcas/runtime}/orcas/orcasd.sock
+${ORCAS_HOME:-~/.orcas}/runtime/orcasd.sock
 ```
 
-The daemon also writes runtime metadata next to the socket path. The upstream worker connection is separate from Orcas IPC and defaults to a localhost WebSocket URL for the Codex app-server.
+The daemon also writes runtime metadata next to the socket path. The upstream worker connection is separate from Orcas IPC and defaults to a localhost WebSocket URL for the Codex app-server. Test harnesses and lab scripts isolate state by setting `ORCAS_HOME` to a temporary root.
 
 If you change the upstream worker endpoint, update either the config file or `ORCAS_CODEX_LISTEN_URL` so the daemon and supervisor agree on the same target.

@@ -54,23 +54,23 @@ Require spawn mode instead of connect-only mode. This option conflicts with
 .BR --connect-only .
 .SH FILES
 .TP
-.I ~/.config/orcas/config.toml
+.I ~/.orcas/config.toml
 User configuration file.
 
 .TP
-.I ~/.local/share/orcas/state.json
+.I ~/.orcas/state.json
 Legacy collaboration and thread or turn mirror state.
 
 .TP
-.I ~/.local/share/orcas/state.db
+.I ~/.orcas/state.db
 Authority workstream, authority work unit, and tracked-thread state.
 
 .TP
-.I ~/.local/share/orcas/logs/orcasd.log
+.I ~/.orcas/logs/orcasd.log
 Daemon log file.
 
 .TP
-.I ${XDG_RUNTIME_DIR}/orcas/orcasd.sock
+.I ${ORCAS_HOME}/runtime/orcasd.sock or ~/.orcas/runtime/orcasd.sock
 Local IPC socket used by supervisor clients.
 .SH ENVIRONMENT
 .TP

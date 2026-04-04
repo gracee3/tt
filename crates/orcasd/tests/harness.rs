@@ -34,11 +34,7 @@ impl TestDaemon {
         extra_env: Vec<(String, String)>,
     ) -> Self {
         let root = std::env::temp_dir().join(format!("orcasd-it-{test_name}-{}", Uuid::new_v4()));
-        let paths = AppPaths::from_roots(
-            root.join("config/orcas"),
-            root.join("data/orcas"),
-            root.join("runtime/orcas"),
-        );
+        let paths = AppPaths::from_home(root.join(".orcas"));
         let mut daemon = Self {
             root,
             paths,
@@ -55,9 +51,7 @@ impl TestDaemon {
         let mut command = Command::new(Self::orcasd_binary_path());
         command
             .args(&self.extra_args)
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_DATA_HOME", self.root.join("data"))
-            .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
+            .env("ORCAS_HOME", self.paths.config_dir.clone())
             .env("ORCAS_CONNECTION_MODE", "connect_only")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -111,21 +105,11 @@ impl TestDaemon {
             .expect("connect real OrcasIpcClient")
     }
 
-    pub fn xdg_env(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "XDG_CONFIG_HOME".to_string(),
-                self.root.join("config").display().to_string(),
-            ),
-            (
-                "XDG_DATA_HOME".to_string(),
-                self.root.join("data").display().to_string(),
-            ),
-            (
-                "XDG_RUNTIME_DIR".to_string(),
-                self.root.join("runtime").display().to_string(),
-            ),
-        ]
+    pub fn orcas_home_env(&self) -> Vec<(String, String)> {
+        vec![(
+            "ORCAS_HOME".to_string(),
+            self.paths.config_dir.display().to_string(),
+        )]
     }
 
     pub async fn wait_until_ready(&self) {

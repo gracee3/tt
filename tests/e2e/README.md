@@ -6,8 +6,8 @@ The goal is to keep the normal developer path fast while still making the operat
 
 ## Layout
 
-- `tests/e2e/bin/orcas.sh` wraps the local Orcas CLI with repo-local XDG paths.
-- `tests/e2e/lib/common.sh` centralizes path setup, scenario metadata loading, selection, and shared helpers.
+- `tests/e2e/bin/orcas.sh` wraps the local Orcas CLI with a repo-local `ORCAS_HOME`.
+- `tests/e2e/lib/common.sh` centralizes path setup, scenario metadata loading, selection, shared helpers, and legacy XDG shim paths for older scenarios.
 - `tests/e2e/run_all.sh` discovers and runs scenarios by metadata.
 - `tests/e2e/run_scenario.sh` runs one scenario by name or path.
 - `tests/e2e/scenarios/<name>/scenario.md` explains the scenario.
@@ -20,6 +20,7 @@ Generated output is written only under `target/e2e/`:
 - `target/e2e/reports/<run-id>/<scenario>/`
 - `target/e2e/artifacts/<run-id>/<scenario>/`
 - `target/e2e/worktrees/<run-id>/<scenario>/`
+- `target/e2e/orcas/<run-id>/<scenario>/`
 - `target/e2e/xdg/<run-id>/<scenario>/`
 
 ## Scenario Metadata
@@ -87,7 +88,7 @@ tests/e2e/run_scenario.sh tests/e2e/scenarios/hello
 
 If you want to launch live scenarios from the terminal and inspect them immediately in the operator web UI, use the shared UI lab instead of the default scenario-local XDG roots.
 
-The lab uses a dedicated Orcas state under `target/ui-e2e-lab/`, so it does not overwrite your normal `~/.local/share/orcas` state.
+The lab uses a dedicated Orcas state under `target/ui-e2e-lab/`, so it does not overwrite your normal `~/.orcas` state.
 
 Reset and start the lab:
 

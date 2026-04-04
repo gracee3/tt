@@ -138,7 +138,41 @@ e2e_prepare_output_dirs() {
     "$e2e_output_root/reports/$e2e_run_id" \
     "$e2e_output_root/artifacts/$e2e_run_id" \
     "$e2e_output_root/worktrees/$e2e_run_id" \
+    "$e2e_output_root/orcas/$e2e_run_id" \
     "$e2e_output_root/xdg/$e2e_run_id"
+}
+
+e2e_link_legacy_xdg_views() {
+  mkdir -p "$E2E_SCENARIO_XDG_DATA_HOME" "$E2E_SCENARIO_XDG_CONFIG_HOME" "$E2E_SCENARIO_XDG_RUNTIME_HOME"
+  mkdir -p "$E2E_SCENARIO_ORCAS_HOME/logs" "$E2E_SCENARIO_ORCAS_HOME/runtime"
+  rm -rf "$E2E_SCENARIO_XDG_DATA_HOME/orcas" "$E2E_SCENARIO_XDG_CONFIG_HOME/orcas" "$E2E_SCENARIO_XDG_RUNTIME_HOME/orcas"
+  ln -s "$E2E_SCENARIO_ORCAS_HOME" "$E2E_SCENARIO_XDG_DATA_HOME/orcas"
+  ln -s "$E2E_SCENARIO_ORCAS_HOME" "$E2E_SCENARIO_XDG_CONFIG_HOME/orcas"
+  ln -s "$E2E_SCENARIO_ORCAS_HOME/runtime" "$E2E_SCENARIO_XDG_RUNTIME_HOME/orcas"
+}
+
+e2e_sync_legacy_xdg_into_orcas_home() {
+  local xdg_data_home="$1"
+  local xdg_config_home="$2"
+  local xdg_runtime_home="$3"
+  local orcas_home="$4"
+
+  mkdir -p "$orcas_home/logs" "$orcas_home/runtime"
+
+  if [[ -d "$xdg_data_home/orcas" && ! -L "$xdg_data_home/orcas" ]]; then
+    cp -a "$xdg_data_home/orcas/." "$orcas_home/"
+  fi
+  if [[ -d "$xdg_config_home/orcas" && ! -L "$xdg_config_home/orcas" ]]; then
+    cp -a "$xdg_config_home/orcas/." "$orcas_home/"
+  fi
+  if [[ -d "$xdg_runtime_home/orcas" && ! -L "$xdg_runtime_home/orcas" ]]; then
+    cp -a "$xdg_runtime_home/orcas/." "$orcas_home/runtime/"
+  fi
+
+  rm -rf "$xdg_data_home/orcas" "$xdg_config_home/orcas" "$xdg_runtime_home/orcas"
+  ln -s "$orcas_home" "$xdg_data_home/orcas"
+  ln -s "$orcas_home" "$xdg_config_home/orcas"
+  ln -s "$orcas_home/runtime" "$xdg_runtime_home/orcas"
 }
 
 e2e_prepare_scenario_dirs() {
@@ -155,6 +189,7 @@ e2e_prepare_scenario_dirs() {
   E2E_SCENARIO_WORKTREES_DIR="$e2e_output_root/worktrees/$e2e_run_id/$scenario_name"
   if e2e_is_true "${ORCAS_E2E_REUSE_CURRENT_XDG:-false}"; then
     [[ -n "${ORCAS_E2E_SHARED_XDG_DIR:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_DIR is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
+    [[ -n "${ORCAS_E2E_SHARED_ORCAS_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_ORCAS_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
     [[ -n "${ORCAS_E2E_SHARED_XDG_DATA_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_DATA_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
     [[ -n "${ORCAS_E2E_SHARED_XDG_CONFIG_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_CONFIG_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
     [[ -n "${ORCAS_E2E_SHARED_XDG_RUNTIME_HOME:-}" ]] || e2e_fail "ORCAS_E2E_SHARED_XDG_RUNTIME_HOME is required when ORCAS_E2E_REUSE_CURRENT_XDG=true"
@@ -162,11 +197,13 @@ e2e_prepare_scenario_dirs() {
     E2E_SCENARIO_XDG_DATA_HOME="$ORCAS_E2E_SHARED_XDG_DATA_HOME"
     E2E_SCENARIO_XDG_CONFIG_HOME="$ORCAS_E2E_SHARED_XDG_CONFIG_HOME"
     E2E_SCENARIO_XDG_RUNTIME_HOME="$ORCAS_E2E_SHARED_XDG_RUNTIME_HOME"
+    E2E_SCENARIO_ORCAS_HOME="$ORCAS_E2E_SHARED_ORCAS_HOME"
   else
     E2E_SCENARIO_XDG_DIR="$e2e_output_root/xdg/$e2e_run_id/$scenario_name"
     E2E_SCENARIO_XDG_DATA_HOME="$E2E_SCENARIO_XDG_DIR/data"
     E2E_SCENARIO_XDG_CONFIG_HOME="$E2E_SCENARIO_XDG_DIR/config"
     E2E_SCENARIO_XDG_RUNTIME_HOME="$E2E_SCENARIO_XDG_DIR/runtime"
+    E2E_SCENARIO_ORCAS_HOME="$e2e_output_root/orcas/$e2e_run_id/$scenario_name"
   fi
 
   export E2E_SCENARIO_NAME \
@@ -180,6 +217,9 @@ e2e_prepare_scenario_dirs() {
     E2E_SCENARIO_XDG_DATA_HOME \
     E2E_SCENARIO_XDG_CONFIG_HOME \
     E2E_SCENARIO_XDG_RUNTIME_HOME \
+    E2E_SCENARIO_ORCAS_HOME \
+    ORCAS_HOME="$E2E_SCENARIO_ORCAS_HOME" \
+    ORCAS_E2E_ORCAS_HOME="$E2E_SCENARIO_ORCAS_HOME" \
     ORCAS_E2E_XDG_DATA_HOME="$E2E_SCENARIO_XDG_DATA_HOME" \
     ORCAS_E2E_XDG_CONFIG_HOME="$E2E_SCENARIO_XDG_CONFIG_HOME" \
     ORCAS_E2E_XDG_RUNTIME_HOME="$E2E_SCENARIO_XDG_RUNTIME_HOME"
@@ -188,11 +228,9 @@ e2e_prepare_scenario_dirs() {
     "$E2E_SCENARIO_LOGS_DIR" \
     "$E2E_SCENARIO_REPORTS_DIR" \
     "$E2E_SCENARIO_ARTIFACTS_DIR" \
-    "$E2E_SCENARIO_WORKTREES_DIR" \
-    "$E2E_SCENARIO_XDG_DATA_HOME/orcas" \
-    "$E2E_SCENARIO_XDG_CONFIG_HOME/orcas" \
-    "$E2E_SCENARIO_XDG_RUNTIME_HOME/orcas"
+    "$E2E_SCENARIO_WORKTREES_DIR"
   chmod 700 "$E2E_SCENARIO_XDG_RUNTIME_HOME" || true
+  e2e_link_legacy_xdg_views
 }
 
 e2e_using_shared_lab() {
@@ -207,26 +245,32 @@ e2e_use_short_xdg_paths() {
   local short_xdg_data_home="$short_xdg_root/data"
   local short_xdg_config_home="$short_xdg_root/config"
   local short_xdg_runtime_home="$short_xdg_root/runtime"
+  local short_orcas_home="$e2e_output_root/orcas/$E2E_RUN_ID/$suffix"
 
-  rm -rf "$short_xdg_root"
+  rm -rf "$short_xdg_root" "$short_orcas_home"
   mkdir -p \
-    "$short_xdg_data_home/orcas" \
-    "$short_xdg_config_home/orcas" \
-    "$short_xdg_runtime_home/orcas"
+    "$short_xdg_data_home" \
+    "$short_xdg_config_home" \
+    "$short_xdg_runtime_home"
   chmod 700 "$short_xdg_runtime_home" || true
 
   E2E_SCENARIO_XDG_DIR="$short_xdg_root"
   E2E_SCENARIO_XDG_DATA_HOME="$short_xdg_data_home"
   E2E_SCENARIO_XDG_CONFIG_HOME="$short_xdg_config_home"
   E2E_SCENARIO_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
+  E2E_SCENARIO_ORCAS_HOME="$short_orcas_home"
 
   export E2E_SCENARIO_XDG_DIR \
     E2E_SCENARIO_XDG_DATA_HOME \
     E2E_SCENARIO_XDG_CONFIG_HOME \
     E2E_SCENARIO_XDG_RUNTIME_HOME \
+    E2E_SCENARIO_ORCAS_HOME \
+    ORCAS_HOME="$short_orcas_home" \
+    ORCAS_E2E_ORCAS_HOME="$short_orcas_home" \
     ORCAS_E2E_XDG_DATA_HOME="$short_xdg_data_home" \
     ORCAS_E2E_XDG_CONFIG_HOME="$short_xdg_config_home" \
     ORCAS_E2E_XDG_RUNTIME_HOME="$short_xdg_runtime_home"
+  e2e_link_legacy_xdg_views
 }
 
 e2e_require_local_supervisor_endpoint() {
@@ -323,17 +367,16 @@ e2e_orcasd() {
   local xdg_data_home="${ORCAS_E2E_XDG_DATA_HOME:-$e2e_output_root/xdg/default/data}"
   local xdg_config_home="${ORCAS_E2E_XDG_CONFIG_HOME:-$e2e_output_root/xdg/default/config}"
   local xdg_runtime_home="${ORCAS_E2E_XDG_RUNTIME_HOME:-$e2e_output_root/xdg/default/runtime}"
+  local orcas_home="${ORCAS_E2E_ORCAS_HOME:-$e2e_output_root/orcas/default}"
 
   mkdir -p "$xdg_data_home" "$xdg_config_home" "$xdg_runtime_home"
-  mkdir -p "$xdg_data_home/orcas/logs"
+  e2e_sync_legacy_xdg_into_orcas_home "$xdg_data_home" "$xdg_config_home" "$xdg_runtime_home" "$orcas_home"
   chmod 700 "$xdg_runtime_home" || true
 
   if [[ ! -x "$orcasd_bin" || "${ORCAS_E2E_FORCE_CARGO_RUN:-0}" == "1" ]]; then
     cargo build -q --manifest-path "$e2e_repo_root/Cargo.toml" -p orcas -p orcasd
   fi
 
-  XDG_DATA_HOME="$xdg_data_home" \
-    XDG_CONFIG_HOME="$xdg_config_home" \
-    XDG_RUNTIME_DIR="$xdg_runtime_home" \
+  ORCAS_HOME="$orcas_home" \
     "$orcasd_bin" "$@"
 }

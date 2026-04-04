@@ -6,7 +6,8 @@ lab_root="${ORCAS_UI_E2E_LAB_ROOT:-$repo_root/target/ui-e2e-lab}"
 lab_config_home="$lab_root/config"
 lab_data_home="$lab_root/data"
 lab_runtime_home="$lab_root/runtime"
-lab_socket_file="$lab_runtime_home/orcas/orcasd.sock"
+lab_orcas_home="$lab_root/.orcas"
+lab_socket_file="$lab_orcas_home/runtime/orcasd.sock"
 lab_server_pid_file="$lab_root/orcas-server.pid"
 lab_daemon_pid_file="$lab_root/orcasd.pid"
 lab_server_bind="${ORCAS_UI_E2E_SERVER_BIND:-127.0.0.1:3000}"
@@ -36,16 +37,20 @@ EOF
 }
 
 ensure_lab_dirs() {
-  mkdir -p "$lab_config_home/orcas" "$lab_data_home/orcas" "$lab_runtime_home/orcas"
-  mkdir -p "$lab_data_home/orcas/logs"
+  mkdir -p "$lab_config_home" "$lab_data_home" "$lab_runtime_home"
+  mkdir -p "$lab_orcas_home/logs" "$lab_orcas_home/runtime"
+  rm -rf "$lab_config_home/orcas" "$lab_data_home/orcas" "$lab_runtime_home/orcas"
+  ln -s "$lab_orcas_home" "$lab_config_home/orcas"
+  ln -s "$lab_orcas_home" "$lab_data_home/orcas"
+  ln -s "$lab_orcas_home/runtime" "$lab_runtime_home/orcas"
   chmod 700 "$lab_runtime_home" || true
 }
 
 write_lab_config() {
-  local user_config="$HOME/.config/orcas/config.toml"
+  local user_config="$HOME/.orcas/config.toml"
   if [[ -f "$user_config" ]]; then
-    cp "$user_config" "$lab_config_home/orcas/config.toml"
-    python3 - "$lab_config_home/orcas/config.toml" "$lab_default_listen_url" <<'PY'
+    cp "$user_config" "$lab_orcas_home/config.toml"
+    python3 - "$lab_orcas_home/config.toml" "$lab_default_listen_url" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 listen_url = sys.argv[2]
@@ -73,7 +78,7 @@ if in_codex and not listen_done:
 path.write_text("\n".join(out) + "\n")
 PY
   else
-    cat >"$lab_config_home/orcas/config.toml" <<EOF
+    cat >"$lab_orcas_home/config.toml" <<EOF
 [codex]
 binary_path = "/home/emmy/git/codex/codex-rs/target/debug/codex"
 listen_url = "$lab_default_listen_url"
@@ -152,35 +157,29 @@ start_lab() {
   stop_lab
   ensure_lab_dirs
   nohup env \
-    XDG_CONFIG_HOME="$lab_config_home" \
-    XDG_DATA_HOME="$lab_data_home" \
-    XDG_RUNTIME_DIR="$lab_runtime_home" \
+    ORCAS_HOME="$lab_orcas_home" \
     "$repo_root/target/debug/orcasd" \
-    >"$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" 2>&1 </dev/null &
+    >"$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_daemon_pid_file"
   wait_for_socket "$lab_socket_file" || {
-    cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+    cat "$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
     echo "shared UI lab daemon did not create $lab_socket_file" >&2
     return 1
   }
   env \
-    XDG_CONFIG_HOME="$lab_config_home" \
-    XDG_DATA_HOME="$lab_data_home" \
-    XDG_RUNTIME_DIR="$lab_runtime_home" \
+    ORCAS_HOME="$lab_orcas_home" \
     "$repo_root/target/debug/orcas" daemon status >/dev/null 2>&1 || {
-      cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+      cat "$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
       echo "shared UI lab daemon is not responsive" >&2
       return 1
     }
   nohup env \
-    XDG_CONFIG_HOME="$lab_config_home" \
-    XDG_DATA_HOME="$lab_data_home" \
-    XDG_RUNTIME_DIR="$lab_runtime_home" \
+    ORCAS_HOME="$lab_orcas_home" \
     "$repo_root/target/debug/orcas-server" --bind "$lab_server_bind" \
-    >"$lab_data_home/orcas/logs/ui-e2e-lab-orcas-server.stdout.log" 2>&1 </dev/null &
+    >"$lab_orcas_home/logs/ui-e2e-lab-orcas-server.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_server_pid_file"
   wait_for_http "http://$lab_server_bind/operator-runtime/planning-sessions/list" || {
-    cat "$lab_data_home/orcas/logs/ui-e2e-lab-orcas-server.stdout.log" >&2 || true
+    cat "$lab_orcas_home/logs/ui-e2e-lab-orcas-server.stdout.log" >&2 || true
     echo "shared UI lab server is not responding on $lab_server_bind" >&2
     return 1
   }
@@ -194,6 +193,7 @@ ORCAS_E2E_SHARED_XDG_DIR=$lab_root
 ORCAS_E2E_SHARED_XDG_DATA_HOME=$lab_data_home
 ORCAS_E2E_SHARED_XDG_CONFIG_HOME=$lab_config_home
 ORCAS_E2E_SHARED_XDG_RUNTIME_HOME=$lab_runtime_home
+ORCAS_E2E_SHARED_ORCAS_HOME=$lab_orcas_home
 ORCAS_E2E_SHARED_SOCKET_FILE=$lab_socket_file
 EOF
 }
@@ -201,11 +201,12 @@ EOF
 run_scenario() {
   local scenario="$1"
   ORCAS_E2E_REUSE_CURRENT_XDG=true \
-    ORCAS_E2E_REUSE_CURRENT_DAEMON=true \
-    ORCAS_E2E_SHARED_XDG_DIR="$lab_root" \
-    ORCAS_E2E_SHARED_XDG_DATA_HOME="$lab_data_home" \
-    ORCAS_E2E_SHARED_XDG_CONFIG_HOME="$lab_config_home" \
-    ORCAS_E2E_SHARED_XDG_RUNTIME_HOME="$lab_runtime_home" \
+  ORCAS_E2E_REUSE_CURRENT_DAEMON=true \
+  ORCAS_E2E_SHARED_XDG_DIR="$lab_root" \
+  ORCAS_E2E_SHARED_XDG_DATA_HOME="$lab_data_home" \
+  ORCAS_E2E_SHARED_XDG_CONFIG_HOME="$lab_config_home" \
+  ORCAS_E2E_SHARED_XDG_RUNTIME_HOME="$lab_runtime_home" \
+  ORCAS_E2E_SHARED_ORCAS_HOME="$lab_orcas_home" \
     ORCAS_E2E_SHARED_SOCKET_FILE="$lab_socket_file" \
     make test-e2e-live SCENARIO="$scenario"
 }

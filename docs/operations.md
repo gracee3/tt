@@ -56,8 +56,8 @@ journalctl --user -u orcas-daemon.service -f
 Use the file logs for the application’s own tracing output.
 
 ```bash
-tail -f ~/.local/share/orcas/logs/orcasd.log
-tail -f ~/.local/share/orcas/logs/orcas.log
+tail -f ~/.orcas/logs/orcasd.log
+tail -f ~/.orcas/logs/orcas.log
 ```
 
 Common log patterns include socket bind failures, stale runtime cleanup, upstream connection failures, and request validation errors. If a client cannot connect, check the daemon log first, then confirm the socket path exists and is responsive. Use `codex-app-server.log` only when you need raw upstream subprocess output.
@@ -84,7 +84,7 @@ Check the daemon log and the unit status. The usual causes are a bad Codex binar
 
 ```bash
 systemctl --user status orcas-daemon.service
-tail -n 100 ~/.local/share/orcas/logs/orcasd.log
+tail -n 100 ~/.orcas/logs/orcasd.log
 ```
 
 ### Socket Conflict Or Stale Socket

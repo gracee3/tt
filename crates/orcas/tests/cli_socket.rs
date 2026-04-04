@@ -31,7 +31,7 @@ use orcas_core::{
 use uuid::Uuid;
 
 fn run_orcas(daemon: &TestDaemon, args: &[&str]) -> std::process::Output {
-    let envs = daemon.xdg_env();
+    let envs = daemon.orcas_home_env();
     run_orcas_with_env(args, &envs)
 }
 
@@ -81,11 +81,7 @@ struct FakePlanningSessionState {
 impl FakePlanningSessionDaemon {
     async fn spawn(test_name: &str) -> Self {
         let root = std::env::temp_dir().join(format!("orcas-cli-{test_name}-{}", Uuid::new_v4()));
-        let paths = orcas_core::AppPaths::from_roots(
-            root.join("config/orcas"),
-            root.join("data/orcas"),
-            root.join("runtime/orcas"),
-        );
+        let paths = orcas_core::AppPaths::from_home(root.join(".orcas"));
         paths.ensure().await.expect("create app paths");
         let _ = tokio::fs::remove_file(&paths.socket_file).await;
         let listener = std::os::unix::net::UnixListener::bind(&paths.socket_file)
@@ -135,21 +131,11 @@ impl FakePlanningSessionDaemon {
         }
     }
 
-    fn xdg_env(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "XDG_CONFIG_HOME".to_string(),
-                self.root.join("config").display().to_string(),
-            ),
-            (
-                "XDG_DATA_HOME".to_string(),
-                self.root.join("data").display().to_string(),
-            ),
-            (
-                "XDG_RUNTIME_DIR".to_string(),
-                self.root.join("runtime").display().to_string(),
-            ),
-        ]
+    fn orcas_home_env(&self) -> Vec<(String, String)> {
+        vec![(
+            "ORCAS_HOME".to_string(),
+            self.paths.config_dir.display().to_string(),
+        )]
     }
 
     async fn stop(self) {
@@ -1697,7 +1683,7 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
     let _guard = planning_session_cli_test_lock().lock().await;
     let daemon = spawn_fake_planning_session_cli_daemon("cli-planning-create").await;
     let workstream_id = "planning-workstream-cli-create";
-    let envs = daemon.xdg_env();
+    let envs = daemon.orcas_home_env();
 
     let invalid_create = run_orcas_with_env(
         &[
@@ -1797,7 +1783,7 @@ async fn real_cli_planning_session_request_research_succeeds_once_and_rejects_re
     let _guard = planning_session_cli_test_lock().lock().await;
     let daemon = spawn_fake_planning_session_cli_daemon("cli-planning-research").await;
     let session_id = "planning_session_cli_research";
-    let envs = daemon.xdg_env();
+    let envs = daemon.orcas_home_env();
 
     let first_output = run_orcas_with_env(
         &[

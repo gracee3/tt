@@ -37,12 +37,12 @@ Orcas also supports one logging-related boolean env var:
 
 ## Log Locations
 
-Orcas follows the XDG directory layout on Linux.
+Orcas keeps logs under its home root.
 
 The logs directory is:
 
 ```bash
-${XDG_DATA_HOME:-~/.local/share}/orcas/logs/
+${ORCAS_HOME:-~/.orcas}/logs/
 ```
 
 Current log files:
@@ -65,7 +65,7 @@ Use `codex-app-server.log` only when the semantic daemon logs point to an upstre
 Good first steps:
 
 ```bash
-tail -f ~/.local/share/orcas/logs/orcasd.log
+tail -f ~/.orcas/logs/orcasd.log
 RUST_LOG=debug orcasd
 orcas daemon status
 orcas doctor
