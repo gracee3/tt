@@ -1063,6 +1063,76 @@ impl OrcasDaemonService {
         }
     }
 
+    async fn maybe_stop_idle_runtime_for_workstream(
+        &self,
+        workstream_id: &authority::WorkstreamId,
+    ) -> OrcasResult<()> {
+        let workstream = self.load_workstream_summary(workstream_id).await?;
+        let is_dedicated = workstream
+            .execution_scope
+            .as_ref()
+            .map(|scope| {
+                scope.app_server_policy
+                    == authority::WorkstreamAppServerPolicy::DedicatedPerWorkstream
+            })
+            .unwrap_or(false);
+        if !is_dedicated {
+            return Ok(());
+        }
+
+        let (live_threads, active_turns) = {
+            let state = self.state.read().await;
+            let live_threads = Self::workstream_runtime_thread_count(&state, workstream_id);
+            let active_turns = state
+                .turns
+                .values()
+                .filter(|turn| {
+                    turn.runtime_workstream_id.as_deref() == Some(workstream_id.as_str())
+                        && turn.lifecycle == ipc::TurnLifecycleState::Active
+                })
+                .count();
+            (live_threads, active_turns)
+        };
+        if live_threads > 0 || active_turns > 0 {
+            return Ok(());
+        }
+
+        let current = self
+            .authority_store
+            .get_workstream_runtime(workstream_id)
+            .await?;
+        let already_stopped = current.as_ref().is_some_and(|runtime| {
+            matches!(
+                runtime.status.as_str(),
+                "dedicated_stopped" | "dedicated_configured"
+            )
+        });
+        if already_stopped {
+            return Ok(());
+        }
+
+        let _ = self.stop_workstream_runtime(workstream_id).await;
+        Ok(())
+    }
+
+    async fn workstream_id_for_tracked_thread(
+        &self,
+        tracked_thread_id: &authority::TrackedThreadId,
+    ) -> OrcasResult<Option<authority::WorkstreamId>> {
+        let Some(tracked_thread) = self
+            .authority_store
+            .get_tracked_thread(tracked_thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .authority_store
+            .get_work_unit(&tracked_thread.work_unit_id)
+            .await?
+            .map(|work_unit| work_unit.workstream_id))
+    }
+
     async fn ensure_workstream_runtime_handle(
         &self,
         workstream: &authority::WorkstreamSummary,
@@ -3768,6 +3838,9 @@ impl OrcasDaemonService {
         &self,
         params: ipc::AuthorityTrackedThreadDeleteRequest,
     ) -> OrcasResult<ipc::AuthorityTrackedThreadDeleteResponse> {
+        let workstream_id = self
+            .workstream_id_for_tracked_thread(&params.command.tracked_thread_id)
+            .await?;
         match self
             .authority_store
             .execute_command(AuthorityCommand::DeleteTrackedThread(params.command))
@@ -3785,6 +3858,10 @@ impl OrcasDaemonService {
                     &tracked_thread,
                 )
                 .await;
+                if let Some(workstream_id) = workstream_id.as_ref() {
+                    self.maybe_stop_idle_runtime_for_workstream(workstream_id)
+                        .await?;
+                }
                 Ok(ipc::AuthorityTrackedThreadDeleteResponse { tracked_thread })
             }
             AuthorityMutationResult::Workstream(_) | AuthorityMutationResult::WorkUnit(_) => {
@@ -7188,6 +7265,11 @@ impl OrcasDaemonService {
         };
         match workspace_operation_contract.kind {
             TrackedThreadWorkspaceOperationKind::PruneWorkspace => {
+                let workstream_id = self
+                    .workstream_id_for_tracked_thread(
+                        &workspace_operation_contract.tracked_thread_id,
+                    )
+                    .await?;
                 let prune_workspace_result = plan
                     .parsed_report
                     .envelope
@@ -7342,6 +7424,10 @@ impl OrcasDaemonService {
                         prune_notes,
                     )
                     .await?;
+                    if let Some(workstream_id) = workstream_id.as_ref() {
+                        self.maybe_stop_idle_runtime_for_workstream(workstream_id)
+                            .await?;
+                    }
                 } else if fallback_successful_prune {
                     info!(
                         assignment_id = %plan.assignment_id,
@@ -7363,6 +7449,10 @@ impl OrcasDaemonService {
                         prune_notes,
                     )
                     .await?;
+                    if let Some(workstream_id) = workstream_id.as_ref() {
+                        self.maybe_stop_idle_runtime_for_workstream(workstream_id)
+                            .await?;
+                    }
                 } else {
                     self.mark_workspace_operation_failed(
                         &plan.assignment_id,
@@ -17884,6 +17974,44 @@ mod tests {
             .await
             .expect_err("shared runtime restart should be rejected");
         assert!(restart_error.to_string().contains("shared daemon runtime"));
+    }
+
+    #[tokio::test]
+    async fn maybe_stop_idle_runtime_resets_idle_dedicated_remote_runtime() {
+        let service = test_service().await;
+        create_authority_workstream(
+            &service,
+            "runtime-idle-ws",
+            Some(orcas_core::authority::WorkstreamExecutionScope {
+                codex_home: "/tmp/orcas/runtime-idle/codex-home".to_string(),
+                sqlite_home: None,
+                listen_url: Some("ws://127.0.0.1:1".to_string()),
+                transport_kind: orcas_core::authority::WorkstreamTransportKind::RemoteWebsocket,
+                app_server_policy:
+                    orcas_core::authority::WorkstreamAppServerPolicy::DedicatedPerWorkstream,
+                connection_mode:
+                    orcas_core::authority::WorkstreamExecutionConnectionMode::ConnectOnly,
+            }),
+        )
+        .await;
+        let workstream_id =
+            orcas_core::authority::WorkstreamId::parse("runtime-idle-ws").expect("workstream id");
+
+        let status = service.daemon_status().await.expect("daemon status");
+        assert_eq!(status.workstream_runtimes[0].status, "dedicated_degraded");
+
+        service
+            .maybe_stop_idle_runtime_for_workstream(&workstream_id)
+            .await
+            .expect("stop idle runtime");
+
+        let runtime = service
+            .authority_store
+            .get_workstream_runtime(&workstream_id)
+            .await
+            .expect("runtime row")
+            .expect("persisted runtime row");
+        assert_eq!(runtime.status, "dedicated_configured");
     }
 
     #[tokio::test]
