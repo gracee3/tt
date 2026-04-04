@@ -2451,15 +2451,17 @@ mod tests {
 
     #[test]
     fn parses_codex_models_list_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "models", "list"]);
+        let cli = Cli::parse_from(["orcas", "codex", "models", "list", "--workstream", "ws-1"]);
 
         match cli.command {
             TopCommand::Codex {
                 command:
                     CodexCommand::Models {
-                        command: ModelsCommand::List,
+                        command: ModelsCommand::List(args),
                     },
-            } => {}
+            } => {
+                assert_eq!(args.workstream, "ws-1");
+            }
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
@@ -2532,30 +2534,65 @@ mod tests {
 
     #[test]
     fn parses_codex_threads_list_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "threads", "list"]);
+        let cli = Cli::parse_from(["orcas", "codex", "threads", "list", "--workstream", "ws-1"]);
 
         match cli.command {
             TopCommand::Codex {
                 command:
                     CodexCommand::Threads {
-                        command: CodexThreadsCommand::List,
+                        command: CodexThreadsCommand::List(args),
                     },
-            } => {}
+            } => {
+                assert_eq!(args.workstream, "ws-1");
+            }
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
 
     #[test]
     fn parses_codex_threads_list_loaded_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "threads", "list-loaded"]);
+        let cli = Cli::parse_from([
+            "orcas",
+            "codex",
+            "threads",
+            "list-loaded",
+            "--workstream",
+            "ws-1",
+        ]);
 
         match cli.command {
             TopCommand::Codex {
                 command:
                     CodexCommand::Threads {
-                        command: CodexThreadsCommand::ListLoaded,
+                        command: CodexThreadsCommand::ListLoaded(args),
                     },
-            } => {}
+            } => {
+                assert_eq!(args.workstream, "ws-1");
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_workstream_runtime_start_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "workstreams",
+            "runtime",
+            "start",
+            "--workstream",
+            "ws-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Workstreams {
+                command:
+                    WorkstreamsCommand::Runtime {
+                        command: WorkstreamRuntimeCommand::Start(args),
+                    },
+            } => {
+                assert_eq!(args.workstream, "ws-1");
+            }
             other => panic!("unexpected command parse: {other:?}"),
         }
     }

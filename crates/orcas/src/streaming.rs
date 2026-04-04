@@ -711,6 +711,8 @@ mod tests {
                 name: None,
                 model_provider: "openai".to_string(),
                 cwd: "/tmp".to_string(),
+                endpoint: None,
+                runtime_workstream_id: None,
                 status: "idle".to_string(),
                 created_at: 1,
                 updated_at: 2,
@@ -747,6 +749,8 @@ mod tests {
         ipc::TurnStateView {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            endpoint: None,
+            runtime_workstream_id: None,
             lifecycle,
             status: status.to_string(),
             attachable,

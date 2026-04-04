@@ -4,7 +4,7 @@
 
 - Orcas already has canonical authority records for `workstream`, `work_unit`, and `tracked_thread` in `state.db`.
 - `tracked_thread.workspace` already models most of the intended workspace shape: repo root, worktree path, base ref, landing target, and lifecycle policy.
-- Runtime state still lives separately in collaboration state: assignments, reports, worker sessions, workspace operations, and landing/prune execution records.
+- Runtime state persists in SQLite runtime snapshots inside `state.db`: assignments, reports, worker sessions, workspace operations, thread mirrors, and landing/prune execution records.
 - The daemon currently owns one global upstream Codex/app-server connection policy. There is no explicit workstream-scoped execution owner yet.
 - Assignment packets already have an `execution_context`, but Orcas was not using it to start turns; `cwd` and `model` were being dropped at dispatch time.
 - Worker-session reuse was broad. Reuse was keyed only by `worker_id`, which allowed session/thread reuse to bleed across unrelated work units.
@@ -25,14 +25,14 @@
 - Attach filesystem sandboxing to the workspace/thread, not to the workstream.
 - Keep merge, prune, and landing authority in Orcas supervisor flows.
 - Use `state.db` as the source of truth for workstream, work unit, tracked thread, workspace intent, and workstream execution scope.
-- Keep transient runtime state in collaboration storage until a broader store consolidation is justified.
+- Keep runtime mirrors in SQLite runtime snapshots inside `state.db`.
 
 ## 4. Lifecycle
 
 1. Create workstream.
    Persist canonical workstream metadata plus optional execution scope.
 2. Start app-server.
-   Future step: resolve app-server startup/connection from the workstream execution scope.
+   Resolve app-server startup, reconnect, and stop semantics from the workstream execution scope.
 3. Create work unit.
    Persist the supervisor-managed task grouping under the workstream.
 4. Allocate workspace/worktree.
@@ -62,8 +62,7 @@ Delegate to Codex/app-server:
 
 Single source of truth:
 
-- `state.db` for planning/control-plane authority.
-- collaboration state for runtime mirrors until a separate migration is done.
+- `state.db` for planning/control-plane authority and runtime mirrors.
 
 ## 6. Sandboxing / Git Worktree Constraints
 
@@ -106,6 +105,7 @@ Phase 3:
 
 - enforce per-workspace sandbox policy using the derived filesystem root contract
 - route daemon app-server ownership by workstream execution scope
+- add explicit workstream runtime lifecycle control at the Orcas RPC and CLI layer
 
 ## 8. Code Changes
 
@@ -118,6 +118,9 @@ Implemented in this slice:
 - Changed turn dispatch to use the rendered assignment `cwd` and requested model instead of dropping both.
 - Tightened worker-session reuse so reuse only happens within the same work-unit lane; otherwise Orcas allocates a fresh session.
 - Added focused tests for execution-scope persistence, workspace filesystem-scope derivation, execution-context routing, and session reuse.
+- Added explicit `workstream_runtime/{list,get,start,stop,restart}` RPCs and `orcas workstreams runtime ...` CLI commands.
+- Added client disconnect and app-server stop hooks so Orcas can stop dedicated local runtimes and disconnect remote runtime clients.
+- Scoped `threads/list` and `threads/list_loaded` to an explicit `workstream_id`.
 
 ## 9. Risks / Open Questions
 

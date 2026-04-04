@@ -138,14 +138,22 @@ These flags are accepted before any subcommand.
 ## Codex
 
 - `orcas codex models list --workstream <ID>`
-- `orcas codex threads list`
-- `orcas codex threads list-loaded`
+- `orcas codex threads list --workstream <ID>`
+- `orcas codex threads list-loaded --workstream <ID>`
 - `orcas codex threads read --thread <ID>`
 - `orcas codex threads start [--cwd <PATH>] [--model <MODEL>] [--ephemeral]`
 - `orcas codex threads resume --thread <ID> [--cwd <PATH>] [--model <MODEL>]`
 - `orcas codex turns list-active`
 - `orcas codex turns recent --thread <ID> [--limit <N>]`
 - `orcas codex turns get --thread <ID> --turn <ID>`
+
+## Workstream Runtimes
+
+- `orcas workstreams runtime list`
+- `orcas workstreams runtime get --workstream <ID>`
+- `orcas workstreams runtime start --workstream <ID>`
+- `orcas workstreams runtime stop --workstream <ID>`
+- `orcas workstreams runtime restart --workstream <ID>`
 
 ## Prompt
 

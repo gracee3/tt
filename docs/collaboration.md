@@ -147,9 +147,9 @@ Current request families include:
   - `session/get_active`
 - models and thread views:
   - `models/list` requires a target `workstream_id` and resolves through that workstream's runtime
-  - `threads/list`
-  - `threads/list_scoped`
-  - `threads/list_loaded`
+  - `threads/list` requires a target `workstream_id` and resolves through that workstream's runtime
+  - `threads/list_loaded` requires a target `workstream_id` and resolves through that workstream's runtime
+  - `threads/list_scoped` is deprecated
   - `thread/start`
   - `thread/read`
   - `thread/read_history`
@@ -157,6 +157,12 @@ Current request families include:
   - `thread/attach`
   - `thread/detach`
   - `thread/resume`
+- workstream runtime control:
+  - `workstream_runtime/list`
+  - `workstream_runtime/get`
+  - `workstream_runtime/start`
+  - `workstream_runtime/stop`
+  - `workstream_runtime/restart`
 - turn views and turn control:
   - `turns/list_active`
   - `turns/recent`
