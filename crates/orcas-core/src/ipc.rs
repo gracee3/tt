@@ -2075,6 +2075,8 @@ pub struct ThreadSummary {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub runtime_workstream_id: Option<String>,
+    #[serde(default)]
+    pub owner_workstream_id: Option<String>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,

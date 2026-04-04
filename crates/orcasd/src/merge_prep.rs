@@ -84,16 +84,18 @@ pub fn assess_merge_prep(
     reasons.sort_by_key(|reason| *reason as u8);
     reasons.dedup();
 
-    let inspection_suggests_success = inspection.is_some_and(|inspection| {
-        let bounded_dirty_workspace = inspection.warnings.iter().all(|warning| {
-            matches!(
-                warning,
-                TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace
-            )
-        });
-        inspection.current_head_commit.is_some()
-            && (inspection.warnings.is_empty() || bounded_dirty_workspace)
-    }) && local_head_commit.is_some()
+    let inspection_suggests_success = workspace.last_reported_head_commit.is_none()
+        && inspection.is_some_and(|inspection| {
+            let bounded_dirty_workspace = inspection.warnings.iter().all(|warning| {
+                matches!(
+                    warning,
+                    TrackedThreadWorkspaceInspectionWarning::DirtyWorkspace
+                )
+            });
+            inspection.current_head_commit.is_some()
+                && (inspection.warnings.is_empty() || bounded_dirty_workspace)
+        })
+        && local_head_commit.is_some()
         && !reasons.iter().any(|reason| {
             matches!(
                 reason,

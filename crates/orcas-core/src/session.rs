@@ -30,6 +30,8 @@ pub struct ThreadMetadata {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub runtime_workstream_id: Option<String>,
+    #[serde(default)]
+    pub owner_workstream_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub status: String,
@@ -148,6 +150,8 @@ mod tests {
             model_provider: Some("openai".to_string()),
             cwd: Some(PathBuf::from("/repo")),
             endpoint: Some("ws://127.0.0.1:4500".to_string()),
+            runtime_workstream_id: Some("workstream-1".to_string()),
+            owner_workstream_id: Some("workstream-1".to_string()),
             created_at: fixed_now(),
             updated_at: fixed_now(),
             status: "active".to_string(),

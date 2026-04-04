@@ -912,6 +912,62 @@ impl OrcasDaemonService {
         }
     }
 
+    fn desired_thread_owner_workstream_id(state: &DaemonState, thread_id: &str) -> Option<String> {
+        let mut workstream_ids = BTreeSet::new();
+
+        for planning_session in state.collaboration.planning_sessions.values() {
+            if planning_session.planning_thread_id == thread_id {
+                workstream_ids.insert(planning_session.workstream_id.clone());
+            }
+        }
+
+        for codex_assignment in state.collaboration.codex_thread_assignments.values() {
+            if codex_assignment.codex_thread_id == thread_id {
+                workstream_ids.insert(codex_assignment.workstream_id.clone());
+            }
+        }
+
+        for worker_session in state.collaboration.worker_sessions.values() {
+            if worker_session.thread_id.as_deref() != Some(thread_id) {
+                continue;
+            }
+            let Some(assignment) = state
+                .collaboration
+                .assignments
+                .values()
+                .find(|assignment| assignment.worker_session_id == worker_session.id)
+            else {
+                continue;
+            };
+            let Some(work_unit) = state.collaboration.work_units.get(&assignment.work_unit_id)
+            else {
+                continue;
+            };
+            workstream_ids.insert(work_unit.workstream_id.clone());
+        }
+
+        for decision in state.collaboration.supervisor_turn_decisions.values() {
+            if decision.codex_thread_id != thread_id {
+                continue;
+            }
+            let Some(assignment) = state.collaboration.assignments.get(&decision.assignment_id)
+            else {
+                continue;
+            };
+            let Some(work_unit) = state.collaboration.work_units.get(&assignment.work_unit_id)
+            else {
+                continue;
+            };
+            workstream_ids.insert(work_unit.workstream_id.clone());
+        }
+
+        if workstream_ids.len() == 1 {
+            workstream_ids.into_iter().next()
+        } else {
+            None
+        }
+    }
+
     fn codex_connection_mode_from_workstream(
         mode: authority::WorkstreamExecutionConnectionMode,
     ) -> CodexConnectionMode {
@@ -1208,6 +1264,7 @@ impl OrcasDaemonService {
                                 thread_id,
                                 &thread.summary.scope,
                             ),
+                            Self::desired_thread_owner_workstream_id(&state, thread_id),
                         )
                     })
                 })
@@ -1220,14 +1277,17 @@ impl OrcasDaemonService {
         let mut changed_threads = Vec::new();
         {
             let mut state = self.state.write().await;
-            for (thread_id, management_state) in desired_states {
+            for (thread_id, management_state, owner_workstream_id) in desired_states {
                 let Some(thread) = state.threads.get_mut(&thread_id) else {
                     continue;
                 };
-                if thread.summary.management_state == management_state {
+                if thread.summary.management_state == management_state
+                    && thread.summary.owner_workstream_id == owner_workstream_id
+                {
                     continue;
                 }
                 thread.summary.management_state = management_state;
+                thread.summary.owner_workstream_id = owner_workstream_id;
                 changed_threads.push(thread.summary.clone());
             }
         }
@@ -2745,10 +2805,7 @@ impl OrcasDaemonService {
         .await?;
         Ok(ipc::ThreadsListResponse {
             data: self
-                .workstream_thread_summaries(
-                    runtime.route_info.runtime_workstream_id.as_ref(),
-                    false,
-                )
+                .workstream_thread_summaries(&workstream_id, &runtime.route_info, false)
                 .await,
         })
     }
@@ -2781,10 +2838,7 @@ impl OrcasDaemonService {
         .await?;
         Ok(ipc::ThreadsListResponse {
             data: self
-                .workstream_thread_summaries(
-                    runtime.route_info.runtime_workstream_id.as_ref(),
-                    true,
-                )
+                .workstream_thread_summaries(&workstream_id, &runtime.route_info, true)
                 .await,
         })
     }
@@ -3352,6 +3406,18 @@ impl OrcasDaemonService {
             workstream
         };
         self.persist_collaboration_state().await?;
+        self.authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+            command: orcas_core::authority::CreateWorkstream {
+                metadata: self.authority_command_metadata("service_test")?,
+                workstream_id: orcas_core::authority::WorkstreamId::parse(workstream.id.clone())?,
+                title: workstream.title.clone(),
+                objective: workstream.objective.clone(),
+                status: workstream.status,
+                priority: workstream.priority.clone(),
+                execution_scope: None,
+            },
+        })
+        .await?;
         self.emit_workstream_lifecycle(ipc::CollaborationLifecycleAction::Created, &workstream)
             .await;
         Ok(ipc::WorkstreamCreateResponse { workstream })
@@ -3504,6 +3570,19 @@ impl OrcasDaemonService {
             (work_unit, workstream)
         };
         self.persist_collaboration_state().await?;
+        self.authority_workunit_create(ipc::AuthorityWorkunitCreateRequest {
+            command: orcas_core::authority::CreateWorkUnit {
+                metadata: self.authority_command_metadata("service_test")?,
+                work_unit_id: orcas_core::authority::WorkUnitId::parse(work_unit.id.clone())?,
+                workstream_id: orcas_core::authority::WorkstreamId::parse(
+                    work_unit.workstream_id.clone(),
+                )?,
+                title: work_unit.title.clone(),
+                task_statement: work_unit.task_statement.clone(),
+                status: work_unit.status,
+            },
+        })
+        .await?;
         self.emit_work_unit_lifecycle(ipc::CollaborationLifecycleAction::Created, &work_unit)
             .await;
         self.emit_workstream_lifecycle(ipc::CollaborationLifecycleAction::Updated, &workstream)
@@ -15579,6 +15658,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
             cwd: (!thread.summary.cwd.is_empty()).then(|| PathBuf::from(&thread.summary.cwd)),
             endpoint: thread.summary.endpoint.clone(),
             runtime_workstream_id: thread.summary.runtime_workstream_id.clone(),
+            owner_workstream_id: thread.summary.owner_workstream_id.clone(),
             created_at,
             updated_at,
             status: thread.summary.status.clone(),
@@ -15846,17 +15926,18 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
 
     async fn workstream_thread_summaries(
         &self,
-        runtime_workstream_id: Option<&authority::WorkstreamId>,
+        workstream_id: &authority::WorkstreamId,
+        runtime: &RuntimeRouteInfo,
         loaded_only: bool,
     ) -> Vec<ipc::ThreadSummary> {
         let state = self.state.read().await;
         let mut summaries = Self::sorted_thread_summaries(&state.threads)
             .into_iter()
-            .filter(|thread| match runtime_workstream_id {
+            .filter(|thread| match runtime.runtime_workstream_id.as_ref() {
                 Some(workstream_id) => {
                     thread.runtime_workstream_id.as_deref() == Some(workstream_id.as_str())
                 }
-                None => thread.runtime_workstream_id.is_none(),
+                None => thread.owner_workstream_id.as_deref() == Some(workstream_id.as_str()),
             })
             .filter(|thread| {
                 !loaded_only || thread.loaded_status != ipc::ThreadLoadedStatus::NotLoaded
@@ -16685,6 +16766,17 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
         .await;
     }
 
+    #[cfg(test)]
+    async fn apply_workstream_codex_event(&self, workstream_id: &str, envelope: EventEnvelope) {
+        let workstream_id = authority::WorkstreamId::parse(workstream_id).expect("workstream id");
+        let runtime = self
+            .resolve_runtime_for_workstream(&workstream_id)
+            .await
+            .expect("runtime handle");
+        self.apply_codex_event(&runtime.client, &runtime.route_info, envelope)
+            .await;
+    }
+
     async fn update_item_state(
         &self,
         thread_id: &str,
@@ -17056,6 +17148,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                 cwd: String::new(),
                 endpoint: None,
                 runtime_workstream_id: None,
+                owner_workstream_id: None,
                 status: "pending".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -17093,6 +17186,7 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     .unwrap_or_default(),
                 endpoint: metadata.endpoint.clone(),
                 runtime_workstream_id: metadata.runtime_workstream_id.clone(),
+                owner_workstream_id: metadata.owner_workstream_id.clone(),
                 status: metadata.status.clone(),
                 created_at: metadata.created_at.timestamp(),
                 updated_at: metadata.updated_at.timestamp(),
@@ -17158,6 +17252,8 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
                     .or_else(|| {
                         existing.and_then(|thread| thread.summary.runtime_workstream_id.clone())
                     }),
+                owner_workstream_id: existing
+                    .and_then(|thread| thread.summary.owner_workstream_id.clone()),
                 status: thread.status.label().to_string(),
                 created_at: thread.created_at,
                 updated_at: thread.updated_at,
@@ -20019,6 +20115,7 @@ worker epilogue"#;
                 cwd: "/tmp/orcas".to_string(),
                 endpoint: None,
                 runtime_workstream_id: None,
+                owner_workstream_id: None,
                 status: "idle".to_string(),
                 created_at: updated_at - 10,
                 updated_at,
@@ -20323,6 +20420,22 @@ worker epilogue"#;
             })
             .await
             .expect("authority workstream create");
+    }
+
+    fn dedicated_local_execution_scope(
+        codex_home: &str,
+        listen_url: &str,
+    ) -> orcas_core::authority::WorkstreamExecutionScope {
+        orcas_core::authority::WorkstreamExecutionScope {
+            codex_home: codex_home.to_string(),
+            sqlite_home: None,
+            listen_url: Some(listen_url.to_string()),
+            transport_kind: orcas_core::authority::WorkstreamTransportKind::LocalAppServer,
+            app_server_policy:
+                orcas_core::authority::WorkstreamAppServerPolicy::DedicatedPerWorkstream,
+            connection_mode:
+                orcas_core::authority::WorkstreamExecutionConnectionMode::SpawnIfNeeded,
+        }
     }
 
     async fn install_fake_workstream_runtime_handle(
@@ -25345,7 +25458,22 @@ ORCAS_REPORT_END"#
             FakeCodexTerminalOutcome::Completed,
         )
         .await;
-        create_authority_workstream(&service, "ws-headless", None).await;
+        create_authority_workstream(
+            &service,
+            "ws-headless",
+            Some(dedicated_local_execution_scope(
+                "/tmp/orcas/ws-headless/codex-home",
+                "ws://127.0.0.1:4513",
+            )),
+        )
+        .await;
+        install_fake_workstream_runtime_handle(
+            &service,
+            "ws-headless",
+            "ws://127.0.0.1:4513",
+            Arc::clone(&runtime),
+        )
+        .await;
         runtime.lock().await.threads.insert(
             "thread-headless".to_string(),
             types::Thread {
@@ -25443,7 +25571,22 @@ ORCAS_REPORT_END"#
             FakeCodexTerminalOutcome::Completed,
         )
         .await;
-        create_authority_workstream(&service, "ws-headless", None).await;
+        create_authority_workstream(
+            &service,
+            "ws-headless",
+            Some(dedicated_local_execution_scope(
+                "/tmp/orcas/ws-headless-attach/codex-home",
+                "ws://127.0.0.1:4514",
+            )),
+        )
+        .await;
+        install_fake_workstream_runtime_handle(
+            &service,
+            "ws-headless",
+            "ws://127.0.0.1:4514",
+            Arc::clone(&runtime),
+        )
+        .await;
         runtime.lock().await.threads.insert(
             "thread-headless".to_string(),
             types::Thread {
@@ -25529,7 +25672,22 @@ ORCAS_REPORT_END"#
             FakeCodexTerminalOutcome::Completed,
         )
         .await;
-        create_authority_workstream(&service, "ws-headless", None).await;
+        create_authority_workstream(
+            &service,
+            "ws-headless",
+            Some(dedicated_local_execution_scope(
+                "/tmp/orcas/ws-headless-events/codex-home",
+                "ws://127.0.0.1:4515",
+            )),
+        )
+        .await;
+        install_fake_workstream_runtime_handle(
+            &service,
+            "ws-headless",
+            "ws://127.0.0.1:4515",
+            Arc::clone(&runtime),
+        )
+        .await;
         runtime.lock().await.threads.insert(
             "thread-headless".to_string(),
             types::Thread {
@@ -25566,90 +25724,73 @@ ORCAS_REPORT_END"#
             .expect("attach");
 
         service
-            .apply_shared_codex_event(EventEnvelope::new(
-                "test",
-                OrcasEvent::TurnStarted {
-                    thread_id: "thread-headless".to_string(),
-                    turn: CodexTurnEvent {
-                        id: "turn-live-1".to_string(),
-                        status: "in_progress".to_string(),
-                        error_message: None,
-                        error_summary: None,
-                        latest_diff: None,
-                        latest_plan_snapshot: None,
-                        token_usage_snapshot: None,
-                        latest_plan: None,
-                        token_usage: None,
-                        items: Vec::new(),
+            .apply_workstream_codex_event(
+                "ws-headless",
+                EventEnvelope::new(
+                    "test",
+                    OrcasEvent::TurnStarted {
+                        thread_id: "thread-headless".to_string(),
+                        turn: CodexTurnEvent {
+                            id: "turn-live-1".to_string(),
+                            status: "in_progress".to_string(),
+                            error_message: None,
+                            error_summary: None,
+                            latest_diff: None,
+                            latest_plan_snapshot: None,
+                            token_usage_snapshot: None,
+                            latest_plan: None,
+                            token_usage: None,
+                            items: Vec::new(),
+                        },
                     },
-                },
-            ))
+                ),
+            )
             .await;
         service
-            .apply_shared_codex_event(EventEnvelope::new(
-                "test",
-                OrcasEvent::ItemStarted {
-                    thread_id: "thread-headless".to_string(),
-                    turn_id: "turn-live-1".to_string(),
-                    item: CodexItemEvent {
-                        id: "item-live-1".to_string(),
-                        item_type: "agent_message".to_string(),
-                        status: Some("started".to_string()),
-                        text: None,
-                        summary: None,
-                        payload: None,
-                        detail_kind: Some("agent_message".to_string()),
-                        detail: None,
+            .apply_workstream_codex_event(
+                "ws-headless",
+                EventEnvelope::new(
+                    "test",
+                    OrcasEvent::ItemStarted {
+                        thread_id: "thread-headless".to_string(),
+                        turn_id: "turn-live-1".to_string(),
+                        item: CodexItemEvent {
+                            id: "item-live-1".to_string(),
+                            item_type: "agent_message".to_string(),
+                            status: Some("started".to_string()),
+                            text: None,
+                            summary: None,
+                            payload: None,
+                            detail_kind: Some("agent_message".to_string()),
+                            detail: None,
+                        },
                     },
-                },
-            ))
+                ),
+            )
             .await;
         service
-            .apply_shared_codex_event(EventEnvelope::new(
-                "test",
-                OrcasEvent::AgentMessageDelta {
-                    thread_id: "thread-headless".to_string(),
-                    turn_id: "turn-live-1".to_string(),
-                    item_id: "item-live-1".to_string(),
-                    delta: "live text".to_string(),
-                },
-            ))
-            .await;
-        service
-            .apply_shared_codex_event(EventEnvelope::new(
-                "test",
-                OrcasEvent::ItemCompleted {
-                    thread_id: "thread-headless".to_string(),
-                    turn_id: "turn-live-1".to_string(),
-                    item: CodexItemEvent {
-                        id: "item-live-1".to_string(),
-                        item_type: "agent_message".to_string(),
-                        status: Some("completed".to_string()),
-                        text: Some("live text".to_string()),
-                        summary: Some("live text".to_string()),
-                        payload: None,
-                        detail_kind: Some("agent_message".to_string()),
-                        detail: None,
+            .apply_workstream_codex_event(
+                "ws-headless",
+                EventEnvelope::new(
+                    "test",
+                    OrcasEvent::AgentMessageDelta {
+                        thread_id: "thread-headless".to_string(),
+                        turn_id: "turn-live-1".to_string(),
+                        item_id: "item-live-1".to_string(),
+                        delta: "live text".to_string(),
                     },
-                },
-            ))
+                ),
+            )
             .await;
         service
-            .apply_shared_codex_event(EventEnvelope::new(
-                "test",
-                OrcasEvent::TurnCompleted {
-                    thread_id: "thread-headless".to_string(),
-                    turn: CodexTurnEvent {
-                        id: "turn-live-1".to_string(),
-                        status: "completed".to_string(),
-                        error_message: None,
-                        error_summary: None,
-                        latest_diff: None,
-                        latest_plan_snapshot: None,
-                        token_usage_snapshot: None,
-                        latest_plan: None,
-                        token_usage: None,
-                        items: vec![CodexItemEvent {
+            .apply_workstream_codex_event(
+                "ws-headless",
+                EventEnvelope::new(
+                    "test",
+                    OrcasEvent::ItemCompleted {
+                        thread_id: "thread-headless".to_string(),
+                        turn_id: "turn-live-1".to_string(),
+                        item: CodexItemEvent {
                             id: "item-live-1".to_string(),
                             item_type: "agent_message".to_string(),
                             status: Some("completed".to_string()),
@@ -25658,10 +25799,42 @@ ORCAS_REPORT_END"#
                             payload: None,
                             detail_kind: Some("agent_message".to_string()),
                             detail: None,
-                        }],
+                        },
                     },
-                },
-            ))
+                ),
+            )
+            .await;
+        service
+            .apply_workstream_codex_event(
+                "ws-headless",
+                EventEnvelope::new(
+                    "test",
+                    OrcasEvent::TurnCompleted {
+                        thread_id: "thread-headless".to_string(),
+                        turn: CodexTurnEvent {
+                            id: "turn-live-1".to_string(),
+                            status: "completed".to_string(),
+                            error_message: None,
+                            error_summary: None,
+                            latest_diff: None,
+                            latest_plan_snapshot: None,
+                            token_usage_snapshot: None,
+                            latest_plan: None,
+                            token_usage: None,
+                            items: vec![CodexItemEvent {
+                                id: "item-live-1".to_string(),
+                                item_type: "agent_message".to_string(),
+                                status: Some("completed".to_string()),
+                                text: Some("live text".to_string()),
+                                summary: Some("live text".to_string()),
+                                payload: None,
+                                detail_kind: Some("agent_message".to_string()),
+                                detail: None,
+                            }],
+                        },
+                    },
+                ),
+            )
             .await;
 
         let thread = service
@@ -29440,48 +29613,60 @@ ORCAS_REPORT_END"#
             .await
             .expect("worker session thread");
         let thread_id = worker_session.thread_id.expect("backing thread id");
+        let auto_tracked_thread = service
+            .authority_tracked_thread_list(ipc::AuthorityTrackedThreadListRequest {
+                work_unit_id: orcas_core::authority::WorkUnitId::parse(work_unit.id.clone())
+                    .expect("work unit id"),
+                include_deleted: false,
+            })
+            .await
+            .expect("tracked threads")
+            .tracked_threads
+            .into_iter()
+            .next()
+            .expect("auto-created tracked thread");
         service
-            .authority_tracked_thread_create(ipc::AuthorityTrackedThreadCreateRequest {
-                command: orcas_core::authority::CreateTrackedThread {
+            .authority_tracked_thread_edit(ipc::AuthorityTrackedThreadEditRequest {
+                command: orcas_core::authority::EditTrackedThread {
                     metadata: metadata("tt"),
-                    tracked_thread_id: orcas_core::authority::TrackedThreadId::parse(
-                        "workspace-tt",
-                    )
-                    .expect("tracked thread id"),
-                    work_unit_id: work_unit.id.clone(),
-                    title: "Workspace lane".to_string(),
-                    notes: Some("Dedicated worktree lane".to_string()),
-                    backend_kind: orcas_core::authority::TrackedThreadBackendKind::Codex,
-                    upstream_thread_id: Some(thread_id.clone()),
-                    preferred_cwd: Some("/home/emmy/git/worktree/orcas".to_string()),
-                    preferred_model: Some("gpt-5.4".to_string()),
-                    workspace: Some(orcas_core::authority::TrackedThreadWorkspace {
-                        repository_root: "/home/emmy/git/worktree/orcas".to_string(),
-                        owner_tracked_thread_id: orcas_core::authority::TrackedThreadId::parse(
-                            "workspace-tt",
-                        )
-                        .expect("tracked thread id"),
-                        strategy:
-                            orcas_core::authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
-                        worktree_path: "/home/emmy/git/worktree/orcas-threads/workspace-tt"
-                            .to_string(),
-                        branch_name: "orcas/workspace-tt".to_string(),
-                        base_ref: "origin/main".to_string(),
-                        base_commit: Some("abc1234".to_string()),
-                        landing_target: "main".to_string(),
-                        landing_policy:
-                            orcas_core::authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
-                        sync_policy:
-                            orcas_core::authority::TrackedThreadWorkspaceSyncPolicy::RebaseBeforeCompletion,
-                        cleanup_policy:
-                            orcas_core::authority::TrackedThreadWorkspaceCleanupPolicy::PruneAfterMerge,
-                        last_reported_head_commit: None,
-                        status: orcas_core::authority::TrackedThreadWorkspaceStatus::Requested,
-                    }),
+                    tracked_thread_id: auto_tracked_thread.id.clone(),
+                    expected_revision: auto_tracked_thread.revision,
+                    changes: orcas_core::authority::TrackedThreadPatch {
+                        title: Some("Workspace lane".to_string()),
+                        notes: Some(Some("Dedicated worktree lane".to_string())),
+                        backend_kind: None,
+                        upstream_thread_id: Some(Some(thread_id.clone())),
+                        binding_state: None,
+                        preferred_cwd: Some(Some("/home/emmy/git/worktree/orcas".to_string())),
+                        preferred_model: Some(Some("gpt-5.4".to_string())),
+                        last_seen_turn_id: None,
+                        workspace: Some(Some(orcas_core::authority::TrackedThreadWorkspace {
+                            repository_root: "/home/emmy/git/worktree/orcas".to_string(),
+                            owner_tracked_thread_id: auto_tracked_thread.id.clone(),
+                            strategy:
+                                orcas_core::authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+                            worktree_path: format!(
+                                "/home/emmy/git/worktree/orcas-threads/{}",
+                                auto_tracked_thread.id
+                            ),
+                            branch_name: format!("orcas/{}", auto_tracked_thread.id),
+                            base_ref: "origin/main".to_string(),
+                            base_commit: Some("abc1234".to_string()),
+                            landing_target: "main".to_string(),
+                            landing_policy:
+                                orcas_core::authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+                            sync_policy:
+                                orcas_core::authority::TrackedThreadWorkspaceSyncPolicy::RebaseBeforeCompletion,
+                            cleanup_policy:
+                                orcas_core::authority::TrackedThreadWorkspaceCleanupPolicy::PruneAfterMerge,
+                            last_reported_head_commit: None,
+                            status: orcas_core::authority::TrackedThreadWorkspaceStatus::Requested,
+                        })),
+                    },
                 },
             })
             .await
-            .expect("tracked thread create");
+            .expect("tracked thread edit");
 
         let bound_session = service
             .state
@@ -29497,7 +29682,7 @@ ORCAS_REPORT_END"#
                 .tracked_thread_id
                 .as_ref()
                 .map(|tracked_thread_id| tracked_thread_id.as_str()),
-            Some("workspace-tt")
+            Some(auto_tracked_thread.id.as_str())
         );
 
         service
@@ -29522,7 +29707,10 @@ ORCAS_REPORT_END"#
         assert_eq!(workspace_contract.tracked_thread_title, "Workspace lane");
         assert_eq!(
             workspace_contract.workspace.worktree_path,
-            "/home/emmy/git/worktree/orcas-threads/workspace-tt"
+            format!(
+                "/home/emmy/git/worktree/orcas-threads/{}",
+                auto_tracked_thread.id
+            )
         );
         assert!(
             refreshed_record
@@ -29552,14 +29740,23 @@ ORCAS_REPORT_END"#
         );
         assert_eq!(
             refreshed_record.packet.execution_context.cwd.as_deref(),
-            Some("/home/emmy/git/worktree/orcas-threads/workspace-tt")
+            Some(
+                format!(
+                    "/home/emmy/git/worktree/orcas-threads/{}",
+                    auto_tracked_thread.id
+                )
+                .as_str()
+            )
         );
         assert!(
             refreshed_record
                 .packet
                 .execution_context
                 .related_repo_roots
-                .contains(&"/home/emmy/git/worktree/orcas-threads/workspace-tt".to_string())
+                .contains(&format!(
+                    "/home/emmy/git/worktree/orcas-threads/{}",
+                    auto_tracked_thread.id
+                ))
         );
 
         let raw_output = wrap_report_envelope(
@@ -29586,10 +29783,13 @@ ORCAS_REPORT_END"#
                     "focus": []
                 },
                 "workspace_report": {
-                    "tracked_thread_id": "workspace-tt",
+                    "tracked_thread_id": auto_tracked_thread.id.clone(),
                     "repository_root": "/home/emmy/git/worktree/orcas",
-                    "worktree_path": "/home/emmy/git/worktree/orcas-threads/workspace-tt",
-                    "branch_name": "orcas/workspace-tt",
+                    "worktree_path": format!(
+                        "/home/emmy/git/worktree/orcas-threads/{}",
+                        auto_tracked_thread.id
+                    ),
+                    "branch_name": format!("orcas/{}", auto_tracked_thread.id),
                     "base_ref": "origin/main",
                     "base_commit": "abc1234",
                     "head_commit": "def5678",
@@ -29638,8 +29838,7 @@ ORCAS_REPORT_END"#
 
         let tracked_thread = service
             .authority_tracked_thread_get(ipc::AuthorityTrackedThreadGetRequest {
-                tracked_thread_id: orcas_core::authority::TrackedThreadId::parse("workspace-tt")
-                    .expect("tracked thread id"),
+                tracked_thread_id: auto_tracked_thread.id.clone(),
             })
             .await
             .expect("tracked thread")
@@ -32076,26 +32275,64 @@ Boundedness note: Stay within the legacy compatibility boundary."#
             needs_supervisor_review: false,
             created_at: Utc::now(),
         };
+        {
+            let mut state = service.state.write().await;
+            state
+                .collaboration
+                .reports
+                .insert(report.id.clone(), report.clone());
+            state
+                .collaboration
+                .assignments
+                .get_mut(&prepared.assignment.id)
+                .expect("assignment")
+                .status = AssignmentStatus::AwaitingDecision;
+            state
+                .collaboration
+                .work_units
+                .get_mut(&work_unit.id)
+                .expect("work unit")
+                .status = WorkUnitStatus::AwaitingDecision;
+            state
+                .collaboration
+                .work_units
+                .get_mut(&work_unit.id)
+                .expect("work unit")
+                .latest_report_id = Some(report.id.clone());
+            state
+                .collaboration
+                .work_units
+                .get_mut(&work_unit.id)
+                .expect("work unit")
+                .current_assignment_id = Some(prepared.assignment.id.clone());
+        }
+        service
+            .persist_collaboration_state()
+            .await
+            .expect("persist");
         service.emit_report_recorded(&report).await;
-        let _ = service
+        service
             .decision_apply(ipc::DecisionApplyRequest {
                 work_unit_id: work_unit.id.clone(),
-                report_id: None,
+                report_id: Some(report.id),
                 decision_type: DecisionType::EscalateToHuman,
                 rationale: "need review".to_string(),
                 instructions: None,
                 worker_id: None,
                 worker_kind: None,
             })
-            .await;
+            .await
+            .expect("decision");
 
         let mut saw_workstream = false;
         let mut saw_work_unit = false;
         let mut saw_assignment = false;
         let mut saw_report = false;
         let mut saw_decision = false;
-        for _ in 0..8 {
-            let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !(saw_workstream && saw_work_unit && saw_assignment && saw_report && saw_decision) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let event = tokio::time::timeout(remaining, events.recv())
                 .await
                 .expect("event timeout")
                 .expect("event");

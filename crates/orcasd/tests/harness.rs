@@ -33,7 +33,16 @@ impl TestDaemon {
         extra_args: Vec<String>,
         extra_env: Vec<(String, String)>,
     ) -> Self {
-        let root = std::env::temp_dir().join(format!("orcasd-it-{test_name}-{}", Uuid::new_v4()));
+        let short_test_name: String = test_name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .take(12)
+            .collect();
+        let short_uuid = Uuid::new_v4().simple().to_string();
+        let root = std::env::temp_dir().join(format!(
+            "od-{short_test_name}-{}",
+            &short_uuid[..8]
+        ));
         let paths = AppPaths::from_home(root.join(".orcas"));
         let mut daemon = Self {
             root,

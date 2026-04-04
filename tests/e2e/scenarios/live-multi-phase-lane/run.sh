@@ -72,7 +72,7 @@ e2e_assert_workstream_runtime "$workstream_id" "$runtime_before_stdout"
 e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 
 phase1_assignment_stdout="$reports_dir/phase1-assignment-start.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$workunit_id" \
   --worker live-multi-phase-lane-worker \
   --worker-kind codex \
@@ -188,7 +188,7 @@ grep -q "approved_proposed_decision_type: Redirect" "$phase1_proposal_get_stdout
 grep -q "approved_draft_assignment_objective: Add one explanatory comment to main.c without changing behavior." "$phase1_proposal_get_stdout"
 
 phase2_assignment_stdout="$reports_dir/phase2-assignment-start.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$workunit_id" \
   --worker live-multi-phase-lane-worker \
   --worker-kind codex \
@@ -251,7 +251,7 @@ grep -q "workspace_worktree_path: $worktree_path" "$phase2_tracked_thread_after_
 grep -q "workspace_branch_name: $branch_name" "$phase2_tracked_thread_after_stdout"
 
 phase2_complete_stdout="$reports_dir/decision-complete-after-phase2.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$phase2_report_id" \
   --type mark-complete \

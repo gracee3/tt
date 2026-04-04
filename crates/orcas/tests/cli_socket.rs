@@ -1053,6 +1053,8 @@ fn create_proposal_via_cli(daemon: &TestDaemon, started: &ipc::AssignmentStartRe
     let create_output = run_orcas(
         daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "create",
             "--workunit",
@@ -1719,6 +1721,7 @@ async fn real_cli_planning_session_approve_stages_revision_proposal_without_appl
     let approve_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "plan",
             "approve",
             "--session",
@@ -1759,6 +1762,7 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
 
     let invalid_create = run_orcas_with_env(
         &[
+            "supervisor",
             "plan",
             "create",
             "--workstream",
@@ -1796,6 +1800,7 @@ async fn real_cli_planning_session_create_rejects_ready_for_review_shortcut_and_
 
     let valid_create = run_orcas_with_env(
         &[
+            "supervisor",
             "plan",
             "create",
             "--workstream",
@@ -1859,6 +1864,7 @@ async fn real_cli_planning_session_request_research_succeeds_once_and_rejects_re
 
     let first_output = run_orcas_with_env(
         &[
+            "supervisor",
             "plan",
             "request-research",
             "--session",
@@ -1891,6 +1897,7 @@ async fn real_cli_planning_session_request_research_succeeds_once_and_rejects_re
 
     let second_output = run_orcas_with_env(
         &[
+            "supervisor",
             "plan",
             "request-research",
             "--session",
@@ -1940,6 +1947,7 @@ async fn real_cli_planning_session_update_summary_stays_descriptive_and_rejects_
     let update_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "plan",
             "update-summary",
             "--session",
@@ -1976,6 +1984,7 @@ async fn real_cli_planning_session_update_summary_stays_descriptive_and_rejects_
     let smuggle_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "plan",
             "update-summary",
             "--session",
@@ -2033,6 +2042,7 @@ async fn real_cli_planning_session_mark_ready_for_review_explicitly_transitions_
     let ready_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "plan",
             "mark-ready-for-review",
             "--session",
@@ -2056,6 +2066,7 @@ async fn real_cli_planning_session_mark_ready_for_review_explicitly_transitions_
     let invalid_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "plan",
             "mark-ready-for-review",
             "--session",
@@ -2160,6 +2171,8 @@ async fn real_cli_can_list_reports_for_workunit_after_real_assignment_setup() {
     let output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "reports",
             "list-for-workunit",
             "--workunit",
@@ -2184,6 +2197,8 @@ async fn real_cli_can_apply_decision_after_real_assignment_setup() {
     let apply_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "decisions",
             "apply",
             "--workunit",
@@ -2262,6 +2277,8 @@ async fn real_cli_can_create_list_and_approve_proposal_after_real_assignment_set
     let list_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "list-for-workunit",
             "--workunit",
@@ -2282,6 +2299,8 @@ async fn real_cli_can_create_list_and_approve_proposal_after_real_assignment_set
     let approve_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "approve",
             "--proposal",
@@ -2339,6 +2358,7 @@ async fn real_cli_can_discover_pending_review_item_via_queue_and_history() {
     let queue_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "queue",
             "--assignment",
@@ -2363,6 +2383,7 @@ async fn real_cli_can_discover_pending_review_item_via_queue_and_history() {
     let history_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "history",
             "--assignment",
@@ -2443,6 +2464,7 @@ async fn real_cli_can_approve_pending_review_item() {
     let approve_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "approve",
             "--decision",
@@ -2509,6 +2531,7 @@ async fn real_cli_can_reject_pending_review_item() {
     let reject_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "reject",
             "--decision",
@@ -2573,6 +2596,7 @@ async fn real_cli_review_queue_and_history_reflect_approval_transition() {
     let queue_before = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "queue",
             "--assignment",
@@ -2591,6 +2615,7 @@ async fn real_cli_review_queue_and_history_reflect_approval_transition() {
     let approve_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "approve",
             "--decision",
@@ -2610,6 +2635,7 @@ async fn real_cli_review_queue_and_history_reflect_approval_transition() {
     let queue_after = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "queue",
             "--assignment",
@@ -2627,6 +2653,7 @@ async fn real_cli_review_queue_and_history_reflect_approval_transition() {
     let history_after = run_orcas(
         &daemon,
         &[
+            "supervisor",
             "review",
             "history",
             "--assignment",
@@ -2686,6 +2713,8 @@ async fn real_cli_can_create_list_and_reject_proposal_after_real_assignment_setu
     let list_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "list-for-workunit",
             "--workunit",
@@ -2704,6 +2733,8 @@ async fn real_cli_can_create_list_and_reject_proposal_after_real_assignment_setu
     let reject_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "reject",
             "--proposal",
@@ -2759,6 +2790,8 @@ async fn real_cli_rejects_approving_non_open_proposal_with_nonzero_exit() {
     let reject_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "reject",
             "--proposal",
@@ -2778,6 +2811,8 @@ async fn real_cli_rejects_approving_non_open_proposal_with_nonzero_exit() {
     let approve_output = run_orcas(
         &daemon,
         &[
+            "supervisor",
+            "work",
             "proposals",
             "approve",
             "--proposal",

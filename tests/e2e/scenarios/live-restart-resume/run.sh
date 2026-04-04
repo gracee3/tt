@@ -89,7 +89,7 @@ e2e_assert_workstream_runtime "$workstream_id" "$runtime_before_stdout"
 e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 
 assignment_stdout="$reports_dir/assignment-start.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$workunit_id" \
   --worker live-restart-resume-worker \
   --worker-kind codex \
@@ -161,7 +161,7 @@ threads_list_after_restart_stdout="$reports_dir/workstream-threads-after-restart
 for _ in $(seq 1 120); do
   "$e2e_bin_dir/orcas.sh" turns get --thread "$thread_id" --turn "$turn_id" \
     >"$turn_get_after_stdout" 2>&1 || true
-  reports_output_final="$("$e2e_bin_dir/orcas.sh" reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
+  reports_output_final="$("$e2e_bin_dir/orcas.sh" supervisor work reports list-for-workunit --workunit "$workunit_id" 2>/dev/null || true)"
   report_id="$(printf '%s\n' "$reports_output_final" | awk -F'\t' '/^report-/ {print $1; exit}')"
   [[ -n "$report_id" ]] && break
   sleep 5

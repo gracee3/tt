@@ -29,9 +29,9 @@ workunit_id="wu-proposals"
 report_id="report-proposals"
 proposal_id="proposal-proposals"
 
-orcas_cli proposals get --proposal "$proposal_id" >"$E2E_SCENARIO_REPORTS_DIR/proposal-get.txt"
-approve_output="$(orcas_cli proposals approve --proposal "$proposal_id" --reviewed-by harness --review-note "Looks good" --rationale "Proposal is valid" --type accept)"
-approved_decision_id="$(printf '%s\n' "$approve_output" | awk -F': ' '/^approved_decision_id:/ {print $2; exit}')"
+orcas_cli supervisor work proposals get --proposal "$proposal_id" >"$E2E_SCENARIO_REPORTS_DIR/proposal-get.txt"
+approve_output="$(orcas_cli supervisor work proposals approve --proposal "$proposal_id" --reviewed-by harness --review-note "Looks good" --rationale "Proposal is valid" --type accept)"
+approved_decision_id="$(printf '%s\n' "$approve_output" | awk -F': ' '/^decision_id:/ {print $2; exit}')"
 
 test -n "$workstream_id"
 test -n "$workunit_id"

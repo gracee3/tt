@@ -165,7 +165,7 @@ e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 lane_a_assignment_start_stdout="$reports_dir/lane_a-assignment-start.txt"
 lane_b_assignment_start_stdout="$reports_dir/lane_b-assignment-start.txt"
 
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$lane_a_workunit_id" \
   --worker live-concurrent-lanes-a \
   --worker-kind codex \
@@ -174,7 +174,7 @@ timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
   >"$lane_a_assignment_start_stdout" 2>&1 &
 lane_a_assignment_start_pid=$!
 
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$lane_b_workunit_id" \
   --worker live-concurrent-lanes-b \
   --worker-kind codex \
@@ -210,13 +210,13 @@ test "$lane_a_thread_id" != "$lane_b_thread_id"
 ! grep -q "Hello, Lane B!" "$lane_a_worktree_path/main.c"
 ! grep -q "Hello, Lane A!" "$lane_b_worktree_path/main.c"
 
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$lane_a_workunit_id" \
   --report "$lane_a_report_id" \
   --type mark-complete \
   --rationale "Close lane A after its bounded live worker turn landed cleanly." \
   >"$lane_a_decision_stdout" 2>&1
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$lane_b_workunit_id" \
   --report "$lane_b_report_id" \
   --type mark-complete \

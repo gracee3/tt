@@ -184,7 +184,7 @@ e2e_orcas supervisor work assignments get --assignment "$phase1_assignment_id" >
 phase1_assignment_status="$(e2e_field_value status "$phase1_assignment_get_stdout")"
 phase1_thread_id="$(e2e_field_value thread_id "$phase1_assignment_stdout")"
 
-git -C "$worktree_path" status --short >"$phase1_git_status_stdout"
+git -C "$worktree_path" status --short | grep -v '^?? \.codex$' >"$phase1_git_status_stdout" || true
 e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$phase1_tracked_stdout"
 e2e_capture_workstream_runtime "$workstream_id" "$runtime_after_phase1_stdout"
 e2e_capture_workstream_threads "$workstream_id" "$threads_after_phase1_stdout"

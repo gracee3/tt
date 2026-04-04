@@ -152,7 +152,7 @@ mod tests {
         assert!(
             index
                 .config_paths
-                .contains(&"analytics.enabled".to_string())
+                .contains(&"profiles.analytics.enabled".to_string())
         );
         assert!(
             index

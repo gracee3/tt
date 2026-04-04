@@ -97,7 +97,7 @@ e2e_assert_workstream_runtime "$workstream_id" "$runtime_before_stdout"
 e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 
 bootstrap_assignment_stdout="$reports_dir/bootstrap-assignment-start.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$workunit_id" \
   --worker live-worktree-lifecycle-worker \
   --worker-kind codex \
@@ -173,7 +173,7 @@ grep -q "workspace_worktree_path: $worktree_path" "$tracked_thread_bound_stdout"
 grep -q "workspace_branch_name: $branch_name" "$tracked_thread_bound_stdout"
 
 bootstrap_continue_stdout="$reports_dir/decision-continue-after-bootstrap.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$bootstrap_report_id" \
   --type continue \
@@ -191,7 +191,7 @@ grep -q "decision_type: Continue" "$bootstrap_continue_stdout"
 grep -q "work_unit_status: Ready" "$bootstrap_continue_stdout"
 
 prepare_workspace_stdout="$reports_dir/prepare-workspace.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prepare \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prepare-workspace \
   --tracked-thread "$tracked_thread_id" \
   --request-note "Confirm the tracked-thread worktree is clean after the bounded fix and report the current workspace state. Do not make additional code changes." \
   >"$prepare_workspace_stdout" 2>&1 || true
@@ -246,7 +246,7 @@ grep -Eq "workspace_operation_status: (Completed|Failed)" "$prepare_workspace_st
 grep -Eq "parse_result: (Parsed|Ambiguous|Invalid)" "$prepare_report_get_stdout"
 
 continue_after_prepare_stdout="$reports_dir/decision-continue-after-prepare.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$prepare_report_id" \
   --type continue \
@@ -320,7 +320,7 @@ grep -q "landing_authorization_status: Authorized" "$authorize_stdout"
 grep -q "landing_authorization_is_current: true" "$authorize_stdout"
 
 continue_after_merge_prep_stdout="$reports_dir/decision-continue-after-merge-prep.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$merge_prep_report_id" \
   --type continue \
@@ -360,7 +360,7 @@ grep -q "landing_execution_status: Completed" "$landing_stdout"
 grep -q "landing_execution_matches_authorization_basis: true" "$landing_stdout"
 
 continue_after_landing_stdout="$reports_dir/decision-continue-after-landing.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$landing_execution_report_id" \
   --type continue \
@@ -378,7 +378,7 @@ grep -q "decision_type: Continue" "$continue_after_landing_stdout"
 grep -q "work_unit_status: Ready" "$continue_after_landing_stdout"
 
 prune_stdout="$reports_dir/prune-workspace.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prune \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" workunit workspace prune-workspace \
   --tracked-thread "$tracked_thread_id" \
   --request-note "Prune the tracked-thread workspace after the successful landing and report the observed cleanup state." \
   >"$prune_stdout" 2>&1 || true
@@ -408,7 +408,7 @@ grep -q "workspace_status: Pruned" "$prune_thread_get_stdout"
 grep -q "workspace_local_exists: false" "$prune_thread_get_stdout"
 
 complete_after_prune_stdout="$reports_dir/decision-complete-after-prune.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" decisions apply \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work decisions apply \
   --workunit "$workunit_id" \
   --report "$prune_operation_id" \
   --type mark-complete \

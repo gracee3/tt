@@ -246,11 +246,14 @@ e2e_use_short_xdg_paths() {
   local suffix="$1"
   [[ -n "$suffix" ]] || e2e_fail "short XDG path suffix is required"
 
-  local short_xdg_root="$e2e_output_root/xdg/$E2E_RUN_ID/$suffix"
+  local run_hash
+  run_hash="$(printf '%s' "$E2E_RUN_ID" | cksum | awk '{print $1}')"
+  local short_root_base="${TMPDIR:-/tmp}/orcas-e2e"
+  local short_xdg_root="$short_root_base/${suffix}-${run_hash}"
   local short_xdg_data_home="$short_xdg_root/data"
   local short_xdg_config_home="$short_xdg_root/config"
   local short_xdg_runtime_home="$short_xdg_root/runtime"
-  local short_orcas_home="$e2e_output_root/orcas/$E2E_RUN_ID/$suffix"
+  local short_orcas_home="$short_root_base/${suffix}-${run_hash}-orcas"
 
   rm -rf "$short_xdg_root" "$short_orcas_home"
   mkdir -p \

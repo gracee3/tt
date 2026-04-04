@@ -71,7 +71,7 @@ e2e_assert_workstream_runtime "$workstream_id" "$runtime_before_stdout"
 e2e_assert_runtime_thread_count "$runtime_before_stdout" 0
 
 assignment_stdout="$reports_dir/assignment-start.txt"
-timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" assignments start \
+timeout "${TIMEOUT_SECONDS}s" "$e2e_bin_dir/orcas.sh" supervisor work assignments start \
   --workunit "$workunit_id" \
   --worker live-worker-direct-patch-worker \
   --worker-kind codex \

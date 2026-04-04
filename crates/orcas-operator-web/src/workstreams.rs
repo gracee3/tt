@@ -603,6 +603,9 @@ mod tests {
             name: None,
             model_provider: "openai:gpt-5.4".to_string(),
             cwd: "/tmp/lane".to_string(),
+            endpoint: Some("ws://127.0.0.1:4500".to_string()),
+            runtime_workstream_id: Some("ws-1".to_string()),
+            owner_workstream_id: Some("ws-1".to_string()),
             status: "idle".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -617,6 +620,7 @@ mod tests {
             recent_output: None,
             recent_event: Some("turn completed".to_string()),
             last_sync_at: Utc::now(),
+            management_state: ipc::ThreadManagementState::Managed,
             source_kind: None,
             raw_summary: None,
         });
