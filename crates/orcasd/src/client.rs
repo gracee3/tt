@@ -202,9 +202,11 @@ impl OrcasIpcClient {
         .await
     }
 
-    pub async fn models_list(&self) -> OrcasResult<ipc::ModelsListResponse> {
-        self.request(ipc::methods::MODELS_LIST, &ipc::Empty::default())
-            .await
+    pub async fn models_list(
+        &self,
+        params: &ipc::ModelsListRequest,
+    ) -> OrcasResult<ipc::ModelsListResponse> {
+        self.request(ipc::methods::MODELS_LIST, params).await
     }
 
     pub async fn threads_list(&self) -> OrcasResult<ipc::ThreadsListResponse> {

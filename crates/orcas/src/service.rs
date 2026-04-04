@@ -887,9 +887,14 @@ impl SupervisorService {
         Ok(())
     }
 
-    pub async fn models_list(&self) -> Result<()> {
+    pub async fn models_list(&self, workstream_id: &str) -> Result<()> {
         let client = self.ready_client().await?;
-        let response = client.models_list().await?;
+        let response = client
+            .models_list(&ipc::ModelsListRequest {
+                workstream_id: workstream_id.to_string(),
+            })
+            .await?;
+        println!("workstream_id: {workstream_id}");
         for model in response.data {
             println!(
                 "{}\t{}\thidden={}\tdefault={}",

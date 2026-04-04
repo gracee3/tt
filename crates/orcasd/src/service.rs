@@ -1689,7 +1689,10 @@ impl OrcasDaemonService {
                 let _: ipc::SessionGetActiveRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.session_get_active().await?)?
             }
-            ipc::methods::MODELS_LIST => serde_json::to_value(self.models_list().await?)?,
+            ipc::methods::MODELS_LIST => {
+                let params: ipc::ModelsListRequest = Self::decode_params(request.params.clone())?;
+                serde_json::to_value(self.models_list(params).await?)?
+            }
             ipc::methods::THREADS_LIST => {
                 let _: ipc::ThreadsListRequest = Self::decode_params(request.params.clone())?;
                 serde_json::to_value(self.threads_list().await?)?
@@ -2202,11 +2205,21 @@ impl OrcasDaemonService {
         })
     }
 
-    async fn models_list(&self) -> OrcasResult<ipc::ModelsListResponse> {
-        debug!(listen_url = %self.config.codex.listen_url, "handling models_list request");
-        self.connect_upstream().await?;
-        let response = self
-            .codex_client
+    async fn models_list(
+        &self,
+        params: ipc::ModelsListRequest,
+    ) -> OrcasResult<ipc::ModelsListResponse> {
+        let workstream_id = authority::WorkstreamId::parse(&params.workstream_id)
+            .map_err(|error| OrcasError::Protocol(format!("invalid workstream id: {error}")))?;
+        let runtime = self.resolve_runtime_for_workstream(&workstream_id).await?;
+        debug!(
+            workstream_id = %workstream_id,
+            endpoint = %runtime.route_info.endpoint,
+            "handling models_list request"
+        );
+        self.connect_runtime_handle(&runtime).await?;
+        let response = runtime
+            .client
             .model_list(types::ModelListParams::default())
             .await?;
         Ok(ipc::ModelsListResponse {
@@ -17458,6 +17471,52 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains("unreachable"))
         );
+    }
+
+    #[tokio::test]
+    async fn models_list_uses_requested_workstream_runtime() {
+        let service = test_service_with_fake_codex_runtime(
+            AppConfig::default(),
+            Arc::new(StaticSupervisorReasoner::default()),
+            "unused",
+            FakeCodexTerminalOutcome::Completed,
+        )
+        .await;
+        let metadata = |label: &str| orcas_core::authority::CommandMetadata {
+            command_id: orcas_core::authority::CommandId::new(),
+            issued_at: Utc::now(),
+            origin_node_id: orcas_core::authority::OriginNodeId::new(),
+            actor: orcas_core::authority::CommandActor::parse("test_operator").expect("actor"),
+            correlation_id: Some(
+                orcas_core::authority::CorrelationId::parse(format!("corr-{label}"))
+                    .expect("correlation id"),
+            ),
+        };
+        let workstream = service
+            .authority_workstream_create(ipc::AuthorityWorkstreamCreateRequest {
+                command: orcas_core::authority::CreateWorkstream {
+                    metadata: metadata("models-list"),
+                    workstream_id: orcas_core::authority::WorkstreamId::parse("models-list-ws")
+                        .expect("workstream id"),
+                    title: "Scoped models".to_string(),
+                    objective: "List models through the workstream runtime".to_string(),
+                    status: WorkstreamStatus::Active,
+                    priority: "medium".to_string(),
+                    execution_scope: None,
+                },
+            })
+            .await
+            .expect("workstream")
+            .workstream;
+
+        let response = service
+            .models_list(ipc::ModelsListRequest {
+                workstream_id: workstream.id.to_string(),
+            })
+            .await
+            .expect("models list");
+
+        assert!(response.data.is_empty());
     }
 
     #[tokio::test]

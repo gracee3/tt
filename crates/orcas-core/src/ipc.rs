@@ -1958,6 +1958,11 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsListRequest {
+    pub workstream_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsListResponse {
     pub data: Vec<ModelSummary>,
 }

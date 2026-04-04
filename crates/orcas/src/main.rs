@@ -141,7 +141,7 @@ enum AppServerCommand {
 
 #[derive(Debug, Subcommand)]
 enum ModelsCommand {
-    List,
+    List(ModelsListArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -347,6 +347,12 @@ enum ReviewCommand {
     ManualRefresh(CodexDecisionManualRefreshArgs),
     Approve(CodexDecisionApproveArgs),
     Reject(CodexDecisionRejectArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+struct ModelsListArgs {
+    #[arg(long)]
+    workstream: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1941,7 +1947,7 @@ async fn main() -> Result<()> {
             let service = SupervisorService::load(&overrides).await?;
             match command {
                 CodexCommand::Models { command } => match command {
-                    ModelsCommand::List => service.models_list().await?,
+                    ModelsCommand::List(args) => service.models_list(&args.workstream).await?,
                 },
                 CodexCommand::Threads { command } => match command {
                     CodexThreadsCommand::List => service.threads_list().await?,
