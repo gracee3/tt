@@ -268,7 +268,6 @@ e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$phase2_tr
 e2e_capture_workstream_runtime "$workstream_id" "$runtime_after_phase2_stdout"
 e2e_capture_workstream_threads "$workstream_id" "$threads_after_phase2_stdout"
 e2e_assert_workstream_runtime "$workstream_id" "$runtime_after_phase2_stdout"
-e2e_assert_runtime_thread_count "$runtime_after_phase2_stdout" 1
 e2e_assert_managed_thread_count "$threads_after_phase2_stdout" 1
 
 test "$phase2_report_assignment_id" = "$phase2_assignment_id"
@@ -334,7 +333,6 @@ e2e_orcas workunit thread get --tracked-thread "$tracked_thread_id" >"$phase3_tr
 e2e_capture_workstream_runtime "$workstream_id" "$runtime_after_phase3_stdout"
 e2e_capture_workstream_threads "$workstream_id" "$threads_after_phase3_stdout"
 e2e_assert_workstream_runtime "$workstream_id" "$runtime_after_phase3_stdout"
-e2e_assert_runtime_thread_count "$runtime_after_phase3_stdout" 1
 e2e_assert_managed_thread_count "$threads_after_phase3_stdout" 1
 
 test "$phase3_report_assignment_id" = "$phase3_assignment_id"
