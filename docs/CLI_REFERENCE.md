@@ -72,6 +72,7 @@ These flags are accepted before any subcommand.
 
 `orcas workstream add` and `orcas codex spawn --new-workstream` generate `worktree/<slug>` branch names by default and create worktree directories under the configured worktree root. The default root is `~/worktrees/orcas`.
 `orcas app-server add default` and `orcas app-server start default` refresh the managed `.codex/` template into the shared app-server `CODEX_HOME`.
+`orcas workstream delete` deletes the authority record only. Use `orcas codex worktree prune <SELECTOR>` when you want to delete the branch, prune the git worktree, and delete the authority record in one lane-oriented operation.
 
 ## Roles
 
@@ -159,6 +160,9 @@ These flags are accepted before any subcommand.
 
 - `orcas codex models list --workstream <ID>`
 - `orcas codex spawn <ROLE> [--workstream <SELECTOR> | --new-workstream <NAME> --repo-root <PATH>] [--headless] [--model <MODEL>]`
+- `orcas codex resume <THREAD> [--cwd <PATH>] [--model <MODEL>]`
+- `orcas codex worktree add <REPO_ROOT> <NAME>`
+- `orcas codex worktree prune <SELECTOR>`
 - `orcas codex threads list --workstream <ID>`
 - `orcas codex threads list-loaded --workstream <ID>`
 - `orcas codex threads read --thread <ID>`
@@ -167,6 +171,8 @@ These flags are accepted before any subcommand.
 - `orcas codex turns list-active`
 - `orcas codex turns recent --thread <ID> [--limit <N>]`
 - `orcas codex turns get --thread <ID> --turn <ID>`
+
+`orcas codex worktree prune` accepts either a workstream selector or a tracked-thread id. It deletes the branch, prunes the worktree, and removes the corresponding authority record.
 
 `threads list` and `threads read` include `management_state`, `owner_workstream_id`, and `runtime_workstream_id`.
 
