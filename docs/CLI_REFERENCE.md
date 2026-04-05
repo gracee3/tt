@@ -26,6 +26,8 @@ These flags are accepted before any subcommand.
 - `orcas events ...`
 - `orcas workstream ...`
 - `orcas workunit ...`
+- `orcas roles ...`
+- `orcas worktrees`
 - `orcas app-server ...`
 - `orcas supervisor ...`
 - `orcas codex ...`
@@ -45,9 +47,13 @@ These flags are accepted before any subcommand.
 
 ## App Server
 
-- `orcas app-server list`
-- `orcas app-server reap [--apply] [--all-tagged] [--include-untagged] [--pid <PID>...]`
-- `orcas app-server info`
+- `orcas app-server add [<NAME>]`
+- `orcas app-server remove [<NAME>]`
+- `orcas app-server start [<NAME>]`
+- `orcas app-server stop [<NAME>]`
+- `orcas app-server restart [<NAME>]`
+- `orcas app-server status [<NAME>]`
+- `orcas app-server info [<NAME>]`
 
 ## Events
 
@@ -56,11 +62,21 @@ These flags are accepted before any subcommand.
 
 ## Workstreams
 
+- `orcas workstream add <REPO_ROOT> <NAME>`
 - `orcas workstreams create --title <TEXT> --objective <TEXT> [--priority <TEXT>]`
 - `orcas workstreams edit --workstream <ID> [--title <TEXT>] [--objective <TEXT>] [--status <active|blocked|completed>] [--priority <TEXT>]`
 - `orcas workstreams delete --workstream <ID>`
 - `orcas workstreams list`
 - `orcas workstreams get --workstream <ID>`
+
+## Roles
+
+- `orcas roles list`
+- `orcas roles info <ROLE>`
+
+## Worktrees
+
+- `orcas worktrees`
 
 ## Workunit
 
@@ -138,6 +154,7 @@ These flags are accepted before any subcommand.
 ## Codex
 
 - `orcas codex models list --workstream <ID>`
+- `orcas codex spawn <ROLE> [--workstream <SELECTOR> | --new-workstream <NAME> --repo-root <PATH>] [--headless] [--model <MODEL>]`
 - `orcas codex threads list --workstream <ID>`
 - `orcas codex threads list-loaded --workstream <ID>`
 - `orcas codex threads read --thread <ID>`
