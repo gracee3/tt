@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::TcpListener as StdTcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -648,13 +648,19 @@ impl OrcasDaemonService {
                 self.reconcile_dedicated_workstream_runtime(workstream, existing, now)
                     .await?
             } else {
+                drop(state);
+                if !Self::shared_runtime_lane_exists(workstream) {
+                    self.authority_store
+                        .delete_workstream_runtime(&workstream.id)
+                        .await?;
+                    continue;
+                }
                 let summary = self.derive_workstream_runtime_summary(
                     workstream,
                     &upstream,
                     shared_live_thread_count,
                     now,
                 );
-                drop(state);
                 summary
             };
             summaries.push(summary);
@@ -680,6 +686,34 @@ impl OrcasDaemonService {
                 .await?;
         }
         Ok(summaries)
+    }
+
+    fn shared_runtime_lane_exists(workstream: &authority::WorkstreamSummary) -> bool {
+        let Some(scope) = workstream.execution_scope.as_ref() else {
+            return true;
+        };
+        if scope.app_server_policy != authority::WorkstreamAppServerPolicy::SharedCurrentDaemon {
+            return true;
+        }
+
+        let codex_home = Path::new(&scope.codex_home);
+        if !codex_home.exists() {
+            return false;
+        }
+
+        let Some(orcas_root) = codex_home.parent() else {
+            return false;
+        };
+        if orcas_root
+            .file_name()
+            .is_none_or(|value| value.to_string_lossy() != ".orcas")
+        {
+            return false;
+        }
+        let Some(worktree_path) = orcas_root.parent() else {
+            return false;
+        };
+        worktree_path.exists()
     }
 
     fn derive_workstream_runtime_summary(
@@ -18166,6 +18200,47 @@ mod tests {
                 .as_deref(),
             Some("ws://127.0.0.1:4900")
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_status_omits_stale_shared_runtime_when_lane_path_is_missing() {
+        let base = std::env::temp_dir().join(format!("orcas-shared-stale-{}", Uuid::new_v4()));
+        let worktree_path = base.join("worktrees/testing");
+        let codex_home = worktree_path.join(".orcas/codex-home");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+        let service = test_service_at(base.clone()).await;
+        create_authority_workstream(
+            &service,
+            "runtime-shared-stale-ws",
+            Some(orcas_core::authority::WorkstreamExecutionScope {
+                codex_home: codex_home.display().to_string(),
+                sqlite_home: None,
+                listen_url: None,
+                transport_kind: orcas_core::authority::WorkstreamTransportKind::LocalAppServer,
+                app_server_policy:
+                    orcas_core::authority::WorkstreamAppServerPolicy::SharedCurrentDaemon,
+                connection_mode:
+                    orcas_core::authority::WorkstreamExecutionConnectionMode::ConnectOnly,
+            }),
+        )
+        .await;
+
+        let first = service.daemon_status().await.expect("first daemon status");
+        assert_eq!(first.workstream_runtimes.len(), 1);
+
+        std::fs::remove_dir_all(&worktree_path).expect("remove worktree");
+
+        let second = service.daemon_status().await.expect("second daemon status");
+        assert!(second.workstream_runtimes.is_empty());
+        let persisted = service
+            .authority_store
+            .get_workstream_runtime(
+                &orcas_core::authority::WorkstreamId::parse("runtime-shared-stale-ws")
+                    .expect("workstream id"),
+            )
+            .await
+            .expect("runtime row lookup");
+        assert!(persisted.is_none());
     }
 
     #[tokio::test]
