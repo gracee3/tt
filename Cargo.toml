@@ -9,6 +9,15 @@ members = [
     "crates/orcas",
     "crates/orcas-server",
 ]
+default-members = [
+    "crates/orcas-core",
+    "crates/orcas-codex",
+    "crates/orcasd",
+    "crates/orcas-server-client",
+    "crates/orcas-operator-core",
+    "crates/orcas",
+    "crates/orcas-server",
+]
 resolver = "2"
 
 [workspace.package]
