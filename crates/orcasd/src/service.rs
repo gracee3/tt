@@ -15615,9 +15615,10 @@ Call out blockers, uncertainty, or risky/destructive changes before taking them.
 
     fn codex_launch_for_upstream_connect(mode: CodexConnectionMode) -> CodexDaemonLaunch {
         match mode {
-            CodexConnectionMode::ConnectOnly
-            | CodexConnectionMode::SpawnIfNeeded
-            | CodexConnectionMode::SpawnAlways => CodexDaemonLaunch::Never,
+            CodexConnectionMode::ConnectOnly => CodexDaemonLaunch::Never,
+            CodexConnectionMode::SpawnIfNeeded | CodexConnectionMode::SpawnAlways => {
+                CodexDaemonLaunch::IfNeeded
+            }
         }
     }
 

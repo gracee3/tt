@@ -1421,10 +1421,7 @@ async fn real_cli_can_edit_and_delete_authority_workstream() {
         orcas_core::WorkstreamStatus::Blocked
     );
 
-    let delete_output = run_orcas(
-        &daemon,
-        &["workstreams", "delete", "--workstream", &workstream_id],
-    );
+    let delete_output = run_orcas(&daemon, &["workstreams", "delete", &workstream_id]);
     assert!(
         delete_output.status.success(),
         "stderr: {}",
