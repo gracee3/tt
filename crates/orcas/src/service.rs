@@ -902,6 +902,7 @@ impl SupervisorService {
         repo_root: PathBuf,
         name: String,
     ) -> Result<ResolvedSpawnWorkstream> {
+        let client = self.daemon_state_client().await?;
         let repo_root = repo_root.canonicalize().map_err(|error| {
             anyhow!(
                 "failed to canonicalize repo root {}: {error}",
@@ -938,7 +939,6 @@ impl SupervisorService {
             Some(authority::WorkstreamAppServerPolicy::SharedCurrentDaemon),
             Some(authority::WorkstreamExecutionConnectionMode::ConnectOnly),
         )?;
-        let client = self.daemon_state_client().await?;
         let response = client
             .authority_workstream_create(&ipc::AuthorityWorkstreamCreateRequest {
                 command: authority::CreateWorkstream {
@@ -1396,14 +1396,23 @@ impl SupervisorService {
         headless: bool,
         model: Option<String>,
     ) -> Result<()> {
-        let resolved = match (workstream_selector, new_workstream) {
+        let role_prompt = self.load_role_prompt(role).await?;
+
+        match (workstream_selector, new_workstream) {
             (Some(_), Some(_)) => bail!(
                 "use either --workstream <selector> or --new-workstream <name>, not both"
             ),
+            (None, Some(_)) if repo_root.is_none() => {
+                bail!("`--repo-root <path>` is required with `--new-workstream <name>`")
+            }
+            _ => {}
+        }
+
+        self.ready_client().await?;
+
+        let resolved = match (workstream_selector, new_workstream) {
             (None, Some(name)) => {
-                let repo_root = repo_root.ok_or_else(|| {
-                    anyhow!("`--repo-root <path>` is required with `--new-workstream <name>`")
-                })?;
+                let repo_root = repo_root.expect("validated repo root");
                 self.workstream_add_internal(repo_root, name.to_string()).await?
             }
             (Some(selector), None) => self.resolve_workstream_selector(selector).await?,
@@ -1413,9 +1422,9 @@ impl SupervisorService {
                     "workstream is required; pass `--workstream <selector>` or `--new-workstream <name> --repo-root <path>`"
                 );
             }
+            (Some(_), Some(_)) => unreachable!("validated above"),
         };
 
-        let role_prompt = self.load_role_prompt(role).await?;
         let bootstrap_prompt = format!(
             "You are starting an Orcas-managed Codex session.\n\nRole: {role}\nWorkstream: {} ({})\nWorktree: {}\nMode: {}\n\nRole instructions:\n{}\n\nRespond with:\n1. A concise acknowledgement of the role and workstream.\n2. The cwd you will operate from.\n3. The first actions you will take.\n4. A note that the session will remain ready for the next turn.\n",
             resolved.workstream.title,
@@ -4454,7 +4463,6 @@ impl SupervisorService {
         thread_id: &str,
         reporter: &mut dyn StreamReporter,
     ) -> Result<()> {
-        let retry_policy = RetryPolicy::default();
         let request = ThreadResumeRequest {
             thread_id: thread_id.to_string(),
             cwd: self
@@ -4465,31 +4473,13 @@ impl SupervisorService {
                 .map(|path| path.display().to_string()),
             model: self.config.defaults.model.clone(),
         };
-        let mut delay = retry_policy.base_delay;
-
-        for attempt in 1..=retry_policy.max_attempts {
-            let client = self.ready_client().await?;
-            match client.thread_resume(&request).await {
-                Ok(_) => return Ok(()),
-                Err(error) => {
-                    if attempt == retry_policy.max_attempts {
-                        reporter.status(
-                            "[daemon connection was lost while resuming the thread; resume could not be confirmed]",
-                        );
-                        return Err(error.into());
-                    }
-
-                    reporter.status(&format!(
-                        "[daemon connection was lost while resuming the thread; retrying ({attempt}/{})]",
-                        retry_policy.max_attempts
-                    ));
-                    sleep(delay).await;
-                    delay = (delay * 2).min(retry_policy.max_delay);
-                }
-            }
-        }
-
-        Ok(())
+        let client = self.ready_client().await?;
+        client.thread_resume(&request).await.map(|_| ()).map_err(|error| {
+            reporter.status(
+                "[daemon connection was lost while resuming the thread; resume could not be confirmed]",
+            );
+            error.into()
+        })
     }
 
     async fn start_thread_for_streaming(
@@ -4950,36 +4940,16 @@ impl SupervisorService {
     }
 
     async fn ready_client(&self) -> Result<Arc<OrcasIpcClient>> {
-        let launch = if self.overrides.force_spawn {
-            OrcasDaemonLaunch::Always
-        } else {
-            OrcasDaemonLaunch::IfNeeded
-        };
-        let mut last_error: Option<Error> = None;
-        let mut delay = Duration::from_millis(100);
-
-        for _ in 0..5 {
-            let client = self.connect_client(launch).await?;
-            match client.daemon_connect().await {
-                Ok(_) => return Ok(client),
-                Err(error) => {
-                    last_error = Some(Error::new(error).context("connect Orcas daemon to Codex"));
-                    sleep(delay).await;
-                    delay = (delay * 2).min(Duration::from_millis(800));
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| Error::msg("connect Orcas daemon to Codex")))
+        let client = self.connect_client_once(OrcasDaemonLaunch::Never).await?;
+        client
+            .daemon_connect()
+            .await
+            .map_err(|error| Error::new(error).context("connect Orcas daemon to Codex"))?;
+        Ok(client)
     }
 
     async fn daemon_state_client(&self) -> Result<Arc<OrcasIpcClient>> {
-        let launch = if self.overrides.force_spawn {
-            OrcasDaemonLaunch::Always
-        } else {
-            OrcasDaemonLaunch::IfNeeded
-        };
-        self.connect_client(launch).await
+        self.connect_client_once(OrcasDaemonLaunch::Never).await
     }
 
     async fn connect_client(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
@@ -5003,6 +4973,29 @@ impl SupervisorService {
         }
 
         Err(last_error.unwrap_or_else(|| Error::msg("connect to Orcas daemon")))
+    }
+
+    async fn connect_client_once(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
+        let status = self.daemon.ensure_running(launch).await.map_err(Error::new)?;
+        OrcasIpcClient::connect(&self.paths).await.map_err(|error| {
+            let detail = if status.running {
+                format!(
+                    "orcasd appears to be running, but the socket at {} is stale or unreachable",
+                    status.socket_path.display()
+                )
+            } else if status.stale_socket || status.stale_metadata || status.socket_exists {
+                format!(
+                    "orcasd is not reachable and the socket at {} appears stale or unreachable",
+                    status.socket_path.display()
+                )
+            } else {
+                format!(
+                    "orcasd is not running; start it with `orcas daemon start` ({})",
+                    status.socket_path.display()
+                )
+            };
+            Error::new(error).context(detail)
+        })
     }
 
     fn print_event_summary(event: &ipc::EventSummary) {
