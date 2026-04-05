@@ -18,7 +18,7 @@ use remote::{RemoteCommand, run_remote};
 use service::{RuntimeOverrides, SupervisorService};
 
 #[derive(Debug, Parser)]
-#[command(name = "orcas", version, about = "Orcas operator CLI")]
+#[command(name = "tt", version, about = "tt control plane")]
 struct Cli {
     #[command(flatten)]
     global: GlobalOptions,
@@ -65,7 +65,7 @@ struct GlobalOptions {
     #[arg(
         long,
         global = true,
-        help = "Override the default worktree root for workstream and Codex spawn commands"
+        help = "Override the default worktree root for project and Codex spawn commands"
     )]
     worktree_root: Option<PathBuf>,
     #[arg(
@@ -107,11 +107,12 @@ enum TopCommand {
         #[command(subcommand)]
         command: EventsCommand,
     },
-    #[command(name = "workstream", alias = "workstreams")]
+    #[command(name = "project")]
     Workstream {
         #[command(subcommand)]
         command: WorkstreamCommand,
     },
+    #[command(name = "worktree")]
     Workunit {
         #[command(subcommand)]
         command: WorkunitCommand,
@@ -125,12 +126,21 @@ enum TopCommand {
         #[command(subcommand)]
         command: AppServerCommand,
     },
-    #[command(about = "Open the Orcas dashboard TUI")]
+    #[command(about = "Open the tt dashboard TUI")]
     Tui,
     Supervisor {
         #[command(subcommand)]
         command: SupervisorCommand,
     },
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+    I3 {
+        #[command(subcommand)]
+        command: I3Command,
+    },
+    #[command(hide = true)]
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
@@ -140,7 +150,7 @@ enum TopCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Launch and manage the Orcas daemon")]
+#[command(about = "Launch and manage the tt daemon")]
 enum DaemonCommand {
     Start,
     Status,
@@ -149,7 +159,7 @@ enum DaemonCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Manage the shared Orcas app-server lifecycle")]
+#[command(about = "Manage the shared tt app-server lifecycle")]
 enum AppServerCommand {
     Add(AppServerNameArgs),
     Remove(AppServerNameArgs),
@@ -161,7 +171,7 @@ enum AppServerCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Inspect Orcas role definitions")]
+#[command(about = "Inspect tt role definitions")]
 enum RolesCommand {
     List,
     Info(RoleRefArgs),
@@ -200,7 +210,7 @@ enum EventsCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Manage durable Orcas workstream records")]
+#[command(about = "Manage durable tt project records")]
 enum WorkstreamCommand {
     Add(WorkstreamAddArgs),
     Create(WorkstreamCreateArgs),
@@ -328,6 +338,21 @@ enum CodexCommand {
         #[command(subcommand)]
         command: TurnsCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AppCommand {
+    Codex {
+        #[command(subcommand)]
+        command: CodexCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum I3Command {
+    Status,
+    Start,
+    Attach,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1471,8 +1496,8 @@ struct QuickstartArgs {
 async fn main() -> Result<()> {
     let paths = AppPaths::discover()?;
     paths.ensure().await?;
-    init_file_logger("orcas", &paths.logs_dir.join("orcas.log"))?;
-    info!("starting orcas process");
+    init_file_logger("tt", &paths.logs_dir.join("tt.log"))?;
+    info!("starting tt process");
 
     let cli = Cli::parse();
     let global = cli.global.clone();
@@ -2051,6 +2076,76 @@ async fn main() -> Result<()> {
             let service = SupervisorService::load(&overrides).await?;
             tui::run_dashboard(service).await?;
         }
+        TopCommand::App { command } => {
+            let service = SupervisorService::load(&overrides).await?;
+            match command {
+                AppCommand::Codex { command } => match command {
+                    CodexCommand::Models { command } => match command {
+                        ModelsCommand::List(args) => service.models_list(&args.workstream).await?,
+                    },
+                    CodexCommand::Spawn(args) => {
+                        service
+                            .codex_spawn(
+                                &args.role,
+                                args.workstream.as_deref(),
+                                args.new_workstream.as_deref(),
+                                args.repo_root,
+                                args.headless,
+                                args.model,
+                            )
+                            .await?;
+                    }
+                    CodexCommand::Resume(args) => {
+                        service
+                            .thread_resume(&args.thread, args.cwd, args.model)
+                            .await?;
+                    }
+                    CodexCommand::Worktree { command } => match command {
+                        CodexWorktreeCommand::Add(args) => {
+                            service.workstream_add(args.repo_root, args.name).await?;
+                        }
+                        CodexWorktreeCommand::Prune(args) => {
+                            service.codex_worktree_prune(&args.selector).await?;
+                        }
+                    },
+                    CodexCommand::Threads { command } => match command {
+                        CodexThreadsCommand::List(args) => {
+                            service.threads_list(&args.workstream).await?
+                        }
+                        CodexThreadsCommand::ListLoaded(args) => {
+                            service.threads_list_loaded(&args.workstream).await?
+                        }
+                        CodexThreadsCommand::Read(args) => {
+                            service.thread_read(&args.thread).await?
+                        }
+                        CodexThreadsCommand::Start(args) => {
+                            service
+                                .thread_start(args.cwd, args.model, args.ephemeral)
+                                .await?;
+                        }
+                        CodexThreadsCommand::Resume(args) => {
+                            service
+                                .thread_resume(&args.thread, args.cwd, args.model)
+                                .await?;
+                        }
+                    },
+                    CodexCommand::Turns { command } => match command {
+                        TurnsCommand::ListActive => service.turns_list_active().await?,
+                        TurnsCommand::Recent(args) => {
+                            service.turns_recent(&args.thread, args.limit).await?
+                        }
+                        TurnsCommand::Get(args) => {
+                            service.turn_get(&args.thread, &args.turn).await?
+                        }
+                    },
+                },
+            }
+        }
+        TopCommand::I3 { command } => match command {
+            I3Command::Status => println!("i3 adapter: not yet implemented"),
+            I3Command::Start => println!("i3 adapter: not yet implemented"),
+            I3Command::Attach => println!("i3 adapter: not yet implemented"),
+        },
         TopCommand::Codex { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
@@ -2133,7 +2228,7 @@ mod tests {
     fn top_level_help_mentions_operator_cli() {
         let help = Cli::command().render_help().to_string();
 
-        assert!(help.contains("Orcas operator CLI"));
+        assert!(help.contains("tt control plane"));
         assert!(help.contains("--version"));
     }
 
@@ -2153,7 +2248,7 @@ mod tests {
             .render_help()
             .to_string();
 
-        assert!(help.contains("Launch and manage the Orcas daemon"));
+        assert!(help.contains("Launch and manage the tt daemon"));
     }
 
     #[test]
@@ -2171,8 +2266,8 @@ mod tests {
     fn top_level_help_mentions_only_canonical_namespace_groups() {
         let help = Cli::command().render_help().to_string();
 
-        assert!(help.contains("workstream"));
-        assert!(help.contains("workunit"));
+        assert!(help.contains("project"));
+        assert!(help.contains("worktree"));
         assert!(help.contains("roles"));
         assert!(help.contains("worktrees"));
         assert!(help.contains("app-server"));
@@ -2186,20 +2281,20 @@ mod tests {
     }
 
     #[test]
-    fn workstream_help_marks_surface_as_durable() {
+    fn project_help_marks_surface_as_durable() {
         let mut command = Cli::command();
         let help = command
-            .find_subcommand_mut("workstream")
-            .expect("workstream subcommand")
+            .find_subcommand_mut("project")
+            .expect("project subcommand")
             .render_help()
             .to_string();
 
-        assert!(help.contains("Manage durable Orcas workstream records"));
+        assert!(help.contains("Manage durable tt project records"));
     }
 
     #[test]
     fn parses_top_level_daemon_status_command() {
-        let cli = Cli::parse_from(["orcas", "daemon", "status"]);
+        let cli = Cli::parse_from(["tt", "daemon", "status"]);
 
         match cli.command {
             TopCommand::Daemon {
@@ -2211,7 +2306,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_app_server_start_command() {
-        let cli = Cli::parse_from(["orcas", "app-server", "start", "default"]);
+        let cli = Cli::parse_from(["tt", "app-server", "start", "default"]);
 
         match cli.command {
             TopCommand::AppServer {
@@ -2223,7 +2318,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_app_server_status_command() {
-        let cli = Cli::parse_from(["orcas", "app-server", "status"]);
+        let cli = Cli::parse_from(["tt", "app-server", "status"]);
 
         match cli.command {
             TopCommand::AppServer {
@@ -2237,7 +2332,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_app_server_info_command() {
-        let cli = Cli::parse_from(["orcas", "app-server", "info", "default"]);
+        let cli = Cli::parse_from(["tt", "app-server", "info", "default"]);
 
         match cli.command {
             TopCommand::AppServer {
@@ -2251,7 +2346,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_roles_list_command() {
-        let cli = Cli::parse_from(["orcas", "roles", "list"]);
+        let cli = Cli::parse_from(["tt", "roles", "list"]);
 
         match cli.command {
             TopCommand::Roles {
@@ -2263,7 +2358,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_roles_info_command() {
-        let cli = Cli::parse_from(["orcas", "roles", "info", "plan"]);
+        let cli = Cli::parse_from(["tt", "roles", "info", "plan"]);
 
         match cli.command {
             TopCommand::Roles {
@@ -2277,7 +2372,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_worktrees_command() {
-        let cli = Cli::parse_from(["orcas", "worktrees"]);
+        let cli = Cli::parse_from(["tt", "worktrees"]);
 
         match cli.command {
             TopCommand::Worktrees => {}
@@ -2287,7 +2382,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_tui_command() {
-        let cli = Cli::parse_from(["orcas", "tui"]);
+        let cli = Cli::parse_from(["tt", "tui"]);
 
         match cli.command {
             TopCommand::Tui => {}
@@ -2297,7 +2392,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_doctor_command() {
-        let cli = Cli::parse_from(["orcas", "doctor"]);
+        let cli = Cli::parse_from(["tt", "doctor"]);
 
         match cli.command {
             TopCommand::Doctor => {}
@@ -2307,7 +2402,7 @@ mod tests {
 
     #[test]
     fn parses_supervisor_session_active_command() {
-        let cli = Cli::parse_from(["orcas", "supervisor", "session", "active"]);
+        let cli = Cli::parse_from(["tt", "supervisor", "session", "active"]);
 
         match cli.command {
             TopCommand::Supervisor {
@@ -2322,7 +2417,7 @@ mod tests {
 
     #[test]
     fn parses_codex_turns_recent_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "turns", "recent", "--thread", "thread-1"]);
+        let cli = Cli::parse_from(["tt", "codex", "turns", "recent", "--thread", "thread-1"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2341,7 +2436,7 @@ mod tests {
     #[test]
     fn parses_codex_spawn_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "codex",
             "spawn",
             "plan",
@@ -2367,7 +2462,7 @@ mod tests {
 
     #[test]
     fn parses_codex_resume_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "resume", "thread-1", "--model", "gpt-5.4"]);
+        let cli = Cli::parse_from(["tt", "codex", "resume", "thread-1", "--model", "gpt-5.4"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2382,7 +2477,7 @@ mod tests {
 
     #[test]
     fn parses_codex_worktree_add_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "worktree", "add", "/tmp/repo", "ws-1"]);
+        let cli = Cli::parse_from(["tt", "codex", "worktree", "add", "/tmp/repo", "ws-1"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2400,7 +2495,7 @@ mod tests {
 
     #[test]
     fn parses_codex_worktree_prune_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "worktree", "prune", "testing"]);
+        let cli = Cli::parse_from(["tt", "codex", "worktree", "prune", "testing"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2417,7 +2512,7 @@ mod tests {
 
     #[test]
     fn parses_events_watch_command() {
-        let cli = Cli::parse_from(["orcas", "events", "watch", "--snapshot", "--count", "5"]);
+        let cli = Cli::parse_from(["tt", "events", "watch", "--snapshot", "--count", "5"]);
 
         match cli.command {
             TopCommand::Events {
@@ -2432,7 +2527,7 @@ mod tests {
 
     #[test]
     fn global_runtime_mode_flags_conflict() {
-        let result = Cli::try_parse_from(["orcas", "--connect-only", "--force-spawn", "doctor"]);
+        let result = Cli::try_parse_from(["tt", "--connect-only", "--force-spawn", "doctor"]);
 
         assert!(result.is_err());
     }
@@ -2440,8 +2535,8 @@ mod tests {
     #[test]
     fn parses_workunit_thread_add_command() {
         let cli = Cli::parse_from([
-            "orcas",
-            "workunit",
+            "tt",
+            "worktree",
             "thread",
             "add",
             "--workunit",
@@ -2490,7 +2585,7 @@ mod tests {
 
     #[test]
     fn parses_workstream_delete_with_positional_selector() {
-        let cli = Cli::parse_from(["orcas", "workstream", "delete", "testing"]);
+        let cli = Cli::parse_from(["tt", "project", "delete", "testing"]);
 
         match cli.command {
             TopCommand::Workstream {
@@ -2504,8 +2599,7 @@ mod tests {
 
     #[test]
     fn rejects_legacy_flagged_workstream_delete_selector() {
-        let result =
-            Cli::try_parse_from(["orcas", "workstream", "delete", "--workstream", "testing"]);
+        let result = Cli::try_parse_from(["tt", "project", "delete", "--workstream", "testing"]);
 
         assert!(result.is_err());
     }
@@ -2513,8 +2607,8 @@ mod tests {
     #[test]
     fn parses_workunit_thread_set_command() {
         let cli = Cli::parse_from([
-            "orcas",
-            "workunit",
+            "tt",
+            "worktree",
             "thread",
             "set",
             "--tracked-thread",
@@ -2546,8 +2640,8 @@ mod tests {
     #[test]
     fn parses_workunit_workspace_merge_prep_command() {
         let cli = Cli::parse_from([
-            "orcas",
-            "workunit",
+            "tt",
+            "worktree",
             "workspace",
             "merge-prep",
             "--tracked-thread",
@@ -2570,38 +2664,38 @@ mod tests {
 
     #[test]
     fn legacy_workstream_namespace_is_not_exposed() {
-        assert!(Cli::try_parse_from(["orcas", "legacy-workstreams", "create"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "legacy-workstreams", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "legacy-workstreams", "create"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "legacy-workstreams", "list"]).is_err());
     }
 
     #[test]
     fn legacy_workunit_namespace_is_not_exposed() {
-        assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "create"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "legacy-workunits", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "legacy-workunits", "create"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "legacy-workunits", "list"]).is_err());
     }
 
     #[test]
     fn rejects_removed_workunits_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "workunits", "list"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "workunits", "get", "--workunit", "wu-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "workunits", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "workunits", "get", "--workunit", "wu-1"]).is_err());
     }
 
     #[test]
     fn rejects_removed_tracked_threads_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "tracked-threads", "create"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "tracked-threads", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "tracked-threads", "create"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "tracked-threads", "list"]).is_err());
     }
 
     #[test]
     fn rejects_removed_planning_sessions_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "planning-sessions", "create"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "planning-sessions", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "planning-sessions", "create"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "planning-sessions", "list"]).is_err());
     }
 
     #[test]
     fn parses_supervisor_review_propose_steer_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "propose-steer",
@@ -2631,7 +2725,7 @@ mod tests {
     #[test]
     fn parses_supervisor_plan_create_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "plan",
             "create",
@@ -2661,7 +2755,7 @@ mod tests {
     #[test]
     fn parses_supervisor_plan_mark_ready_for_review_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "plan",
             "mark-ready-for-review",
@@ -2687,7 +2781,7 @@ mod tests {
 
     #[test]
     fn parses_codex_models_list_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "models", "list", "--workstream", "ws-1"]);
+        let cli = Cli::parse_from(["tt", "codex", "models", "list", "--workstream", "ws-1"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2705,7 +2799,7 @@ mod tests {
     #[test]
     fn parses_codex_threads_start_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "codex",
             "threads",
             "start",
@@ -2734,7 +2828,7 @@ mod tests {
     #[test]
     fn parses_codex_threads_resume_command() {
         let cli = Cli::parse_from([
-            "orcas", "codex", "threads", "resume", "--thread", "thread-1", "--model", "gpt-5.4",
+            "tt", "codex", "threads", "resume", "--thread", "thread-1", "--model", "gpt-5.4",
         ]);
 
         match cli.command {
@@ -2753,7 +2847,7 @@ mod tests {
 
     #[test]
     fn parses_codex_threads_read_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "threads", "read", "--thread", "thread-1"]);
+        let cli = Cli::parse_from(["tt", "codex", "threads", "read", "--thread", "thread-1"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2770,7 +2864,7 @@ mod tests {
 
     #[test]
     fn parses_codex_threads_list_command() {
-        let cli = Cli::parse_from(["orcas", "codex", "threads", "list", "--workstream", "ws-1"]);
+        let cli = Cli::parse_from(["tt", "codex", "threads", "list", "--workstream", "ws-1"]);
 
         match cli.command {
             TopCommand::Codex {
@@ -2788,7 +2882,7 @@ mod tests {
     #[test]
     fn parses_codex_threads_list_loaded_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "codex",
             "threads",
             "list-loaded",
@@ -2811,7 +2905,7 @@ mod tests {
 
     #[test]
     fn parses_workstream_add_command() {
-        let cli = Cli::parse_from(["orcas", "workstream", "add", "/tmp/repo", "ws-1"]);
+        let cli = Cli::parse_from(["tt", "project", "add", "/tmp/repo", "ws-1"]);
 
         match cli.command {
             TopCommand::Workstream {
@@ -2826,26 +2920,24 @@ mod tests {
 
     #[test]
     fn rejects_removed_top_level_models_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "models", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "models", "list"]).is_err());
     }
 
     #[test]
     fn rejects_removed_top_level_thread_runtime_commands() {
-        assert!(Cli::try_parse_from(["orcas", "threads", "read", "--thread", "thread-1"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "threads", "start"]).is_err());
-        assert!(
-            Cli::try_parse_from(["orcas", "threads", "resume", "--thread", "thread-1"]).is_err()
-        );
-        assert!(Cli::try_parse_from(["orcas", "threads", "list-loaded"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "threads", "read", "--thread", "thread-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "threads", "start"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "threads", "resume", "--thread", "thread-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "threads", "list-loaded"]).is_err());
     }
 
     #[test]
     fn rejects_removed_top_level_turns_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "turns", "recent", "--thread", "thread-1"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "turns", "list-active"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "turns", "recent", "--thread", "thread-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "turns", "list-active"]).is_err());
         assert!(
             Cli::try_parse_from([
-                "orcas", "turns", "get", "--thread", "thread-1", "--turn", "t-1"
+                "tt", "turns", "get", "--thread", "thread-1", "--turn", "t-1"
             ])
             .is_err()
         );
@@ -2853,20 +2945,20 @@ mod tests {
 
     #[test]
     fn rejects_removed_daemon_app_server_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "daemon", "discover-app-servers"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "daemon", "reap-app-servers"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "daemon", "discover-app-servers"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "daemon", "reap-app-servers"]).is_err());
     }
 
     #[test]
     fn rejects_removed_codex_review_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "codex", "review", "list"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "codex", "review", "get"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "codex", "review", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "codex", "review", "get"]).is_err());
     }
 
     #[test]
     fn parses_supervisor_review_replace_pending_steer_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "replace-pending-steer",
@@ -2893,7 +2985,7 @@ mod tests {
     #[test]
     fn parses_supervisor_review_record_no_action_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "record-no-action",
@@ -2920,7 +3012,7 @@ mod tests {
     #[test]
     fn parses_supervisor_review_manual_refresh_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "manual-refresh",
@@ -2948,7 +3040,7 @@ mod tests {
     #[test]
     fn parses_supervisor_review_queue_command_with_filters() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "queue",
@@ -2981,7 +3073,7 @@ mod tests {
     #[test]
     fn parses_supervisor_review_history_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "review",
             "history",
@@ -3009,7 +3101,7 @@ mod tests {
     #[test]
     fn parses_supervisor_proposal_artifact_summary_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "work",
             "proposals",
@@ -3037,7 +3129,7 @@ mod tests {
     #[test]
     fn parses_supervisor_proposal_artifact_detail_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "work",
             "proposals",
@@ -3065,7 +3157,7 @@ mod tests {
     #[test]
     fn parses_supervisor_proposal_artifact_export_command() {
         let cli = Cli::parse_from([
-            "orcas",
+            "tt",
             "supervisor",
             "work",
             "proposals",
@@ -3098,26 +3190,22 @@ mod tests {
 
     #[test]
     fn rejects_removed_top_level_supervisor_peer_namespaces() {
-        assert!(Cli::try_parse_from(["orcas", "plan", "create"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "assignments", "start"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "reports", "get", "--report", "r-1"]).is_err());
-        assert!(
-            Cli::try_parse_from(["orcas", "proposals", "create", "--workunit", "wu-1"]).is_err()
-        );
-        assert!(
-            Cli::try_parse_from(["orcas", "decisions", "apply", "--workunit", "wu-1"]).is_err()
-        );
-        assert!(Cli::try_parse_from(["orcas", "review", "list"]).is_err());
-        assert!(Cli::try_parse_from(["orcas", "session", "active"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "plan", "create"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "assignments", "start"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "reports", "get", "--report", "r-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "proposals", "create", "--workunit", "wu-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "decisions", "apply", "--workunit", "wu-1"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "review", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "session", "active"]).is_err());
     }
 
     #[test]
     fn rejects_codex_decisions_namespace() {
-        assert!(Cli::try_parse_from(["orcas", "codex", "decisions", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "codex", "decisions", "list"]).is_err());
     }
 
     #[test]
     fn rejects_flat_codex_review_verbs() {
-        assert!(Cli::try_parse_from(["orcas", "codex", "list"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "codex", "list"]).is_err());
     }
 }

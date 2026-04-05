@@ -37,7 +37,7 @@ fn run_orcas(daemon: &TestDaemon, args: &[&str]) -> std::process::Output {
 }
 
 fn run_orcas_with_env(args: &[&str], envs: &[(String, String)]) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orcas"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tt"));
     command.arg("--connect-only");
     command.args(args);
     for (key, value) in envs {
@@ -355,7 +355,7 @@ fn create_cli_workstream(daemon: &TestDaemon, label: &str) -> String {
     let create_output = run_orcas(
         daemon,
         &[
-            "workstreams",
+            "project",
             "create",
             "--title",
             &format!("CLI {label} Root"),
@@ -1144,12 +1144,7 @@ async fn real_cli_can_observe_hierarchy_via_workstream_get() {
 
     let output = run_orcas(
         &daemon,
-        &[
-            "workstreams",
-            "get",
-            "--workstream",
-            &workstream.id.to_string(),
-        ],
+        &["project", "get", "--workstream", &workstream.id.to_string()],
     );
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
@@ -1202,7 +1197,7 @@ async fn real_cli_can_read_workunit_detail_after_real_setup() {
 
     let output = run_orcas(
         &daemon,
-        &["workunit", "get", "--workunit", &work_unit.id.to_string()],
+        &["worktree", "get", "--workunit", &work_unit.id.to_string()],
     );
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
@@ -1231,7 +1226,7 @@ async fn real_cli_can_create_workstream_and_read_it_back() {
     let create_output = run_orcas(
         &daemon,
         &[
-            "workstreams",
+            "project",
             "create",
             "--title",
             "CLI Created Root",
@@ -1254,10 +1249,7 @@ async fn real_cli_can_create_workstream_and_read_it_back() {
     assert!(create_stdout.contains("revision: 1"));
     assert!(create_stdout.contains("status: Active"));
 
-    let get_output = run_orcas(
-        &daemon,
-        &["workstreams", "get", "--workstream", &workstream_id],
-    );
+    let get_output = run_orcas(&daemon, &["project", "get", "--workstream", &workstream_id]);
     assert!(
         get_output.status.success(),
         "stderr: {}",
@@ -1284,7 +1276,7 @@ async fn real_cli_can_create_workunit_and_read_it_back() {
     let create_workstream = run_orcas(
         &daemon,
         &[
-            "workstreams",
+            "project",
             "create",
             "--title",
             "CLI Parent Root",
@@ -1306,7 +1298,7 @@ async fn real_cli_can_create_workunit_and_read_it_back() {
     let create_workunit = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "create",
             "--workstream",
             &workstream_id,
@@ -1329,7 +1321,7 @@ async fn real_cli_can_create_workunit_and_read_it_back() {
     assert!(create_workunit_stdout.contains("revision: 1"));
     assert!(create_workunit_stdout.contains("status: Ready"));
 
-    let get_workunit = run_orcas(&daemon, &["workunit", "get", "--workunit", &work_unit_id]);
+    let get_workunit = run_orcas(&daemon, &["worktree", "get", "--workunit", &work_unit_id]);
     assert!(
         get_workunit.status.success(),
         "stderr: {}",
@@ -1360,7 +1352,7 @@ async fn real_cli_can_edit_and_delete_authority_workstream() {
     let create_output = run_orcas(
         &daemon,
         &[
-            "workstreams",
+            "project",
             "create",
             "--title",
             "CLI Edit Root",
@@ -1380,7 +1372,7 @@ async fn real_cli_can_edit_and_delete_authority_workstream() {
     let edit_output = run_orcas(
         &daemon,
         &[
-            "workstreams",
+            "project",
             "edit",
             "--workstream",
             &workstream_id,
@@ -1421,7 +1413,7 @@ async fn real_cli_can_edit_and_delete_authority_workstream() {
         orcas_core::WorkstreamStatus::Blocked
     );
 
-    let delete_output = run_orcas(&daemon, &["workstreams", "delete", &workstream_id]);
+    let delete_output = run_orcas(&daemon, &["project", "delete", &workstream_id]);
     assert!(
         delete_output.status.success(),
         "stderr: {}",
@@ -1454,7 +1446,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let create_workstream = run_orcas(
         &daemon,
         &[
-            "workstreams",
+            "project",
             "create",
             "--title",
             "CLI Tracked Thread Root",
@@ -1474,7 +1466,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let create_workunit = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "create",
             "--workstream",
             &workstream_id,
@@ -1496,7 +1488,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let create_tracked_thread = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "thread",
             "add",
             "--workunit",
@@ -1529,7 +1521,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let get_output = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "thread",
             "get",
             "--tracked-thread",
@@ -1555,7 +1547,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let edit_output = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "thread",
             "set",
             "--tracked-thread",
@@ -1598,7 +1590,7 @@ async fn real_cli_can_create_edit_and_delete_tracked_thread_via_canonical_cli() 
     let delete_output = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "thread",
             "remove",
             "--tracked-thread",
@@ -2223,7 +2215,7 @@ async fn real_cli_can_apply_decision_after_real_assignment_setup() {
     let workunit_output = run_orcas(
         &daemon,
         &[
-            "workunit",
+            "worktree",
             "get",
             "--workunit",
             &started.report.work_unit_id,
@@ -2859,7 +2851,7 @@ async fn real_cli_reports_missing_workunit_with_nonzero_exit() {
 
     let output = run_orcas(
         &daemon,
-        &["workunit", "get", "--workunit", "missing-workunit"],
+        &["worktree", "get", "--workunit", "missing-workunit"],
     );
     assert!(!output.status.success());
     assert!(stdout(&output).is_empty());

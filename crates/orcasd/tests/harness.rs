@@ -39,10 +39,7 @@ impl TestDaemon {
             .take(12)
             .collect();
         let short_uuid = Uuid::new_v4().simple().to_string();
-        let root = std::env::temp_dir().join(format!(
-            "od-{short_test_name}-{}",
-            &short_uuid[..8]
-        ));
+        let root = std::env::temp_dir().join(format!("od-{short_test_name}-{}", &short_uuid[..8]));
         let paths = AppPaths::from_home(root.join(".orcas"));
         let mut daemon = Self {
             root,
