@@ -868,7 +868,7 @@ pub async fn load_inbox_item_detail(
         .map_err(|error| error.to_string())?
         .requests;
     Ok(build_inbox_detail_page(
-        item,
+        item.as_ref(),
         &notification_candidates,
         &delivery_jobs,
         &remote_actions,

@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 use chrono::{DateTime, Utc};
 use orcas_core::ipc::{
     NotificationDeliveryJob, NotificationDeliveryJobStatus, OperatorInboxActionKind,
@@ -10,7 +8,7 @@ use orcas_core::ipc::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperatorServerSettings {
     pub server_url: String,
     #[serde(default)]
@@ -19,17 +17,6 @@ pub struct OperatorServerSettings {
     pub push_public_key: Option<String>,
     #[serde(default)]
     pub origin_node_id: String,
-}
-
-impl Default for OperatorServerSettings {
-    fn default() -> Self {
-        Self {
-            server_url: String::new(),
-            operator_api_token: None,
-            push_public_key: None,
-            origin_node_id: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +132,7 @@ pub struct InboxDetailPageView {
     pub remote_action_requests: Vec<RemoteActionRequestView>,
 }
 
-fn index_inbox_items<'a>(page: &'a InboxPageView) -> BTreeMap<&'a str, &'a InboxItemCardView> {
+fn index_inbox_items(page: &InboxPageView) -> BTreeMap<&str, &InboxItemCardView> {
     page.sections
         .iter()
         .flat_map(|section| section.items.iter())
@@ -153,25 +140,25 @@ fn index_inbox_items<'a>(page: &'a InboxPageView) -> BTreeMap<&'a str, &'a Inbox
         .collect()
 }
 
-fn index_notification_candidates<'a>(
-    page: &'a NotificationPageView,
-) -> BTreeMap<&'a str, &'a NotificationCandidateView> {
+fn index_notification_candidates(
+    page: &NotificationPageView,
+) -> BTreeMap<&str, &NotificationCandidateView> {
     page.candidates
         .iter()
         .map(|candidate| (candidate.candidate_id.as_str(), candidate))
         .collect()
 }
 
-fn index_delivery_jobs<'a>(page: &'a DeliveryPageView) -> BTreeMap<&'a str, &'a DeliveryJobView> {
+fn index_delivery_jobs(page: &DeliveryPageView) -> BTreeMap<&str, &DeliveryJobView> {
     page.jobs
         .iter()
         .map(|job| (job.job_id.as_str(), job))
         .collect()
 }
 
-fn index_remote_action_requests<'a>(
-    page: &'a RemoteActionPageView,
-) -> BTreeMap<&'a str, &'a RemoteActionRequestView> {
+fn index_remote_action_requests(
+    page: &RemoteActionPageView,
+) -> BTreeMap<&str, &RemoteActionRequestView> {
     page.requests
         .iter()
         .map(|request| (request.request_id.as_str(), request))
@@ -236,6 +223,7 @@ fn first_removed_inbox_item<'a>(
         })
 }
 
+#[must_use]
 pub fn summarize_inbox_page_change(
     previous: Option<&InboxPageView>,
     current: &InboxPageView,
@@ -318,6 +306,7 @@ fn first_removed_notification_candidate<'a>(
         })
 }
 
+#[must_use]
 pub fn summarize_notification_page_change(
     previous: Option<&NotificationPageView>,
     current: &NotificationPageView,
@@ -393,6 +382,7 @@ fn first_removed_delivery_job<'a>(
         })
 }
 
+#[must_use]
 pub fn summarize_delivery_page_change(
     previous: Option<&DeliveryPageView>,
     current: &DeliveryPageView,
@@ -484,6 +474,7 @@ fn first_removed_remote_action_request<'a>(
         })
 }
 
+#[must_use]
 pub fn summarize_remote_action_page_change(
     previous: Option<&RemoteActionPageView>,
     current: &RemoteActionPageView,
@@ -509,6 +500,7 @@ pub fn summarize_remote_action_page_change(
     None
 }
 
+#[must_use]
 pub fn summarize_remote_action_request_change(
     previous: Option<&RemoteActionRequestView>,
     current: &RemoteActionRequestView,
@@ -547,6 +539,7 @@ pub fn summarize_remote_action_request_change(
     None
 }
 
+#[must_use]
 pub fn pending_remote_action_request_for_item_action<'a>(
     requests: &'a [RemoteActionRequestView],
     item_id: &str,
@@ -580,16 +573,16 @@ pub fn build_inbox_page(
         }
         match item.source_kind {
             OperatorInboxSourceKind::SupervisorProposal => {
-                proposal_items.push(inbox_item_card_view(item))
+                proposal_items.push(inbox_item_card_view(item));
             }
             OperatorInboxSourceKind::SupervisorDecision => {
-                decision_items.push(inbox_item_card_view(item))
+                decision_items.push(inbox_item_card_view(item));
             }
             OperatorInboxSourceKind::PlanningSession => {
-                session_items.push(inbox_item_card_view(item))
+                session_items.push(inbox_item_card_view(item));
             }
             OperatorInboxSourceKind::PlanRevisionProposal => {
-                revision_items.push(inbox_item_card_view(item))
+                revision_items.push(inbox_item_card_view(item));
             }
         }
     }
@@ -679,14 +672,15 @@ pub fn build_remote_action_page(requests: &[OperatorRemoteActionRequest]) -> Rem
     RemoteActionPageView { requests }
 }
 
+#[must_use]
 pub fn build_inbox_detail_page(
-    item: Option<OperatorInboxItem>,
+    item: Option<&OperatorInboxItem>,
     candidates: &[OperatorNotificationCandidate],
     jobs: &[NotificationDeliveryJob],
     requests: &[OperatorRemoteActionRequest],
 ) -> InboxDetailPageView {
-    let item_view = item.clone().map(inbox_item_card_view);
-    let item_id = item.as_ref().map(|item| item.id.clone());
+    let item_view = item.cloned().map(inbox_item_card_view);
+    let item_id = item.map(|item| item.id.clone());
     let candidate_views = candidates
         .iter()
         .filter(|candidate| {
@@ -729,6 +723,7 @@ pub fn build_inbox_detail_page(
     }
 }
 
+#[must_use]
 pub fn inbox_item_card_view(item: OperatorInboxItem) -> InboxItemCardView {
     let title = item.title.clone();
     let summary = item.summary.clone();
@@ -757,6 +752,7 @@ pub fn inbox_item_card_view(item: OperatorInboxItem) -> InboxItemCardView {
     }
 }
 
+#[must_use]
 pub fn notification_candidate_view(
     candidate: OperatorNotificationCandidate,
 ) -> NotificationCandidateView {
@@ -773,12 +769,12 @@ pub fn notification_candidate_view(
     }
 }
 
+#[must_use]
 pub fn delivery_job_view(job: NotificationDeliveryJob) -> DeliveryJobView {
-    let summary = job
-        .error
-        .as_ref()
-        .map(|error| format!("error: {error}"))
-        .unwrap_or_else(|| format!("{} via {}", job.candidate_id, job.subscription_id));
+    let summary = job.error.as_ref().map_or_else(
+        || format!("{} via {}", job.candidate_id, job.subscription_id),
+        |error| format!("error: {error}"),
+    );
     DeliveryJobView {
         job_id: job.job_id,
         origin_node_id: job.origin_node_id,
@@ -793,6 +789,7 @@ pub fn delivery_job_view(job: NotificationDeliveryJob) -> DeliveryJobView {
     }
 }
 
+#[must_use]
 pub fn remote_action_request_view(request: OperatorRemoteActionRequest) -> RemoteActionRequestView {
     RemoteActionRequestView {
         request_id: request.request_id,
@@ -819,6 +816,7 @@ pub fn remote_action_request_view(request: OperatorRemoteActionRequest) -> Remot
     }
 }
 
+#[must_use]
 pub fn source_kind_label(kind: OperatorInboxSourceKind) -> &'static str {
     match kind {
         OperatorInboxSourceKind::SupervisorProposal => "Supervisor proposal",
@@ -828,6 +826,7 @@ pub fn source_kind_label(kind: OperatorInboxSourceKind) -> &'static str {
     }
 }
 
+#[must_use]
 pub fn inbox_status_label(status: OperatorInboxItemStatus) -> &'static str {
     match status {
         OperatorInboxItemStatus::Open => "Open",
@@ -837,6 +836,7 @@ pub fn inbox_status_label(status: OperatorInboxItemStatus) -> &'static str {
     }
 }
 
+#[must_use]
 pub fn inbox_status_hint(status: OperatorInboxItemStatus) -> &'static str {
     match status {
         OperatorInboxItemStatus::Open => "Ready for operator review.",
@@ -846,6 +846,7 @@ pub fn inbox_status_hint(status: OperatorInboxItemStatus) -> &'static str {
     }
 }
 
+#[must_use]
 pub fn action_kind_label(kind: OperatorInboxActionKind) -> &'static str {
     match kind {
         OperatorInboxActionKind::Approve => "Approve",
@@ -860,6 +861,7 @@ pub fn action_kind_label(kind: OperatorInboxActionKind) -> &'static str {
     }
 }
 
+#[must_use]
 pub fn notification_status_label(status: OperatorNotificationCandidateStatus) -> &'static str {
     match status {
         OperatorNotificationCandidateStatus::Pending => "Pending",
@@ -869,6 +871,7 @@ pub fn notification_status_label(status: OperatorNotificationCandidateStatus) ->
     }
 }
 
+#[must_use]
 pub fn notification_status_hint(status: OperatorNotificationCandidateStatus) -> &'static str {
     match status {
         OperatorNotificationCandidateStatus::Pending => "Eligible for delivery or operator review.",
@@ -880,6 +883,7 @@ pub fn notification_status_hint(status: OperatorNotificationCandidateStatus) -> 
     }
 }
 
+#[must_use]
 pub fn delivery_status_label(status: NotificationDeliveryJobStatus) -> &'static str {
     match status {
         NotificationDeliveryJobStatus::Pending => "Pending",
@@ -892,6 +896,7 @@ pub fn delivery_status_label(status: NotificationDeliveryJobStatus) -> &'static 
     }
 }
 
+#[must_use]
 pub fn delivery_status_hint(status: NotificationDeliveryJobStatus) -> &'static str {
     match status {
         NotificationDeliveryJobStatus::Pending => "Waiting to be dispatched.",
@@ -904,6 +909,7 @@ pub fn delivery_status_hint(status: NotificationDeliveryJobStatus) -> &'static s
     }
 }
 
+#[must_use]
 pub fn remote_action_status_label(status: OperatorRemoteActionRequestStatus) -> &'static str {
     match status {
         OperatorRemoteActionRequestStatus::Pending => "Pending",
@@ -915,6 +921,7 @@ pub fn remote_action_status_label(status: OperatorRemoteActionRequestStatus) -> 
     }
 }
 
+#[must_use]
 pub fn remote_action_status_hint(status: OperatorRemoteActionRequestStatus) -> &'static str {
     match status {
         OperatorRemoteActionRequestStatus::Pending => "Awaiting claim or execution.",
@@ -1069,8 +1076,9 @@ mod tests {
             result: None,
             error: None,
         };
+        let candidate_item = candidate.item.clone();
         let detail = build_inbox_detail_page(
-            Some(candidate.item.clone()),
+            Some(&candidate_item),
             &[candidate],
             &[job],
             &[request],
