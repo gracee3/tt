@@ -32587,10 +32587,7 @@ Boundedness note: Stay within the legacy compatibility boundary."#
 
         service.shutdown_workstream_runtimes().await;
 
-        assert_eq!(
-            stop_calls.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
+        assert_eq!(stop_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(service.workstream_runtimes.lock().await.is_empty());
     }
 

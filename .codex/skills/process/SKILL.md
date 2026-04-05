@@ -14,6 +14,23 @@ Use this skill for starting, inspecting, coordinating, and retiring processes th
 - keeps process ownership explicit
 - records the minimum operational detail needed to recover state
 
+## Runtime surface
+
+Prefer the typed `tt skill process ...` entrypoint:
+
+- `tt skill process status --pid <pid>`
+- `tt skill process status --name <pattern>`
+- `tt skill process inspect --pid <pid>`
+- `tt skill process inspect --name <pattern>`
+- `tt skill process start [--cwd <path>] [--name <label>] <command...>`
+- `tt skill process stop --pid <pid>`
+- `tt skill process stop --name <pattern>`
+- `tt skill process restart [--cwd <path>] [--name <label>] <command...>`
+- `tt skill process signal --pid <pid> --signal <TERM|HUP|INT|...>`
+- `tt skill process signal --name <pattern> --signal <TERM|HUP|INT|...>`
+- `tt skill process tree --pid <pid>`
+- `tt skill process tree --name <pattern>`
+
 ## What this skill does not do
 
 - change process semantics without a clear reason

@@ -1077,12 +1077,8 @@ mod tests {
             error: None,
         };
         let candidate_item = candidate.item.clone();
-        let detail = build_inbox_detail_page(
-            Some(&candidate_item),
-            &[candidate],
-            &[job],
-            &[request],
-        );
+        let detail =
+            build_inbox_detail_page(Some(&candidate_item), &[candidate], &[job], &[request]);
 
         assert_eq!(
             notification_status_label(OperatorNotificationCandidateStatus::Pending),

@@ -19,6 +19,7 @@ serde.workspace = true
 orcas-server-client = { path = "../orcas-server-client" }
 orcasd = { path = "../orcasd" }
 orcas-core = { path = "../orcas-core" }
+tt-skills = { path = "../tt-skills" }
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true

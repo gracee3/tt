@@ -2,6 +2,7 @@
 
 mod remote;
 mod service;
+mod skill_runtime;
 mod streaming;
 mod tui;
 
@@ -16,6 +17,8 @@ use tracing::info;
 
 use remote::{RemoteCommand, run_remote};
 use service::{RuntimeOverrides, SupervisorService};
+use skill_runtime::OrcasSkillBackend;
+use tt_skills::{SkillCommand as RuntimeSkillCommand, SkillContext as RuntimeSkillContext};
 
 #[derive(Debug, Parser)]
 #[command(name = "tt", version, about = "tt control plane")]
@@ -139,6 +142,11 @@ enum TopCommand {
     I3 {
         #[command(subcommand)]
         command: I3Command,
+    },
+    #[command(about = "Run a typed skill runtime command")]
+    Skill {
+        #[command(subcommand)]
+        command: RuntimeSkillCommand,
     },
     #[command(hide = true)]
     Codex {
@@ -2146,6 +2154,22 @@ async fn main() -> Result<()> {
             I3Command::Start => println!("i3 adapter: not yet implemented"),
             I3Command::Attach => println!("i3 adapter: not yet implemented"),
         },
+        TopCommand::Skill { command } => {
+            let context = RuntimeSkillContext {
+                server_url: global.server_url.clone(),
+                operator_api_token: global.operator_api_token.clone(),
+                codex_bin: overrides.codex_bin.clone(),
+                listen_url: overrides.listen_url.clone(),
+                inbox_mirror_server_url: overrides.inbox_mirror_server_url.clone(),
+                cwd: overrides.cwd.clone(),
+                worktree_root: overrides.worktree_root.clone(),
+                model: overrides.model.clone(),
+                connect_only: overrides.connect_only,
+                force_spawn: overrides.force_spawn,
+            };
+            let backend = OrcasSkillBackend::new(overrides.clone());
+            let _ = tt_skills::dispatch(&backend, &context, command).await?;
+        }
         TopCommand::Codex { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
@@ -3207,5 +3231,228 @@ mod tests {
     #[test]
     fn rejects_flat_codex_review_verbs() {
         assert!(Cli::try_parse_from(["tt", "codex", "list"]).is_err());
+    }
+
+    #[test]
+    fn parses_skill_agent_spawn_with_default_role() {
+        let cli = Cli::try_parse_from(["tt", "skill", "agent", "spawn"]).expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Agent { command },
+            } => match command {
+                tt_skills::AgentCommand::Spawn(args) => {
+                    assert_eq!(args.role, "agent");
+                }
+                other => panic!("unexpected agent skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_process_restart_command() {
+        let cli = Cli::try_parse_from([
+            "tt",
+            "skill",
+            "process",
+            "restart",
+            "--name",
+            "my-worker",
+            "--cwd",
+            "/tmp",
+            "bash",
+            "-lc",
+            "sleep 1",
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Process { command },
+            } => match command {
+                tt_skills::ProcessCommand::Restart(args) => {
+                    assert_eq!(args.name.as_deref(), Some("my-worker"));
+                    assert_eq!(args.cwd, Some(PathBuf::from("/tmp")));
+                    assert_eq!(args.command, vec!["bash", "-lc", "sleep 1"]);
+                }
+                other => panic!("unexpected process skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_process_signal_command() {
+        let cli = Cli::try_parse_from([
+            "tt", "skill", "process", "signal", "--pid", "42", "--signal", "HUP",
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Process { command },
+            } => match command {
+                tt_skills::ProcessCommand::Signal(args) => {
+                    assert_eq!(args.pid, Some(42));
+                    assert_eq!(args.signal, "HUP");
+                }
+                other => panic!("unexpected process skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_services_status_command() {
+        let cli = Cli::try_parse_from(["tt", "skill", "services", "status", "daemon"])
+            .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Services { command },
+            } => match command {
+                tt_skills::ServicesCommand::Status(args) => {
+                    assert!(matches!(
+                        args.service,
+                        tt_skills::ManagedServiceKind::Daemon
+                    ));
+                }
+                other => panic!("unexpected services skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_git_worktree_command() {
+        let cli = Cli::try_parse_from([
+            "tt",
+            "skill",
+            "git",
+            "worktree",
+            "current",
+            "--repo-root",
+            "/tmp/repo",
+            "--worktree-path",
+            "/tmp/repo/worktrees/tt-1",
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Git { command },
+            } => match command {
+                tt_skills::GitCommand::Worktree { command } => match command {
+                    tt_skills::GitWorktreeCommand::Current(args) => {
+                        assert_eq!(args.repo_root, Some(PathBuf::from("/tmp/repo")));
+                        assert_eq!(
+                            args.worktree_path,
+                            Some(PathBuf::from("/tmp/repo/worktrees/tt-1"))
+                        );
+                    }
+                    other => panic!("unexpected git worktree command: {other:?}"),
+                },
+                other => panic!("unexpected git skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_git_branch_list_command() {
+        let cli = Cli::try_parse_from([
+            "tt",
+            "skill",
+            "git",
+            "branch",
+            "list",
+            "--repo-root",
+            "/tmp/repo",
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::Git { command },
+            } => match command {
+                tt_skills::GitCommand::Branch { command } => match command {
+                    tt_skills::GitBranchCommand::List(args) => {
+                        assert_eq!(args.repo_root, Some(PathBuf::from("/tmp/repo")));
+                    }
+                    other => panic!("unexpected git branch command: {other:?}"),
+                },
+                other => panic!("unexpected git skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_i3_workspace_list_command() {
+        let cli =
+            Cli::try_parse_from(["tt", "skill", "i3", "workspace", "list"]).expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::I3 { command },
+            } => match command {
+                tt_skills::I3Command::Workspace { command } => match command {
+                    tt_skills::I3WorkspaceCommand::List(_) => {}
+                    other => panic!("unexpected i3 workspace command: {other:?}"),
+                },
+                other => panic!("unexpected i3 skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_i3_window_info_command() {
+        let cli = Cli::try_parse_from([
+            "tt",
+            "skill",
+            "i3",
+            "window",
+            "info",
+            "--criteria",
+            r#"["class"="kitty"]"#,
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::I3 { command },
+            } => match command {
+                tt_skills::I3Command::Window { command } => match command {
+                    tt_skills::I3WindowCommand::Info(args) => {
+                        assert_eq!(args.criteria, r#"["class"="kitty"]"#);
+                    }
+                    other => panic!("unexpected i3 window command: {other:?}"),
+                },
+                other => panic!("unexpected i3 skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_skill_i3_window_focus_command() {
+        let cli = Cli::try_parse_from([
+            "tt",
+            "skill",
+            "i3",
+            "window",
+            "focus",
+            "--criteria",
+            r#"["class"="kitty"]"#,
+        ])
+        .expect("parse skill");
+        match cli.command {
+            TopCommand::Skill {
+                command: RuntimeSkillCommand::I3 { command },
+            } => match command {
+                tt_skills::I3Command::Window { command } => match command {
+                    tt_skills::I3WindowCommand::Focus(args) => {
+                        assert_eq!(args.criteria, r#"["class"="kitty"]"#);
+                    }
+                    other => panic!("unexpected i3 window command: {other:?}"),
+                },
+                other => panic!("unexpected i3 skill command: {other:?}"),
+            },
+            other => panic!("unexpected top command: {other:?}"),
+        }
     }
 }

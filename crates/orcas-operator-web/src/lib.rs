@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(warnings)
-)]
+#![cfg_attr(not(target_arch = "wasm32"), allow(warnings))]
 
 mod api;
 mod push;

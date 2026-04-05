@@ -50,3 +50,16 @@ Use this skill when the task is the main operator playbook or runbook for a spaw
 - `human`: operator liaison and requirement clarification
 - `clean`: cleanup, hygiene, and stale-artifact removal
 - `services`: background service lifecycle coordination
+
+## Preferred delegates
+
+- use `agent` for subagent spawning and turn handoff
+- use `i3` for desktop/window-manager coordination
+- use `codex` for Codex session and shared app-server lifecycle work
+
+## Runtime surfaces
+
+- use `tt skill process ...` for local process lifecycle control
+- use `tt skill services ...` for daemon and shared app-server services
+- use `tt skill git ...` for branch and worktree coordination
+- use `tt skill i3 ...` for workspace and window-manager actions

@@ -6,6 +6,7 @@ members = [
     "crates/orcas-server-client",
     "crates/orcas-operator-core",
     "crates/orcas-operator-web",
+    "crates/tt-skills",
     "crates/orcas",
     "crates/orcas-server",
 ]
@@ -15,6 +16,7 @@ default-members = [
     "crates/orcasd",
     "crates/orcas-server-client",
     "crates/orcas-operator-core",
+    "crates/tt-skills",
     "crates/orcas",
     "crates/orcas-server",
 ]
