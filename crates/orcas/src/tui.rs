@@ -22,7 +22,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::service::SupervisorService;
 
-const HUD_TOP_HEIGHT: u16 = 4;
+const HUD_TOP_HEIGHT: u16 = 5;
 const HUD_BOTTOM_HEIGHT: u16 = 4;
 const HUD_FADE_STEP: f32 = 0.22;
 
@@ -51,8 +51,7 @@ impl SessionStatus {
 
 struct LiveSession {
     thread_id: String,
-    workstream_id: String,
-    workstream_title: String,
+    lane_label: String,
     cwd: PathBuf,
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -66,7 +65,7 @@ impl LiveSession {
     fn launch(
         service: &SupervisorService,
         thread: &ipc::ThreadSummary,
-        workstream: &ipc::WorkstreamSummary,
+        lane_label: &str,
         cols: u16,
         rows: u16,
     ) -> Result<Self> {
@@ -74,7 +73,7 @@ impl LiveSession {
         if !thread.cwd.is_empty() && Path::new(&thread.cwd).is_dir() {
             service.trust_shared_app_server_projects(&[Path::new(&thread.cwd)])?;
         }
-        let workstream_title = workstream.title.clone();
+        let lane_label = lane_label.to_string();
         let cwd = if thread.cwd.is_empty() {
             PathBuf::from(".")
         } else {
@@ -117,8 +116,7 @@ impl LiveSession {
         Self::spawn_reader(reader, parser.clone(), status.clone());
         let session = Self {
             thread_id: thread.id.clone(),
-            workstream_id: workstream.id.clone(),
-            workstream_title,
+            lane_label,
             cwd,
             parser,
             writer: Arc::new(Mutex::new(writer)),
@@ -166,7 +164,7 @@ impl LiveSession {
 
     fn short_label(&self) -> String {
         let short = self.thread_id.chars().take(8).collect::<String>();
-        format!("{}:{}", self.workstream_title, short)
+        format!("{}:{}", self.lane_label, short)
     }
 
     fn set_status(&self, status: SessionStatus) {
@@ -262,14 +260,14 @@ struct DashboardState {
 }
 
 impl DashboardState {
-    fn new() -> Self {
+    fn with_sessions(sessions: Vec<SessionTab>) -> Self {
         Self {
-            status: "dashboard ready".to_string(),
+            status: "supervisor lane ready".to_string(),
             last_refresh: Instant::now(),
             show_hud: true,
             hud_opacity: 1.0,
-            active_tab: None,
-            sessions: Vec::new(),
+            active_tab: if sessions.is_empty() { None } else { Some(0) },
+            sessions,
         }
     }
 
@@ -357,25 +355,43 @@ impl DashboardState {
     }
 }
 
-pub async fn run_dashboard(_service: SupervisorService) -> Result<()> {
+pub async fn run_dashboard(service: SupervisorService) -> Result<()> {
     if !io::stdout().is_terminal() {
         bail!("orcas tui requires an interactive terminal");
     }
 
+    let supervisor_thread = service
+        .resolve_supervisor_dashboard_thread()
+        .await
+        .context("resolve supervisor dashboard thread")?;
     enable_raw_mode().context("enable terminal raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, Hide).context("enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create dashboard terminal")?;
 
-    let result = run_dashboard_loop(&mut terminal).await;
+    let size = terminal.size().context("read dashboard terminal size")?;
+    let supervisor_session = LiveSession::launch(
+        &service,
+        &supervisor_thread,
+        "supervisor",
+        size.width,
+        size.height,
+    )?;
+    let state = DashboardState::with_sessions(vec![SessionTab {
+        session: supervisor_session,
+    }]);
+
+    let result = run_dashboard_loop(&mut terminal, state).await;
 
     cleanup_terminal(&mut terminal);
     result
 }
 
-async fn run_dashboard_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-    let mut state = DashboardState::new();
+async fn run_dashboard_loop(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    mut state: DashboardState,
+) -> Result<()> {
     let refresh_interval = Duration::from_millis(750);
 
     loop {
@@ -453,7 +469,7 @@ fn render_dashboard_frame_internal(
     render_main(frame, root, state);
     if let Some(layout) = hud_layout {
         render_border_hud(frame, layout, state);
-    } else if !state.show_hud {
+    } else if !state.show_hud && state.active_session().is_none() {
         render_canvas_hint(frame, root);
     }
 }
@@ -509,7 +525,7 @@ fn render_main(frame: &mut ratatui::Frame<'_>, area: Rect, state: &DashboardStat
         let text = session.session.screen_text();
         let block = Block::default().borders(Borders::NONE).title(format!(
             "Codex Session: {} ({})",
-            session.session.workstream_title, session.session.thread_id
+            session.session.lane_label, session.session.thread_id
         ));
         let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
         frame.render_widget(paragraph, area);
@@ -544,25 +560,28 @@ fn render_border_hud(
     let hud_accent = hud_accent_style(state.hud_opacity);
     let title = Line::from(vec![
         Span::styled(" Orcas TUI ", hud_accent),
-        Span::raw(" border HUD "),
-        Span::raw(" | "),
-        Span::raw("blank canvas"),
+        Span::raw(" | supervisor lane"),
     ]);
     let shortcuts = Line::from(vec![
-        Span::styled("shortcuts:", hud_accent),
-        Span::raw(" "),
-        Span::styled("ctrl+q", hud_accent),
+        Span::styled("Ctrl+q", hud_accent),
         Span::raw(" quit  "),
-        Span::styled("f2", hud_accent),
-        Span::raw(" HUD  "),
-        Span::styled("f5", hud_accent),
+        Span::styled("F2", hud_accent),
+        Span::raw(" hud  "),
+        Span::styled("F5", hud_accent),
         Span::raw(" refresh  "),
-        Span::styled("f6/f7", hud_accent),
+        Span::styled("F6/F7", hud_accent),
         Span::raw(" tabs  "),
-        Span::styled("f8", hud_accent),
+        Span::styled("F8", hud_accent),
         Span::raw(" terminate"),
     ]);
-    let top_lines = vec![title, shortcuts];
+    let context = Line::from(vec![
+        Span::styled("root:", hud_accent),
+        Span::raw(" "),
+        Span::raw("~/.orcas"),
+        Span::raw(" | "),
+        Span::raw("press F2 for HUD"),
+    ]);
+    let top_lines = vec![title, shortcuts, context];
     let top_block = Block::default()
         .borders(Borders::ALL)
         .border_style(hud_border)

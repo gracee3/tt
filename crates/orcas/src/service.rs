@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use anyhow::{Error, Result, anyhow, bail};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -674,6 +675,12 @@ struct ResolvedRoleDefinition {
     is_override: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SupervisorDashboardState {
+    #[serde(default)]
+    supervisor_thread_id: Option<String>,
+}
+
 impl SupervisorService {
     pub async fn load(overrides: &RuntimeOverrides) -> Result<Self> {
         let paths = AppPaths::discover()?;
@@ -732,6 +739,91 @@ impl SupervisorService {
 
     pub fn shared_app_server_auth_file(&self) -> PathBuf {
         self.shared_app_server_codex_home().join("auth.json")
+    }
+
+    fn supervisor_dashboard_state_file(&self) -> PathBuf {
+        self.paths.runtime_dir.join("supervisor-dashboard.json")
+    }
+
+    async fn load_supervisor_dashboard_state(&self) -> Result<SupervisorDashboardState> {
+        let path = self.supervisor_dashboard_state_file();
+        if !tokio::fs::try_exists(&path).await? {
+            return Ok(SupervisorDashboardState::default());
+        }
+        let raw = tokio::fs::read_to_string(&path).await?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    async fn save_supervisor_dashboard_state(
+        &self,
+        state: &SupervisorDashboardState,
+    ) -> Result<()> {
+        self.paths.ensure().await?;
+        let raw = serde_json::to_string_pretty(state)?;
+        tokio::fs::write(self.supervisor_dashboard_state_file(), format!("{raw}\n")).await?;
+        Ok(())
+    }
+
+    async fn read_thread_summary(&self, thread_id: &str) -> Result<Option<ipc::ThreadSummary>> {
+        let client = self.ready_client().await?;
+        match client
+            .thread_read(&ThreadReadRequest {
+                thread_id: thread_id.to_string(),
+                include_turns: false,
+            })
+            .await
+        {
+            Ok(response) => Ok(Some(response.thread.summary)),
+            Err(error) => {
+                warn!(
+                    surface = "cli",
+                    action = "supervisor_dashboard_thread_read",
+                    thread_id,
+                    error = %error,
+                    "supervisor dashboard thread could not be read"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    async fn create_supervisor_dashboard_thread(&self) -> Result<ipc::ThreadSummary> {
+        let client = self.ready_client().await?;
+        let response = client
+            .thread_start(&ThreadStartRequest {
+                cwd: Some(self.paths.config_dir.display().to_string()),
+                model: Some(self.config.supervisor.model.clone()),
+                ephemeral: false,
+            })
+            .await?;
+        Ok(response.thread)
+    }
+
+    pub async fn resolve_supervisor_dashboard_thread(&self) -> Result<ipc::ThreadSummary> {
+        let expected_cwd = self.paths.config_dir.display().to_string();
+        let state = self.load_supervisor_dashboard_state().await?;
+        if let Some(thread_id) = state.supervisor_thread_id.as_ref() {
+            if let Some(summary) = self.read_thread_summary(thread_id).await?
+                && summary.cwd == expected_cwd
+            {
+                return Ok(summary);
+            }
+        }
+
+        let thread = self.create_supervisor_dashboard_thread().await?;
+        let next_state = SupervisorDashboardState {
+            supervisor_thread_id: Some(thread.id.clone()),
+        };
+        self.save_supervisor_dashboard_state(&next_state).await?;
+        info!(
+            surface = "cli",
+            action = "supervisor_dashboard_bootstrap",
+            thread_id = %thread.id,
+            cwd = %thread.cwd,
+            model_provider = %thread.model_provider,
+            "resolved supervisor dashboard thread"
+        );
+        Ok(thread)
     }
 
     pub fn prepare_shared_app_server_auth(&self) -> Result<Option<PathBuf>> {
@@ -7440,6 +7532,26 @@ mod tests {
 
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn supervisor_dashboard_state_defaults_missing_thread_id() {
+        let state = serde_json::from_str::<SupervisorDashboardState>("{}")
+            .expect("deserialize supervisor dashboard state");
+
+        assert!(state.supervisor_thread_id.is_none());
+    }
+
+    #[test]
+    fn supervisor_dashboard_state_round_trips_thread_id() {
+        let state = SupervisorDashboardState {
+            supervisor_thread_id: Some("thread-1".to_string()),
+        };
+        let encoded = serde_json::to_string(&state).expect("serialize supervisor dashboard state");
+        let decoded = serde_json::from_str::<SupervisorDashboardState>(&encoded)
+            .expect("deserialize supervisor dashboard state");
+
+        assert_eq!(decoded.supervisor_thread_id.as_deref(), Some("thread-1"));
     }
 
     #[test]
