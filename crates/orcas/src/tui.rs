@@ -91,6 +91,8 @@ impl LiveSession {
             .context("open pty for Codex TUI")?;
 
         let mut command = CommandBuilder::new(service.config.codex.binary_path.clone());
+        command.arg("--remote");
+        command.arg(service.config.codex.effective_listen_url());
         command.arg("resume");
         command.arg(&thread.id);
         command.env("CODEX_HOME", service.shared_app_server_codex_home());
