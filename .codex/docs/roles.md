@@ -78,6 +78,7 @@ The older `instructions` key should be avoided.
 .codex/orcas/role-instructions/feature.md
 .codex/orcas/role-instructions/todo.md
 .codex/orcas/role-instructions/supervisor.md
+.codex/skills/todo/SKILL.md
 .codex/skills/supervisor/SKILL.md
 .codex/docs/roles.md
 ```
@@ -125,6 +126,10 @@ Then, from a parent Codex session, explicitly spawn the role you want. The role 
 - `feature`: proof-only runtime investigation
 - `todo`: backlog ingestion and maintenance
 - `supervisor`: operator liaison, lane coordination, and next-action triage
+
+The `todo` skill and lane are meant to work from a shared, tracked backlog file
+in `docs/WORKSTREAM_TODO.md` so user notes can be inserted, reviewed, and
+expanded into a planning phase over multiple exchanges.
 
 If you later decide a lane should inherit extra tools or a different model, add those settings to the relevant `.toml` file rather than widening the prompt.
 

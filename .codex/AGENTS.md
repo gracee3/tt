@@ -20,6 +20,9 @@ Keep these paths accurate for the repo. Edit this section if the canonical paths
 - `docs/FRONTIER_PROOF_STATUS.md`
   - Canonical frontier ledger.
   - Record what is proven, what is blocked, what is paused, and the next gate.
+- `docs/WORKSTREAM_TODO.md`
+  - Canonical tracked todo/backlog file for the active workstream.
+  - Use this as the shared project-level inbox, review queue, and planning seed.
 - `docs/WORKSTREAM_INTEGRATION_TODO.md`
   - Integration backlog and ledger follow-up items.
 - `docs/WORKSTREAM_HARNESS_TODO.md`
