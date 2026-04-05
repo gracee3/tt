@@ -70,7 +70,7 @@ struct GlobalOptions {
         global = true,
         default_value_t = false,
         conflicts_with = "force_spawn",
-        help = "Require connect-only mode instead of spawning a local Codex app-server"
+        help = "Require attach-only mode for this process"
     )]
     connect_only: bool,
     #[arg(
@@ -78,7 +78,7 @@ struct GlobalOptions {
         global = true,
         default_value_t = false,
         conflicts_with = "connect_only",
-        help = "Force spawn mode instead of connect-only mode"
+        help = "Legacy runtime override for spawn-capable processes"
     )]
     force_spawn: bool,
 }
@@ -98,9 +98,10 @@ enum TopCommand {
         #[command(subcommand)]
         command: EventsCommand,
     },
-    Workstreams {
+    #[command(name = "workstream", alias = "workstreams")]
+    Workstream {
         #[command(subcommand)]
-        command: WorkstreamsCommand,
+        command: WorkstreamCommand,
     },
     Workunit {
         #[command(subcommand)]
@@ -132,11 +133,15 @@ enum DaemonCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Inspect and reap local Codex app-server listeners")]
+#[command(about = "Manage the shared Orcas app-server lifecycle")]
 enum AppServerCommand {
-    List,
-    Reap(AppServerReapArgs),
-    Info,
+    Add(AppServerNameArgs),
+    Remove(AppServerNameArgs),
+    Start(AppServerNameArgs),
+    Stop(AppServerNameArgs),
+    Restart(AppServerNameArgs),
+    Status(AppServerNameArgs),
+    Info(AppServerNameArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,26 +170,14 @@ enum EventsCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[command(about = "Canonical authority-backed CRUD for planning workstreams")]
-enum WorkstreamsCommand {
+#[command(about = "Manage durable Orcas workstream records")]
+enum WorkstreamCommand {
+    Add(WorkstreamAddArgs),
     Create(WorkstreamCreateArgs),
     Edit(WorkstreamEditArgs),
     Delete(WorkstreamRefArgs),
     List,
     Get(WorkstreamRefArgs),
-    Runtime {
-        #[command(subcommand)]
-        command: WorkstreamRuntimeCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkstreamRuntimeCommand {
-    List,
-    Get(WorkstreamRefArgs),
-    Start(WorkstreamRefArgs),
-    Stop(WorkstreamRefArgs),
-    Restart(WorkstreamRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -291,6 +284,7 @@ enum CodexCommand {
         #[command(subcommand)]
         command: ModelsCommand,
     },
+    Spawn(CodexSpawnArgs),
     Threads {
         #[command(subcommand)]
         command: CodexThreadsCommand,
@@ -401,6 +395,21 @@ struct ThreadResumeArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+struct CodexSpawnArgs {
+    role: String,
+    #[arg(long)]
+    workstream: Option<String>,
+    #[arg(long = "new-workstream")]
+    new_workstream: Option<String>,
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    headless: bool,
+    #[arg(long)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
 struct TurnRefArgs {
     #[arg(long)]
     thread: String,
@@ -431,15 +440,9 @@ struct EventsWatchArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-struct AppServerReapArgs {
-    #[arg(long, default_value_t = false)]
-    apply: bool,
-    #[arg(long, default_value_t = false)]
-    all_tagged: bool,
-    #[arg(long, default_value_t = false)]
-    include_untagged: bool,
-    #[arg(long)]
-    pid: Vec<u32>,
+struct AppServerNameArgs {
+    #[arg(default_value = "default")]
+    name: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -462,6 +465,12 @@ struct WorkstreamCreateArgs {
     app_server_policy: Option<WorkstreamAppServerPolicyArg>,
     #[arg(long, value_enum)]
     connection_mode: Option<WorkstreamExecutionConnectionModeArg>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct WorkstreamAddArgs {
+    repo_root: PathBuf,
+    name: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1429,18 +1438,13 @@ async fn main() -> Result<()> {
         TopCommand::AppServer { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
-                AppServerCommand::List => service.daemon_discover_app_servers().await?,
-                AppServerCommand::Reap(args) => {
-                    service
-                        .daemon_reap_app_servers(
-                            args.apply,
-                            args.all_tagged,
-                            args.include_untagged,
-                            &args.pid,
-                        )
-                        .await?
-                }
-                AppServerCommand::Info => service.daemon_status().await?,
+                AppServerCommand::Add(args) => service.app_server_add(&args.name).await?,
+                AppServerCommand::Remove(args) => service.app_server_remove(&args.name).await?,
+                AppServerCommand::Start(args) => service.app_server_start(&args.name).await?,
+                AppServerCommand::Stop(args) => service.app_server_stop(&args.name).await?,
+                AppServerCommand::Restart(args) => service.app_server_restart(&args.name).await?,
+                AppServerCommand::Status(args) => service.app_server_status(&args.name).await?,
+                AppServerCommand::Info(args) => service.app_server_info(&args.name).await?,
             }
         }
         TopCommand::Doctor => {
@@ -1456,10 +1460,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        TopCommand::Workstreams { command } => {
+        TopCommand::Workstream { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
-                WorkstreamsCommand::Create(args) => {
+                WorkstreamCommand::Add(args) => {
+                    service.workstream_add(args.repo_root, args.name).await?;
+                }
+                WorkstreamCommand::Create(args) => {
                     service
                         .workstream_create(
                             args.title,
@@ -1474,7 +1481,7 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                WorkstreamsCommand::Edit(args) => {
+                WorkstreamCommand::Edit(args) => {
                     service
                         .workstream_edit(
                             &args.workstream,
@@ -1492,26 +1499,11 @@ async fn main() -> Result<()> {
                         )
                         .await?;
                 }
-                WorkstreamsCommand::Delete(args) => {
+                WorkstreamCommand::Delete(args) => {
                     service.workstream_delete(&args.workstream).await?;
                 }
-                WorkstreamsCommand::List => service.workstream_list().await?,
-                WorkstreamsCommand::Get(args) => service.workstream_get(&args.workstream).await?,
-                WorkstreamsCommand::Runtime { command } => match command {
-                    WorkstreamRuntimeCommand::List => service.workstream_runtime_list().await?,
-                    WorkstreamRuntimeCommand::Get(args) => {
-                        service.workstream_runtime_get(&args.workstream).await?
-                    }
-                    WorkstreamRuntimeCommand::Start(args) => {
-                        service.workstream_runtime_start(&args.workstream).await?
-                    }
-                    WorkstreamRuntimeCommand::Stop(args) => {
-                        service.workstream_runtime_stop(&args.workstream).await?
-                    }
-                    WorkstreamRuntimeCommand::Restart(args) => {
-                        service.workstream_runtime_restart(&args.workstream).await?
-                    }
-                },
+                WorkstreamCommand::List => service.workstream_list().await?,
+                WorkstreamCommand::Get(args) => service.workstream_get(&args.workstream).await?,
             }
         }
         TopCommand::Workunit { command } => {
@@ -1983,6 +1975,18 @@ async fn main() -> Result<()> {
                 CodexCommand::Models { command } => match command {
                     ModelsCommand::List(args) => service.models_list(&args.workstream).await?,
                 },
+                CodexCommand::Spawn(args) => {
+                    service
+                        .codex_spawn(
+                            &args.role,
+                            args.workstream.as_deref(),
+                            args.new_workstream.as_deref(),
+                            args.repo_root,
+                            args.headless,
+                            args.model,
+                        )
+                        .await?;
+                }
                 CodexCommand::Threads { command } => match command {
                     CodexThreadsCommand::List(args) => {
                         service.threads_list(&args.workstream).await?
@@ -2071,7 +2075,7 @@ mod tests {
     fn top_level_help_mentions_only_canonical_namespace_groups() {
         let help = Cli::command().render_help().to_string();
 
-        assert!(help.contains("workstreams"));
+        assert!(help.contains("workstream"));
         assert!(help.contains("workunit"));
         assert!(help.contains("app-server"));
         assert!(help.contains("supervisor"));
@@ -2083,15 +2087,15 @@ mod tests {
     }
 
     #[test]
-    fn workstreams_help_marks_authority_surface_as_canonical() {
+    fn workstream_help_marks_surface_as_durable() {
         let mut command = Cli::command();
         let help = command
-            .find_subcommand_mut("workstreams")
-            .expect("workstreams subcommand")
+            .find_subcommand_mut("workstream")
+            .expect("workstream subcommand")
             .render_help()
             .to_string();
 
-        assert!(help.contains("Canonical authority-backed CRUD for planning workstreams"));
+        assert!(help.contains("Manage durable Orcas workstream records"));
     }
 
     #[test]
@@ -2107,40 +2111,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_app_server_list_command() {
-        let cli = Cli::parse_from(["orcas", "app-server", "list"]);
+    fn parses_top_level_app_server_start_command() {
+        let cli = Cli::parse_from(["orcas", "app-server", "start", "default"]);
 
         match cli.command {
             TopCommand::AppServer {
-                command: AppServerCommand::List,
+                command: AppServerCommand::Start(_args),
             } => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
 
     #[test]
-    fn parses_top_level_app_server_reap_command() {
-        let cli = Cli::parse_from([
-            "orcas",
-            "app-server",
-            "reap",
-            "--apply",
-            "--all-tagged",
-            "--include-untagged",
-            "--pid",
-            "1234",
-            "--pid",
-            "5678",
-        ]);
+    fn parses_top_level_app_server_status_command() {
+        let cli = Cli::parse_from(["orcas", "app-server", "status"]);
 
         match cli.command {
             TopCommand::AppServer {
-                command: AppServerCommand::Reap(args),
+                command: AppServerCommand::Status(args),
             } => {
-                assert!(args.apply);
-                assert!(args.all_tagged);
-                assert!(args.include_untagged);
-                assert_eq!(args.pid, vec![1234, 5678]);
+                assert_eq!(args.name, "default");
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
@@ -2148,12 +2138,14 @@ mod tests {
 
     #[test]
     fn parses_top_level_app_server_info_command() {
-        let cli = Cli::parse_from(["orcas", "app-server", "info"]);
+        let cli = Cli::parse_from(["orcas", "app-server", "info", "default"]);
 
         match cli.command {
             TopCommand::AppServer {
-                command: AppServerCommand::Info,
-            } => {}
+                command: AppServerCommand::Info(args),
+            } => {
+                assert_eq!(args.name, "default");
+            }
             other => panic!("unexpected command parse: {other:?}"),
         }
     }
@@ -2196,6 +2188,33 @@ mod tests {
             } => {
                 assert_eq!(args.thread, "thread-1");
                 assert_eq!(args.limit, 10);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_spawn_command() {
+        let cli = Cli::parse_from([
+            "orcas",
+            "codex",
+            "spawn",
+            "plan",
+            "--new-workstream",
+            "realign-v1",
+            "--repo-root",
+            "/tmp/repo",
+            "--headless",
+        ]);
+
+        match cli.command {
+            TopCommand::Codex {
+                command: CodexCommand::Spawn(args),
+            } => {
+                assert_eq!(args.role, "plan");
+                assert_eq!(args.new_workstream.as_deref(), Some("realign-v1"));
+                assert_eq!(args.repo_root, Some(PathBuf::from("/tmp/repo")));
+                assert!(args.headless);
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
@@ -2574,24 +2593,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_workstream_runtime_start_command() {
+    fn parses_workstream_add_command() {
         let cli = Cli::parse_from([
             "orcas",
-            "workstreams",
-            "runtime",
-            "start",
-            "--workstream",
+            "workstream",
+            "add",
+            "/tmp/repo",
             "ws-1",
         ]);
 
         match cli.command {
-            TopCommand::Workstreams {
-                command:
-                    WorkstreamsCommand::Runtime {
-                        command: WorkstreamRuntimeCommand::Start(args),
-                    },
+            TopCommand::Workstream {
+                command: WorkstreamCommand::Add(args),
             } => {
-                assert_eq!(args.workstream, "ws-1");
+                assert_eq!(args.repo_root, PathBuf::from("/tmp/repo"));
+                assert_eq!(args.name, "ws-1");
             }
             other => panic!("unexpected command parse: {other:?}"),
         }

@@ -13,8 +13,8 @@ These flags are accepted before any subcommand.
 - `--inbox-mirror-server-url <URL>`: enable inbox mirroring to a server URL
 - `--cwd <PATH>`: override the default working directory for the command
 - `--model <MODEL>`: override the default model for the command
-- `--connect-only`: require connect-only mode instead of spawning a local Codex app-server
-- `--force-spawn`: force spawn mode instead of connect-only mode
+- `--connect-only`: require attach-only mode for the current process
+- `--force-spawn`: legacy runtime override for spawn-capable processes
 - `-h, --help`
 - `-V, --version`
 
@@ -24,7 +24,7 @@ These flags are accepted before any subcommand.
 - `orcas doctor`
 - `orcas remote ...`
 - `orcas events ...`
-- `orcas workstreams ...`
+- `orcas workstream ...`
 - `orcas workunit ...`
 - `orcas app-server ...`
 - `orcas supervisor ...`

@@ -33,14 +33,14 @@ struct DaemonRuntimeArgs {
         long,
         default_value_t = false,
         conflicts_with = "force_spawn",
-        help = "Require connect-only mode instead of spawning a local Codex app-server"
+        help = "Require attach-only mode for this process"
     )]
     connect_only: bool,
     #[arg(
         long,
         default_value_t = false,
         conflicts_with = "connect_only",
-        help = "Force spawn mode instead of connect-only mode"
+        help = "Legacy runtime override for spawn-capable processes"
     )]
     force_spawn: bool,
 }
