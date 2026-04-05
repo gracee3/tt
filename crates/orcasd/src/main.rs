@@ -66,9 +66,11 @@ async fn async_main() -> Result<()> {
             listen_url: cli.runtime.listen_url,
             inbox_mirror_server_url: cli.runtime.inbox_mirror_server_url,
             cwd: cli.runtime.cwd,
+            worktree_root: None,
             model: cli.runtime.model,
             connect_only: cli.runtime.connect_only,
             force_spawn: cli.runtime.force_spawn,
+            ..Default::default()
         }),
     )
     .await?;

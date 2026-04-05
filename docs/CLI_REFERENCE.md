@@ -12,6 +12,7 @@ These flags are accepted before any subcommand.
 - `--listen-url <WS_URL>`: override the upstream Codex app-server WebSocket URL
 - `--inbox-mirror-server-url <URL>`: enable inbox mirroring to a server URL
 - `--cwd <PATH>`: override the default working directory for the command
+- `--worktree-root <PATH>`: override the default worktree root for workstream and Codex spawn commands
 - `--model <MODEL>`: override the default model for the command
 - `--connect-only`: require attach-only mode for the current process
 - `--force-spawn`: legacy runtime override for spawn-capable processes
@@ -69,7 +70,7 @@ These flags are accepted before any subcommand.
 - `orcas workstreams list`
 - `orcas workstreams get --workstream <ID>`
 
-`orcas workstream add` and `orcas codex spawn --new-workstream` generate `worktree/<slug>` branch names by default and create worktree directories under `~/openai/worktrees/<slug>`.
+`orcas workstream add` and `orcas codex spawn --new-workstream` generate `worktree/<slug>` branch names by default and create worktree directories under the configured worktree root. The default root is `~/worktrees/orcas`.
 `orcas app-server add default` and `orcas app-server start default` refresh the managed `.codex/` template into the shared app-server `CODEX_HOME`.
 
 ## Roles

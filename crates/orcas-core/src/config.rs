@@ -123,6 +123,7 @@ auto_create_on_report_recorded = {auto_create_on_report_recorded}
 
 [defaults]
 # cwd = "/path/to/default/repo"
+# worktree_root = "/path/to/worktrees/orcas"
 model = "{default_model}"
 "#,
             binary_path = self.codex.binary_path.display(),
@@ -138,7 +139,8 @@ model = "{default_model}"
             supervisor_model = self.supervisor.model,
             supervisor_reasoning_effort = self.supervisor.reasoning_effort,
             supervisor_max_output_tokens = self.supervisor.max_output_tokens,
-            auto_create_on_report_recorded = self.supervisor.proposals.auto_create_on_report_recorded,
+            auto_create_on_report_recorded =
+                self.supervisor.proposals.auto_create_on_report_recorded,
             default_model = self.defaults.model.as_deref().unwrap_or("gpt-5"),
         )
     }
@@ -348,6 +350,7 @@ impl Default for ReconnectPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultsConfig {
     pub cwd: Option<PathBuf>,
+    pub worktree_root: Option<PathBuf>,
     pub model: Option<String>,
 }
 
@@ -355,6 +358,7 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             cwd: None,
+            worktree_root: None,
             model: Some("gpt-5".to_string()),
         }
     }
@@ -454,6 +458,7 @@ mod tests {
         assert_eq!(config.supervisor.base_url, "https://api.openai.com/v1");
         assert_eq!(config.supervisor.model, "gpt-5.4");
         assert_eq!(config.defaults.model.as_deref(), Some("gpt-5"));
+        assert!(config.defaults.worktree_root.is_none());
     }
 
     #[tokio::test]
@@ -468,7 +473,10 @@ mod tests {
             .await
             .expect("read config file");
 
-        assert_eq!(config.codex.connection_mode, CodexConnectionMode::ConnectOnly);
+        assert_eq!(
+            config.codex.connection_mode,
+            CodexConnectionMode::ConnectOnly
+        );
         assert!(raw.contains("[codex.app_server.default]"));
         assert!(raw.contains("connection_mode = \"connect_only\""));
         assert!(raw.contains("owner = \"orcas\""));
@@ -620,16 +628,22 @@ mod tests {
     fn defaults_config_round_trips_optional_path_and_model() {
         let defaults = DefaultsConfig {
             cwd: Some(PathBuf::from("/repo")),
+            worktree_root: Some(PathBuf::from("/worktrees/orcas")),
             model: Some("gpt-5.4-mini".to_string()),
         };
 
         let value = serde_json::to_value(&defaults).expect("serialize defaults config");
         assert_eq!(value["cwd"], "/repo");
+        assert_eq!(value["worktree_root"], "/worktrees/orcas");
         assert_eq!(value["model"], "gpt-5.4-mini");
 
         let round_trip =
             serde_json::from_value::<DefaultsConfig>(value).expect("deserialize defaults config");
         assert_eq!(round_trip.cwd, Some(PathBuf::from("/repo")));
+        assert_eq!(
+            round_trip.worktree_root,
+            Some(PathBuf::from("/worktrees/orcas"))
+        );
         assert_eq!(round_trip.model.as_deref(), Some("gpt-5.4-mini"));
     }
 

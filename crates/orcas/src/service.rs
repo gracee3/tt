@@ -14,6 +14,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
+use orcas_core::config::{CodexAppServerOwner, CodexAppServerTransport};
 use orcas_core::{
     AppConfig, AppPaths, CodexThreadAssignmentStatus, DecisionType,
     ORCAS_APP_SERVER_LISTEN_URL_ENV, ORCAS_APP_SERVER_OWNER_KIND_ENV,
@@ -23,7 +24,6 @@ use orcas_core::{
     ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, WorkUnitStatus, WorkstreamStatus,
     authority, ipc,
 };
-use orcas_core::config::{CodexAppServerOwner, CodexAppServerTransport};
 use orcasd::{
     OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides,
     apply_runtime_overrides,
@@ -748,12 +748,24 @@ impl SupervisorService {
         println!("listen_url: {configured_endpoint}");
         println!("binary_path: {}", config.codex.binary_path.display());
         println!("codex_home: {}", home_root.join("codex-home").display());
-        println!("codex_role_pack: {}", if Self::role_pack_installed(&role_pack_root) { "installed" } else { "missing" });
+        println!(
+            "codex_role_pack: {}",
+            if Self::role_pack_installed(&role_pack_root) {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
         println!("codex_role_pack_root: {}", role_pack_root.display());
         println!("sqlite_home: {}", home_root.join("sqlite-home").display());
         println!(
             "responses_base_url: {}",
-            config.codex.responses.base_url.as_deref().unwrap_or("unset")
+            config
+                .codex
+                .responses
+                .base_url
+                .as_deref()
+                .unwrap_or("unset")
         );
         println!(
             "direct_api_auth_file: {}",
@@ -765,7 +777,14 @@ impl SupervisorService {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "unset".to_string())
         );
-        println!("status: {}", if matching.is_empty() { "stopped" } else { "running" });
+        println!(
+            "status: {}",
+            if matching.is_empty() {
+                "stopped"
+            } else {
+                "running"
+            }
+        );
         println!("matching_listeners: {}", matching.len());
         for server in matching {
             println!("listener_pid: {}", server.pid);
@@ -776,14 +795,27 @@ impl SupervisorService {
 
     async fn resolve_base_branch(repo_root: &Path) -> Result<String> {
         let main = Command::new("git")
-            .args(["-C", &repo_root.display().to_string(), "show-ref", "--verify", "--quiet", "refs/heads/main"])
+            .args([
+                "-C",
+                &repo_root.display().to_string(),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/heads/main",
+            ])
             .status()
             .await?;
         if main.success() {
             return Ok("main".to_string());
         }
         let output = Command::new("git")
-            .args(["-C", &repo_root.display().to_string(), "rev-parse", "--abbrev-ref", "HEAD"])
+            .args([
+                "-C",
+                &repo_root.display().to_string(),
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+            ])
             .output()
             .await?;
         if !output.status.success() {
@@ -807,6 +839,19 @@ impl SupervisorService {
 
     fn local_roles_root() -> Result<PathBuf> {
         Ok(Self::home_dir()?.join(".orcas/roles"))
+    }
+
+    fn default_worktree_root() -> Result<PathBuf> {
+        Ok(Self::home_dir()?.join("worktrees/orcas"))
+    }
+
+    fn effective_worktree_root(&self) -> Result<PathBuf> {
+        Ok(self
+            .config
+            .defaults
+            .worktree_root
+            .clone()
+            .unwrap_or(Self::default_worktree_root()?))
     }
 
     fn role_file_in_root(root: &Path, role: &str) -> PathBuf {
@@ -1009,7 +1054,7 @@ impl SupervisorService {
         })?;
         let branch_name = Self::default_workstream_branch_name(&name)?;
         let base_ref = Self::resolve_base_branch(&repo_root).await?;
-        let worktree_root = Self::home_dir()?.join("openai/worktrees");
+        let worktree_root = self.effective_worktree_root()?;
         tokio::fs::create_dir_all(&worktree_root).await?;
         let worktree_path = worktree_root.join(Self::default_worktree_dir_name(&branch_name));
         if worktree_path.exists() {
@@ -1079,10 +1124,7 @@ impl SupervisorService {
         Ok(())
     }
 
-    async fn resolve_workstream_selector(
-        &self,
-        selector: &str,
-    ) -> Result<ResolvedSpawnWorkstream> {
+    async fn resolve_workstream_selector(&self, selector: &str) -> Result<ResolvedSpawnWorkstream> {
         let workstream = self.resolve_workstream_summary_selector(selector).await?;
         let scope = workstream.execution_scope.as_ref().ok_or_else(|| {
             anyhow!(
@@ -1090,10 +1132,15 @@ impl SupervisorService {
                 workstream.title
             )
         })?;
-        let worktree_path =
-            Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home)).ok_or_else(
-                || anyhow!("unable to derive worktree path from codex_home {}", scope.codex_home),
-            )?;
+        let worktree_path = Self::derive_worktree_path_from_codex_home(Path::new(
+            &scope.codex_home,
+        ))
+        .ok_or_else(|| {
+            anyhow!(
+                "unable to derive worktree path from codex_home {}",
+                scope.codex_home
+            )
+        })?;
         let branch_name = Command::new("git")
             .arg("-C")
             .arg(&worktree_path)
@@ -1104,7 +1151,9 @@ impl SupervisorService {
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .filter(|branch| !branch.is_empty())
-            .unwrap_or_else(|| Self::default_workstream_branch_name(&workstream.title).unwrap_or_default());
+            .unwrap_or_else(|| {
+                Self::default_workstream_branch_name(&workstream.title).unwrap_or_default()
+            });
         Ok(ResolvedSpawnWorkstream {
             workstream,
             repo_root: worktree_path.clone(),
@@ -1141,8 +1190,11 @@ impl SupervisorService {
     }
 
     async fn load_role_prompt(&self, role: &str) -> Result<String> {
-        let resolved =
-            Self::resolve_role_in_roots(role, &Self::local_roles_root()?, &Self::repo_roles_root())?;
+        let resolved = Self::resolve_role_in_roots(
+            role,
+            &Self::local_roles_root()?,
+            &Self::repo_roles_root(),
+        )?;
         Ok(tokio::fs::read_to_string(&resolved.path).await?)
     }
 
@@ -1157,8 +1209,11 @@ impl SupervisorService {
     }
 
     pub async fn roles_info(&self, role: &str) -> Result<()> {
-        let resolved =
-            Self::resolve_role_in_roots(role, &Self::local_roles_root()?, &Self::repo_roles_root())?;
+        let resolved = Self::resolve_role_in_roots(
+            role,
+            &Self::local_roles_root()?,
+            &Self::repo_roles_root(),
+        )?;
         println!("name: {}", resolved.name);
         println!("path: {}", resolved.path.display());
         Ok(())
@@ -1174,7 +1229,10 @@ impl SupervisorService {
         println!("daemon_running: {}", daemon_status.running);
         println!("daemon_log: {}", daemon_status.log_path.display());
         println!("codex_bin: {}", self.config.codex.binary_path.display());
-        println!("codex_endpoint: {}", self.config.codex.effective_listen_url());
+        println!(
+            "codex_endpoint: {}",
+            self.config.codex.effective_listen_url()
+        );
         println!("connection_mode: {:?}", self.config.codex.connection_mode);
         println!(
             "app_server_owner: {:?}",
@@ -1283,12 +1341,14 @@ impl SupervisorService {
 
     pub async fn app_server_status(&self, name: &str) -> Result<()> {
         self.ensure_default_app_server_name(name)?;
-        self.print_app_server_configuration(name, &self.config).await
+        self.print_app_server_configuration(name, &self.config)
+            .await
     }
 
     pub async fn app_server_info(&self, name: &str) -> Result<()> {
         self.ensure_default_app_server_name(name)?;
-        self.print_app_server_configuration(name, &self.config).await?;
+        self.print_app_server_configuration(name, &self.config)
+            .await?;
         let configured_endpoint = self.config.codex.effective_listen_url().to_string();
         let servers = Self::discover_local_codex_app_servers().await?;
         for server in servers
@@ -1355,7 +1415,9 @@ impl SupervisorService {
         let mut command = Command::new(&config.codex.binary_path);
         command.kill_on_drop(false);
         command.arg("app-server");
-        command.arg("--listen").arg(config.codex.effective_listen_url());
+        command
+            .arg("--listen")
+            .arg(config.codex.effective_listen_url());
         for override_arg in &config.codex.config_overrides {
             command.arg("--config").arg(override_arg);
         }
@@ -1484,9 +1546,9 @@ impl SupervisorService {
         let role_prompt = self.load_role_prompt(role).await?;
 
         match (workstream_selector, new_workstream) {
-            (Some(_), Some(_)) => bail!(
-                "use either --workstream <selector> or --new-workstream <name>, not both"
-            ),
+            (Some(_), Some(_)) => {
+                bail!("use either --workstream <selector> or --new-workstream <name>, not both")
+            }
             (None, Some(_)) if repo_root.is_none() => {
                 bail!("`--repo-root <path>` is required with `--new-workstream <name>`")
             }
@@ -1498,7 +1560,8 @@ impl SupervisorService {
         let resolved = match (workstream_selector, new_workstream) {
             (None, Some(name)) => {
                 let repo_root = repo_root.expect("validated repo root");
-                self.workstream_add_internal(repo_root, name.to_string()).await?
+                self.workstream_add_internal(repo_root, name.to_string())
+                    .await?
             }
             (Some(selector), None) => self.resolve_workstream_selector(selector).await?,
             (None, None) => {
@@ -1534,7 +1597,10 @@ impl SupervisorService {
             "launched codex session"
         );
         let first_response = self.prompt(&thread_id, &bootstrap_prompt).await?;
-        println!("spawn_mode: {}", if headless { "headless" } else { "attached" });
+        println!(
+            "spawn_mode: {}",
+            if headless { "headless" } else { "attached" }
+        );
         println!("role: {role}");
         println!("workstream_id: {}", resolved.workstream.id);
         println!("workstream: {}", resolved.workstream.title);
@@ -2022,7 +2088,10 @@ impl SupervisorService {
 
     pub async fn workstream_delete(&self, workstream_id: &str) -> Result<()> {
         let client = self.daemon_state_client().await?;
-        let workstream_id = self.resolve_workstream_summary_selector(workstream_id).await?.id;
+        let workstream_id = self
+            .resolve_workstream_summary_selector(workstream_id)
+            .await?
+            .id;
         let delete_plan = client
             .authority_delete_plan(&ipc::AuthorityDeletePlanRequest {
                 target: authority::DeleteTarget::Workstream {
@@ -2080,14 +2149,21 @@ impl SupervisorService {
             let worktree_path = workstream
                 .execution_scope
                 .as_ref()
-                .and_then(|scope| Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home)))
+                .and_then(|scope| {
+                    Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home))
+                })
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "-".to_string());
             let branch_name = workstream
                 .execution_scope
                 .as_ref()
-                .and_then(|scope| Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home)))
-                .and_then(|path| path.file_name().map(|value| value.to_string_lossy().into_owned()))
+                .and_then(|scope| {
+                    Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home))
+                })
+                .and_then(|path| {
+                    path.file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                })
                 .unwrap_or_else(|| "-".to_string());
             let repo_root = if worktree_path == "-" {
                 "-".to_string()
@@ -5061,7 +5137,11 @@ impl SupervisorService {
     }
 
     async fn connect_client_once(&self, launch: OrcasDaemonLaunch) -> Result<Arc<OrcasIpcClient>> {
-        let status = self.daemon.ensure_running(launch).await.map_err(Error::new)?;
+        let status = self
+            .daemon
+            .ensure_running(launch)
+            .await
+            .map_err(Error::new)?;
         OrcasIpcClient::connect(&self.paths).await.map_err(|error| {
             let detail = if status.running {
                 format!(
@@ -6816,6 +6896,35 @@ mod tests {
     }
 
     #[test]
+    fn effective_worktree_root_prefers_configured_default() {
+        let home = unique_test_dir("worktree-root-config");
+        let paths = AppPaths::from_home(home.clone());
+        let configured_root = home.join("lanes/orcas");
+        let service = SupervisorService {
+            paths,
+            config: AppConfig {
+                defaults: orcas_core::config::DefaultsConfig {
+                    worktree_root: Some(configured_root.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            daemon: OrcasDaemonProcessManager::new(
+                AppPaths::from_home(home.clone()),
+                OrcasRuntimeOverrides::default(),
+            ),
+            overrides: OrcasRuntimeOverrides::default(),
+        };
+
+        assert_eq!(
+            service.effective_worktree_root().expect("worktree root"),
+            configured_root
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn resolve_workstream_selector_matches_by_exact_name() {
         let workstreams = vec![
             authority::WorkstreamSummary {
@@ -6842,9 +6951,11 @@ mod tests {
             },
         ];
 
-        let resolved =
-            SupervisorService::resolve_workstream_summary_selector_from_list("testing", workstreams)
-                .expect("resolved workstream");
+        let resolved = SupervisorService::resolve_workstream_summary_selector_from_list(
+            "testing",
+            workstreams,
+        )
+        .expect("resolved workstream");
 
         assert_eq!(resolved.title, "testing");
         assert_eq!(resolved.id.as_str(), "ws-1");

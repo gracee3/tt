@@ -32,6 +32,6 @@ Working notes for the `validate-workflows` stream. I will keep this organized as
 - Added `orcas worktrees` to iterate workstreams and print workstream id/name, status, repo root, branch name, and worktree path.
 - Updated `orcas codex spawn` to validate role and daemon availability before creating worktrees or branches.
 - Ordinary CLI commands now use one-shot daemon checks instead of hidden retries; daemon start/restart paths still own retry behavior.
-- Generated Orcas workstream branches now default to `worktree/<slug>`, while worktree directories stay under `~/openai/worktrees/<slug>`.
+- Generated Orcas workstream branches now default to `worktree/<slug>`, while worktree directories stay under the configured worktree root, defaulting to `~/worktrees/orcas/<slug>`.
 - `orcas workstream delete` now accepts a positional workstream selector and resolves exact ids or exact names.
 - `orcas daemon status` no longer keeps stale shared runtime rows when the explicit lane path has already been removed from disk.

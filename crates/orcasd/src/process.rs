@@ -28,6 +28,7 @@ use crate::client::OrcasIpcClient;
 pub const ENV_CODEX_BIN: &str = "ORCAS_CODEX_BIN";
 pub const ENV_CODEX_LISTEN_URL: &str = "ORCAS_CODEX_LISTEN_URL";
 pub const ENV_DEFAULT_CWD: &str = "ORCAS_DEFAULT_CWD";
+pub const ENV_DEFAULT_WORKTREE_ROOT: &str = "ORCAS_DEFAULT_WORKTREE_ROOT";
 pub const ENV_DEFAULT_MODEL: &str = "ORCAS_DEFAULT_MODEL";
 pub const ENV_CONNECTION_MODE: &str = "ORCAS_CONNECTION_MODE";
 pub const ENV_DAEMON_BINARY_PATH: &str = "ORCAS_DAEMON_BINARY_PATH";
@@ -40,6 +41,7 @@ pub struct OrcasRuntimeOverrides {
     pub listen_url: Option<String>,
     pub inbox_mirror_server_url: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub worktree_root: Option<PathBuf>,
     pub model: Option<String>,
     pub connect_only: bool,
     pub force_spawn: bool,
@@ -54,6 +56,7 @@ impl OrcasRuntimeOverrides {
         let listen_url = std::env::var(ENV_CODEX_LISTEN_URL).ok();
         let inbox_mirror_server_url = std::env::var(ENV_INBOX_MIRROR_SERVER_URL).ok();
         let cwd = std::env::var_os(ENV_DEFAULT_CWD).map(PathBuf::from);
+        let worktree_root = std::env::var_os(ENV_DEFAULT_WORKTREE_ROOT).map(PathBuf::from);
         let model = std::env::var(ENV_DEFAULT_MODEL).ok();
         let mode = std::env::var(ENV_CONNECTION_MODE).ok();
         Self {
@@ -61,6 +64,7 @@ impl OrcasRuntimeOverrides {
             listen_url,
             inbox_mirror_server_url,
             cwd,
+            worktree_root,
             model,
             connect_only: mode.as_deref() == Some("connect_only"),
             force_spawn: mode.as_deref() == Some("spawn_always"),
@@ -79,6 +83,9 @@ impl OrcasRuntimeOverrides {
         }
         if let Some(cwd) = &overrides.cwd {
             self.cwd = Some(cwd.clone());
+        }
+        if let Some(worktree_root) = &overrides.worktree_root {
+            self.worktree_root = Some(worktree_root.clone());
         }
         if let Some(model) = &overrides.model {
             self.model = Some(model.clone());
@@ -141,6 +148,9 @@ pub fn apply_runtime_overrides(config: &mut AppConfig, overrides: &OrcasRuntimeO
     }
     if let Some(cwd) = &overrides.cwd {
         config.defaults.cwd = Some(cwd.clone());
+    }
+    if let Some(worktree_root) = &overrides.worktree_root {
+        config.defaults.worktree_root = Some(worktree_root.clone());
     }
     if let Some(model) = &overrides.model {
         config.defaults.model = Some(model.clone());

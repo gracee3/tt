@@ -51,6 +51,7 @@ max_output_tokens = 2000
 auto_create_on_report_recorded = false
 
 [defaults]
+# worktree_root = "/path/to/worktrees/orcas"
 model = "gpt-5"
 ```
 
@@ -118,7 +119,8 @@ Important fields are:
 7. `codex.responses.base_url`
 8. `codex.direct_api.auth_file`
 9. `defaults.cwd`
-10. `defaults.model`
+10. `defaults.worktree_root`
+11. `defaults.model`
 
 The generated default config follows this shape.
 
@@ -137,6 +139,7 @@ RUST_LOG=orcas=debug orcas doctor
 ```
 
 `ORCAS_LOG_RUNTIME_CYCLE` enables runtime-cycle logging when set to `1`, `true`, `yes`, or `on`.
+`ORCAS_DEFAULT_WORKTREE_ROOT` overrides the default worktree root for workstream and Codex spawn commands.
 
 ### Runtime Overrides
 
@@ -145,10 +148,11 @@ The daemon and CLI process manager recognize:
 1. `ORCAS_CODEX_BIN`
 2. `ORCAS_CODEX_LISTEN_URL`
 3. `ORCAS_DEFAULT_CWD`
-4. `ORCAS_DEFAULT_MODEL`
-5. `ORCAS_CONNECTION_MODE`
-6. `ORCAS_DAEMON_BINARY_PATH`
-7. `ORCAS_DAEMON_BUILD_FINGERPRINT`
+4. `ORCAS_DEFAULT_WORKTREE_ROOT`
+5. `ORCAS_DEFAULT_MODEL`
+6. `ORCAS_CONNECTION_MODE`
+7. `ORCAS_DAEMON_BINARY_PATH`
+8. `ORCAS_DAEMON_BUILD_FINGERPRINT`
 
 `ORCAS_CONNECTION_MODE` is still available as a process override, but the documented shared-runtime configuration uses `connect_only`.
 

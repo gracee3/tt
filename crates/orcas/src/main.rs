@@ -64,6 +64,12 @@ struct GlobalOptions {
     #[arg(
         long,
         global = true,
+        help = "Override the default worktree root for workstream and Codex spawn commands"
+    )]
+    worktree_root: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
         help = "Override the default model for this command"
     )]
     model: Option<String>,
@@ -1442,9 +1448,11 @@ async fn main() -> Result<()> {
         listen_url: global.listen_url.clone(),
         inbox_mirror_server_url: global.inbox_mirror_server_url.clone(),
         cwd: global.cwd.clone(),
+        worktree_root: global.worktree_root.clone(),
         model: global.model.clone(),
         connect_only: global.connect_only,
         force_spawn: global.force_spawn,
+        ..Default::default()
     };
     match cli.command {
         TopCommand::Remote { command } => {
@@ -2102,6 +2110,7 @@ mod tests {
 
         assert!(help.contains("--codex-bin"));
         assert!(help.contains("--listen-url"));
+        assert!(help.contains("--worktree-root"));
         assert!(help.contains("--connect-only"));
         assert!(help.contains("--force-spawn"));
     }
@@ -2689,13 +2698,7 @@ mod tests {
 
     #[test]
     fn parses_workstream_add_command() {
-        let cli = Cli::parse_from([
-            "orcas",
-            "workstream",
-            "add",
-            "/tmp/repo",
-            "ws-1",
-        ]);
+        let cli = Cli::parse_from(["orcas", "workstream", "add", "/tmp/repo", "ws-1"]);
 
         match cli.command {
             TopCommand::Workstream {
