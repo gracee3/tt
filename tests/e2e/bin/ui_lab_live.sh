@@ -2,16 +2,16 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-lab_root="${ORCAS_UI_E2E_LAB_ROOT:-$repo_root/target/ui-e2e-lab}"
+lab_root="${TT_UI_E2E_LAB_ROOT:-$repo_root/target/ui-e2e-lab}"
 lab_config_home="$lab_root/config"
 lab_data_home="$lab_root/data"
 lab_runtime_home="$lab_root/runtime"
-lab_orcas_home="$lab_root/.orcas"
-lab_socket_file="$lab_orcas_home/runtime/orcasd.sock"
-lab_server_pid_file="$lab_root/orcas-server.pid"
-lab_daemon_pid_file="$lab_root/orcasd.pid"
-lab_server_bind="${ORCAS_UI_E2E_SERVER_BIND:-127.0.0.1:3000}"
-lab_default_listen_url="${ORCAS_UI_E2E_CODEX_LISTEN_URL:-ws://127.0.0.1:4510}"
+lab_tt_home="$lab_root/.tt"
+lab_socket_file="$lab_tt_home/runtime/ttd.sock"
+lab_server_pid_file="$lab_root/tt-server.pid"
+lab_daemon_pid_file="$lab_root/ttd.pid"
+lab_server_bind="${TT_UI_E2E_SERVER_BIND:-127.0.0.1:3000}"
+lab_default_listen_url="${TT_UI_E2E_RUNTIME_LISTEN_URL:-ws://127.0.0.1:4510}"
 supported_scenarios=(
   live-worker-direct-patch
   live-supervisor-micro-proposal
@@ -26,8 +26,8 @@ usage: $0 <command> [args]
 
 Commands:
   reset               Recreate the shared UI lab state and config.
-  start               Start the lab daemon and lab orcas-server.
-  stop                Stop the lab daemon and lab orcas-server.
+  start               Start the lab daemon and lab tt-server.
+  stop                Stop the lab daemon and lab tt-server.
   restart             Reset and then start the lab.
   run <scenario>      Run one supported scenario into the shared UI lab.
   run-all             Run all supported scenarios sequentially into the shared UI lab.
@@ -38,54 +38,54 @@ EOF
 
 ensure_lab_dirs() {
   mkdir -p "$lab_config_home" "$lab_data_home" "$lab_runtime_home"
-  mkdir -p "$lab_orcas_home/logs" "$lab_orcas_home/runtime"
-  rm -rf "$lab_config_home/orcas" "$lab_data_home/orcas" "$lab_runtime_home/orcas"
-  ln -s "$lab_orcas_home" "$lab_config_home/orcas"
-  ln -s "$lab_orcas_home" "$lab_data_home/orcas"
-  ln -s "$lab_orcas_home/runtime" "$lab_runtime_home/orcas"
+  mkdir -p "$lab_tt_home/logs" "$lab_tt_home/runtime"
+  rm -rf "$lab_config_home/tt" "$lab_data_home/tt" "$lab_runtime_home/tt"
+  ln -s "$lab_tt_home" "$lab_config_home/tt"
+  ln -s "$lab_tt_home" "$lab_data_home/tt"
+  ln -s "$lab_tt_home/runtime" "$lab_runtime_home/tt"
   chmod 700 "$lab_runtime_home" || true
 }
 
 write_lab_config() {
-  local user_config="$HOME/.orcas/config.toml"
+  local user_config="$HOME/.tt/config.toml"
   if [[ -f "$user_config" ]]; then
-    cp "$user_config" "$lab_orcas_home/config.toml"
-    python3 - "$lab_orcas_home/config.toml" "$lab_default_listen_url" <<'PY'
+    cp "$user_config" "$lab_tt_home/config.toml"
+    python3 - "$lab_tt_home/config.toml" "$lab_default_listen_url" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 listen_url = sys.argv[2]
 raw = path.read_text()
 lines = raw.splitlines()
 out = []
-in_codex = False
+in_tt = False
 listen_done = False
 for line in lines:
     stripped = line.strip()
     if stripped.startswith("[") and stripped.endswith("]"):
-        if in_codex and not listen_done:
+        if in_tt and not listen_done:
             out.append(f'listen_url = "{listen_url}"')
             listen_done = True
-        in_codex = stripped == "[codex]"
+        in_tt = stripped == "[tt]"
         out.append(line)
         continue
-    if in_codex and stripped.startswith("listen_url ="):
+    if in_tt and stripped.startswith("listen_url ="):
         out.append(f'listen_url = "{listen_url}"')
         listen_done = True
     else:
         out.append(line)
-if in_codex and not listen_done:
+if in_tt and not listen_done:
     out.append(f'listen_url = "{listen_url}"')
 path.write_text("\n".join(out) + "\n")
 PY
   else
-    cat >"$lab_orcas_home/config.toml" <<EOF
-[codex]
-binary_path = "/home/emmy/git/codex/codex-rs/target/debug/codex"
+    cat >"$lab_tt_home/config.toml" <<EOF
+[tt]
+binary_path = "$repo_root/target/debug/tt"
 listen_url = "$lab_default_listen_url"
 connection_mode = "spawn_if_needed"
 config_overrides = []
 
-[codex.reconnect]
+[tt.reconnect]
 initial_delay_ms = 150
 max_delay_ms = 5000
 multiplier = 2.0
@@ -157,29 +157,29 @@ start_lab() {
   stop_lab
   ensure_lab_dirs
   nohup env \
-    ORCAS_HOME="$lab_orcas_home" \
-    "$repo_root/target/debug/orcasd" \
-    >"$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" 2>&1 </dev/null &
+    TT_HOME="$lab_tt_home" \
+    "$repo_root/target/debug/ttd" \
+    >"$lab_tt_home/logs/ui-e2e-lab-ttd.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_daemon_pid_file"
   wait_for_socket "$lab_socket_file" || {
-    cat "$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+    cat "$lab_tt_home/logs/ui-e2e-lab-ttd.stdout.log" >&2 || true
     echo "shared UI lab daemon did not create $lab_socket_file" >&2
     return 1
   }
   env \
-    ORCAS_HOME="$lab_orcas_home" \
-    "$repo_root/target/debug/orcas" daemon status >/dev/null 2>&1 || {
-      cat "$lab_orcas_home/logs/ui-e2e-lab-orcasd.stdout.log" >&2 || true
+    TT_HOME="$lab_tt_home" \
+    "$repo_root/target/debug/tt" daemon status >/dev/null 2>&1 || {
+      cat "$lab_tt_home/logs/ui-e2e-lab-ttd.stdout.log" >&2 || true
       echo "shared UI lab daemon is not responsive" >&2
       return 1
     }
   nohup env \
-    ORCAS_HOME="$lab_orcas_home" \
-    "$repo_root/target/debug/orcas-server" --bind "$lab_server_bind" \
-    >"$lab_orcas_home/logs/ui-e2e-lab-orcas-server.stdout.log" 2>&1 </dev/null &
+    TT_HOME="$lab_tt_home" \
+    "$repo_root/target/debug/tt-server" --bind "$lab_server_bind" \
+    >"$lab_tt_home/logs/ui-e2e-lab-tt-server.stdout.log" 2>&1 </dev/null &
   echo $! >"$lab_server_pid_file"
   wait_for_http "http://$lab_server_bind/operator-runtime/planning-sessions/list" || {
-    cat "$lab_orcas_home/logs/ui-e2e-lab-orcas-server.stdout.log" >&2 || true
+    cat "$lab_tt_home/logs/ui-e2e-lab-tt-server.stdout.log" >&2 || true
     echo "shared UI lab server is not responding on $lab_server_bind" >&2
     return 1
   }
@@ -187,27 +187,27 @@ start_lab() {
 
 print_env() {
   cat <<EOF
-ORCAS_E2E_REUSE_CURRENT_XDG=true
-ORCAS_E2E_REUSE_CURRENT_DAEMON=true
-ORCAS_E2E_SHARED_XDG_DIR=$lab_root
-ORCAS_E2E_SHARED_XDG_DATA_HOME=$lab_data_home
-ORCAS_E2E_SHARED_XDG_CONFIG_HOME=$lab_config_home
-ORCAS_E2E_SHARED_XDG_RUNTIME_HOME=$lab_runtime_home
-ORCAS_E2E_SHARED_ORCAS_HOME=$lab_orcas_home
-ORCAS_E2E_SHARED_SOCKET_FILE=$lab_socket_file
+TT_E2E_REUSE_CURRENT_XDG=true
+TT_E2E_REUSE_CURRENT_DAEMON=true
+TT_E2E_SHARED_XDG_DIR=$lab_root
+TT_E2E_SHARED_XDG_DATA_HOME=$lab_data_home
+TT_E2E_SHARED_XDG_CONFIG_HOME=$lab_config_home
+TT_E2E_SHARED_XDG_RUNTIME_HOME=$lab_runtime_home
+TT_E2E_SHARED_TT_HOME=$lab_tt_home
+TT_E2E_SHARED_SOCKET_FILE=$lab_socket_file
 EOF
 }
 
 run_scenario() {
   local scenario="$1"
-  ORCAS_E2E_REUSE_CURRENT_XDG=true \
-  ORCAS_E2E_REUSE_CURRENT_DAEMON=true \
-  ORCAS_E2E_SHARED_XDG_DIR="$lab_root" \
-  ORCAS_E2E_SHARED_XDG_DATA_HOME="$lab_data_home" \
-  ORCAS_E2E_SHARED_XDG_CONFIG_HOME="$lab_config_home" \
-  ORCAS_E2E_SHARED_XDG_RUNTIME_HOME="$lab_runtime_home" \
-  ORCAS_E2E_SHARED_ORCAS_HOME="$lab_orcas_home" \
-    ORCAS_E2E_SHARED_SOCKET_FILE="$lab_socket_file" \
+  TT_E2E_REUSE_CURRENT_XDG=true \
+  TT_E2E_REUSE_CURRENT_DAEMON=true \
+  TT_E2E_SHARED_XDG_DIR="$lab_root" \
+  TT_E2E_SHARED_XDG_DATA_HOME="$lab_data_home" \
+  TT_E2E_SHARED_XDG_CONFIG_HOME="$lab_config_home" \
+  TT_E2E_SHARED_XDG_RUNTIME_HOME="$lab_runtime_home" \
+  TT_E2E_SHARED_TT_HOME="$lab_tt_home" \
+    TT_E2E_SHARED_SOCKET_FILE="$lab_socket_file" \
     make test-e2e-live SCENARIO="$scenario"
 }
 

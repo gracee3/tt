@@ -1,24 +1,24 @@
 [workspace]
 members = [
-    "crates/orcas-core",
-    "crates/orcas-codex",
-    "crates/orcasd",
-    "crates/orcas-server-client",
-    "crates/orcas-operator-core",
-    "crates/orcas-operator-web",
+    "crates/tt-core",
+    "crates/tt-runtime",
+    "crates/ttd",
+    "crates/tt-server-client",
+    "crates/tt-operator-core",
+    "crates/tt-operator-web",
     "crates/tt-skills",
-    "crates/orcas",
-    "crates/orcas-server",
+    "crates/tt",
+    "crates/tt-server",
 ]
 default-members = [
-    "crates/orcas-core",
-    "crates/orcas-codex",
-    "crates/orcasd",
-    "crates/orcas-server-client",
-    "crates/orcas-operator-core",
+    "crates/tt-core",
+    "crates/tt-runtime",
+    "crates/ttd",
+    "crates/tt-server-client",
+    "crates/tt-operator-core",
     "crates/tt-skills",
-    "crates/orcas",
-    "crates/orcas-server",
+    "crates/tt",
+    "crates/tt-server",
 ]
 resolver = "2"
 

@@ -1,4 +1,4 @@
-APP_NAME := orcas
+APP_NAME := tt
 VERSION ?= 0.1.0
 TARGET ?= x86_64-unknown-linux-gnu
 
@@ -17,8 +17,8 @@ E2E_RUNNER := tests/e2e/run_all.sh
 SCENARIO ?=
 TAG ?=
 
-MAIN_BIN := orcas
-AUX_BINS := orcasd
+MAIN_BIN := tt
+AUX_BINS := ttd
 ALL_BINS := $(MAIN_BIN) $(AUX_BINS)
 
 RELEASE_DIR := target/$(TARGET)/release
@@ -66,7 +66,7 @@ doc:
 install: build
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 "$(RELEASE_DIR)/$(MAIN_BIN)" "$(DESTDIR)$(BINDIR)/$(MAIN_BIN)"
-	install -m 0755 "$(RELEASE_DIR)/orcasd" "$(DESTDIR)$(BINDIR)/orcasd"
+	install -m 0755 "$(RELEASE_DIR)/ttd" "$(DESTDIR)$(BINDIR)/ttd"
 
 .PHONY: install-user
 install-user:
@@ -75,38 +75,38 @@ install-user:
 .PHONY: install-systemd
 install-systemd:
 	install -d "$(DESTDIR)$(SYSTEMD_DIR)"
-	sed 's|^ExecStart=.*|ExecStart=$(BINDIR)/orcasd|' \
-		packaging/systemd/orcas-daemon.service \
-		> "$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
-	chmod 0644 "$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
+	sed 's|^ExecStart=.*|ExecStart=$(BINDIR)/ttd|' \
+		packaging/systemd/tt-daemon.service \
+		> "$(DESTDIR)$(SYSTEMD_DIR)/tt-daemon.service"
+	chmod 0644 "$(DESTDIR)$(SYSTEMD_DIR)/tt-daemon.service"
 
 .PHONY: enable-systemd
 enable-systemd:
 	systemctl --user daemon-reload
-	systemctl --user enable --now orcas-daemon.service
+	systemctl --user enable --now tt-daemon.service
 
 .PHONY: disable-systemd
 disable-systemd:
-	systemctl --user disable --now orcas-daemon.service || true
+	systemctl --user disable --now tt-daemon.service || true
 
 .PHONY: uninstall
 uninstall:
-	rm -f "$(DESTDIR)$(BINDIR)/orcas"
-	rm -f "$(DESTDIR)$(BINDIR)/orcasd"
+	rm -f "$(DESTDIR)$(BINDIR)/tt"
+	rm -f "$(DESTDIR)$(BINDIR)/ttd"
 
 .PHONY: uninstall-systemd
 uninstall-systemd:
-	rm -f "$(DESTDIR)$(SYSTEMD_DIR)/orcas-daemon.service"
+	rm -f "$(DESTDIR)$(SYSTEMD_DIR)/tt-daemon.service"
 
 .PHONY: dist
 dist: build
 	rm -rf "$(DIST_DIR)"
 	install -d "$(DIST_DIR)/bin"
 	install -d "$(DIST_DIR)/packaging/systemd"
-	install -m 0755 "$(RELEASE_DIR)/orcas" "$(DIST_DIR)/bin/orcas"
-	install -m 0755 "$(RELEASE_DIR)/orcasd" "$(DIST_DIR)/bin/orcasd"
-	install -m 0644 packaging/systemd/orcas-daemon.service \
-		"$(DIST_DIR)/packaging/systemd/orcas-daemon.service"
+	install -m 0755 "$(RELEASE_DIR)/tt" "$(DIST_DIR)/bin/tt"
+	install -m 0755 "$(RELEASE_DIR)/ttd" "$(DIST_DIR)/bin/ttd"
+	install -m 0644 packaging/systemd/tt-daemon.service \
+		"$(DIST_DIR)/packaging/systemd/tt-daemon.service"
 	test ! -f README.md || install -m 0644 README.md "$(DIST_DIR)/README.md"
 	test ! -f LICENSE || install -m 0644 LICENSE "$(DIST_DIR)/LICENSE"
 	cd dist && tar -czf "$(DIST_NAME).tar.gz" "$(DIST_NAME)"

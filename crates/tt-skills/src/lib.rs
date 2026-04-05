@@ -8,7 +8,7 @@ use clap::{Args, Subcommand, ValueEnum};
 pub struct SkillContext {
     pub server_url: Option<String>,
     pub operator_api_token: Option<String>,
-    pub codex_bin: Option<PathBuf>,
+    pub tt_bin: Option<PathBuf>,
     pub listen_url: Option<String>,
     pub inbox_mirror_server_url: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -49,9 +49,9 @@ pub enum SkillCommand {
         #[command(subcommand)]
         command: I3Command,
     },
-    Codex {
+    TT {
         #[command(subcommand)]
-        command: CodexCommand,
+        command: TTCommand,
     },
     Process {
         #[command(subcommand)]
@@ -95,9 +95,9 @@ pub enum I3Command {
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
-pub enum CodexCommand {
-    Status(CodexStatusArgs),
-    Spawn(CodexSpawnArgs),
+pub enum TTCommand {
+    Status(TTStatusArgs),
+    Spawn(TTSpawnArgs),
     Resume(ResumeArgs),
     AppServer {
         #[command(subcommand)]
@@ -206,7 +206,7 @@ pub struct AgentSpawnArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct CodexSpawnArgs {
+pub struct TTSpawnArgs {
     pub role: String,
     #[arg(long)]
     pub workstream: Option<String>,
@@ -283,7 +283,7 @@ pub struct I3MessageArgs {
 }
 
 #[derive(Debug, Clone, Args, Default)]
-pub struct CodexStatusArgs {}
+pub struct TTStatusArgs {}
 
 #[derive(Debug, Clone, Args)]
 pub struct AppServerNameArgs {
@@ -362,34 +362,25 @@ pub trait SkillBackend: Send + Sync {
     async fn i3_attach(&self, context: &SkillContext, args: &I3AttachArgs) -> Result<SkillOutcome>;
     async fn i3_focus(&self, context: &SkillContext, args: &I3FocusArgs) -> Result<SkillOutcome>;
 
-    async fn codex_status(
-        &self,
-        context: &SkillContext,
-        args: &CodexStatusArgs,
-    ) -> Result<SkillOutcome>;
-    async fn codex_spawn(
-        &self,
-        context: &SkillContext,
-        args: &CodexSpawnArgs,
-    ) -> Result<SkillOutcome>;
-    async fn codex_resume(&self, context: &SkillContext, args: &ResumeArgs)
-    -> Result<SkillOutcome>;
-    async fn codex_app_server_status(
+    async fn tt_status(&self, context: &SkillContext, args: &TTStatusArgs) -> Result<SkillOutcome>;
+    async fn tt_spawn(&self, context: &SkillContext, args: &TTSpawnArgs) -> Result<SkillOutcome>;
+    async fn tt_resume(&self, context: &SkillContext, args: &ResumeArgs) -> Result<SkillOutcome>;
+    async fn tt_app_server_status(
         &self,
         context: &SkillContext,
         args: &AppServerNameArgs,
     ) -> Result<SkillOutcome>;
-    async fn codex_app_server_start(
+    async fn tt_app_server_start(
         &self,
         context: &SkillContext,
         args: &AppServerNameArgs,
     ) -> Result<SkillOutcome>;
-    async fn codex_app_server_stop(
+    async fn tt_app_server_stop(
         &self,
         context: &SkillContext,
         args: &AppServerNameArgs,
     ) -> Result<SkillOutcome>;
-    async fn codex_app_server_restart(
+    async fn tt_app_server_restart(
         &self,
         context: &SkillContext,
         args: &AppServerNameArgs,
@@ -555,20 +546,18 @@ pub async fn dispatch<B: SkillBackend + ?Sized>(
             },
             I3Command::Message(args) => backend.i3_message(context, &args).await,
         },
-        SkillCommand::Codex { command } => match command {
-            CodexCommand::Status(args) => backend.codex_status(context, &args).await,
-            CodexCommand::Spawn(args) => backend.codex_spawn(context, &args).await,
-            CodexCommand::Resume(args) => backend.codex_resume(context, &args).await,
-            CodexCommand::AppServer { command } => match command {
+        SkillCommand::TT { command } => match command {
+            TTCommand::Status(args) => backend.tt_status(context, &args).await,
+            TTCommand::Spawn(args) => backend.tt_spawn(context, &args).await,
+            TTCommand::Resume(args) => backend.tt_resume(context, &args).await,
+            TTCommand::AppServer { command } => match command {
                 AppServerCommand::Status(args) => {
-                    backend.codex_app_server_status(context, &args).await
+                    backend.tt_app_server_status(context, &args).await
                 }
-                AppServerCommand::Start(args) => {
-                    backend.codex_app_server_start(context, &args).await
-                }
-                AppServerCommand::Stop(args) => backend.codex_app_server_stop(context, &args).await,
+                AppServerCommand::Start(args) => backend.tt_app_server_start(context, &args).await,
+                AppServerCommand::Stop(args) => backend.tt_app_server_stop(context, &args).await,
                 AppServerCommand::Restart(args) => {
-                    backend.codex_app_server_restart(context, &args).await
+                    backend.tt_app_server_restart(context, &args).await
                 }
             },
         },
@@ -717,59 +706,55 @@ mod tests2 {
             Ok(SkillOutcome::new("i3.message"))
         }
 
-        async fn codex_status(
-            &self,
-            _: &SkillContext,
-            _: &CodexStatusArgs,
-        ) -> Result<SkillOutcome> {
-            self.push("codex.status");
-            Ok(SkillOutcome::new("codex.status"))
+        async fn tt_status(&self, _: &SkillContext, _: &TTStatusArgs) -> Result<SkillOutcome> {
+            self.push("tt.status");
+            Ok(SkillOutcome::new("tt.status"))
         }
 
-        async fn codex_spawn(&self, _: &SkillContext, _: &CodexSpawnArgs) -> Result<SkillOutcome> {
-            self.push("codex.spawn");
-            Ok(SkillOutcome::new("codex.spawn"))
+        async fn tt_spawn(&self, _: &SkillContext, _: &TTSpawnArgs) -> Result<SkillOutcome> {
+            self.push("tt.spawn");
+            Ok(SkillOutcome::new("tt.spawn"))
         }
 
-        async fn codex_resume(&self, _: &SkillContext, _: &ResumeArgs) -> Result<SkillOutcome> {
-            self.push("codex.resume");
-            Ok(SkillOutcome::new("codex.resume"))
+        async fn tt_resume(&self, _: &SkillContext, _: &ResumeArgs) -> Result<SkillOutcome> {
+            self.push("tt.resume");
+            Ok(SkillOutcome::new("tt.resume"))
         }
 
-        async fn codex_app_server_status(
+        async fn tt_app_server_status(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.status");
-            Ok(SkillOutcome::new("codex.app_server.status"))
+            self.push("tt.app_server.status");
+            Ok(SkillOutcome::new("tt.app_server.status"))
         }
 
-        async fn codex_app_server_start(
+        async fn tt_app_server_start(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.start");
-            Ok(SkillOutcome::new("codex.app_server.start"))
+            self.push("tt.app_server.start");
+            Ok(SkillOutcome::new("tt.app_server.start"))
         }
 
-        async fn codex_app_server_stop(
+        async fn tt_app_server_stop(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.stop");
-            Ok(SkillOutcome::new("codex.app_server.stop"))
+            self.push("tt.app_server.stop");
+            Ok(SkillOutcome::new("tt.app_server.stop"))
         }
 
-        async fn codex_app_server_restart(
+        async fn tt_app_server_restart(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.restart");
-            Ok(SkillOutcome::new("codex.app_server.restart"))
+            self.push("tt.app_server.restart");
+            Ok(SkillOutcome::new("tt.app_server.restart"))
         }
 
         async fn process_status(
@@ -1101,59 +1086,55 @@ mod tests {
             Ok(SkillOutcome::new("i3.focus"))
         }
 
-        async fn codex_status(
-            &self,
-            _: &SkillContext,
-            _: &CodexStatusArgs,
-        ) -> Result<SkillOutcome> {
-            self.push("codex.status");
-            Ok(SkillOutcome::new("codex.status"))
+        async fn tt_status(&self, _: &SkillContext, _: &TTStatusArgs) -> Result<SkillOutcome> {
+            self.push("tt.status");
+            Ok(SkillOutcome::new("tt.status"))
         }
 
-        async fn codex_spawn(&self, _: &SkillContext, _: &CodexSpawnArgs) -> Result<SkillOutcome> {
-            self.push("codex.spawn");
-            Ok(SkillOutcome::new("codex.spawn"))
+        async fn tt_spawn(&self, _: &SkillContext, _: &TTSpawnArgs) -> Result<SkillOutcome> {
+            self.push("tt.spawn");
+            Ok(SkillOutcome::new("tt.spawn"))
         }
 
-        async fn codex_resume(&self, _: &SkillContext, _: &ResumeArgs) -> Result<SkillOutcome> {
-            self.push("codex.resume");
-            Ok(SkillOutcome::new("codex.resume"))
+        async fn tt_resume(&self, _: &SkillContext, _: &ResumeArgs) -> Result<SkillOutcome> {
+            self.push("tt.resume");
+            Ok(SkillOutcome::new("tt.resume"))
         }
 
-        async fn codex_app_server_status(
+        async fn tt_app_server_status(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.status");
-            Ok(SkillOutcome::new("codex.app_server.status"))
+            self.push("tt.app_server.status");
+            Ok(SkillOutcome::new("tt.app_server.status"))
         }
 
-        async fn codex_app_server_start(
+        async fn tt_app_server_start(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.start");
-            Ok(SkillOutcome::new("codex.app_server.start"))
+            self.push("tt.app_server.start");
+            Ok(SkillOutcome::new("tt.app_server.start"))
         }
 
-        async fn codex_app_server_stop(
+        async fn tt_app_server_stop(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.stop");
-            Ok(SkillOutcome::new("codex.app_server.stop"))
+            self.push("tt.app_server.stop");
+            Ok(SkillOutcome::new("tt.app_server.stop"))
         }
 
-        async fn codex_app_server_restart(
+        async fn tt_app_server_restart(
             &self,
             _: &SkillContext,
             _: &AppServerNameArgs,
         ) -> Result<SkillOutcome> {
-            self.push("codex.app_server.restart");
-            Ok(SkillOutcome::new("codex.app_server.restart"))
+            self.push("tt.app_server.restart");
+            Ok(SkillOutcome::new("tt.app_server.restart"))
         }
 
         async fn process_status(
@@ -1382,8 +1363,8 @@ mod tests {
         let outcome = dispatch(
             &backend,
             &context,
-            SkillCommand::Codex {
-                command: CodexCommand::AppServer {
+            SkillCommand::TT {
+                command: TTCommand::AppServer {
                     command: AppServerCommand::Restart(AppServerNameArgs {
                         name: "default".to_string(),
                     }),
@@ -1392,10 +1373,10 @@ mod tests {
         )
         .await
         .expect("dispatch");
-        assert_eq!(outcome.summary, "codex.app_server.restart");
+        assert_eq!(outcome.summary, "tt.app_server.restart");
         assert_eq!(
             backend.calls.lock().expect("lock call log").as_slice(),
-            ["codex.app_server.restart"]
+            ["tt.app_server.restart"]
         );
 
         let outcome = dispatch(
@@ -1415,7 +1396,7 @@ mod tests {
         assert_eq!(outcome.summary, "git.worktree.list");
         assert_eq!(
             backend.calls.lock().expect("lock call log").as_slice(),
-            ["codex.app_server.restart", "git.worktree.list"]
+            ["tt.app_server.restart", "git.worktree.list"]
         );
     }
 }

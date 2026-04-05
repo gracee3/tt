@@ -2481,165 +2481,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd"
 
 [[package]]
-name = "orcas"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "crossterm",
- "futures",
- "orcas-codex",
- "orcas-core",
- "orcas-server-client",
- "orcasd",
- "portable-pty",
- "ratatui",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "toml 0.9.12+spec-1.1.0",
- "toml_edit",
- "tracing",
- "tt-skills",
- "uuid",
- "vt100",
-]
-
-[[package]]
-name = "orcas-codex"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "orcas-core",
- "quote",
- "serde",
- "serde_json",
- "syn 2.0.117",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "orcas-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "dirs",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "orcas-operator-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "orcas-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "orcas-operator-web"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "console_error_panic_hook",
- "js-sys",
- "leptos",
- "leptos_router",
- "orcas-core",
- "orcas-operator-core",
- "orcas-server-client",
- "serde",
- "serde_json",
- "tokio",
- "url",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "orcas-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "isahc",
- "orcas-core",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower-http",
- "tracing",
- "uuid",
- "web-push",
-]
-
-[[package]]
-name = "orcas-server-client"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "gloo-net",
- "orcas-core",
- "orcas-server",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "orcasd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "futures",
- "orcas-codex",
- "orcas-core",
- "orcas-server",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4295,6 +4136,141 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "crossterm",
+ "futures",
+ "portable-pty",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.9.12+spec-1.1.0",
+ "toml_edit",
+ "tracing",
+ "tt-core",
+ "tt-runtime",
+ "tt-server-client",
+ "tt-skills",
+ "ttd",
+ "uuid",
+ "vt100",
+]
+
+[[package]]
+name = "tt-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "tt-operator-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tt-core",
+]
+
+[[package]]
+name = "tt-operator-web"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "console_error_panic_hook",
+ "js-sys",
+ "leptos",
+ "leptos_router",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tt-core",
+ "tt-operator-core",
+ "tt-server-client",
+ "url",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "tt-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tt-core",
+ "url",
+]
+
+[[package]]
+name = "tt-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "isahc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tt-core",
+ "uuid",
+ "web-push",
+]
+
+[[package]]
+name = "tt-server-client"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gloo-net",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tt-core",
+ "tt-server",
+ "uuid",
+]
+
+[[package]]
 name = "tt-skills"
 version = "0.1.0"
 dependencies = [
@@ -4302,6 +4278,30 @@ dependencies = [
  "async-trait",
  "clap",
  "tokio",
+]
+
+[[package]]
+name = "ttd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "futures",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tt-core",
+ "tt-runtime",
+ "tt-server",
+ "uuid",
 ]
 
 [[package]]

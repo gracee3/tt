@@ -1,0 +1,111 @@
+.TH TTD 1 "2026-03-17" "TT 0.1.0" "User Commands"
+.SH NAME
+ttd \- TT daemon for local TT supervision
+.SH SYNOPSIS
+.B ttd
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+The
+.B ttd
+binary is the long-lived TT daemon. It owns the local control plane,
+maintains workflow state, serves the Unix domain socket used by clients, and
+coordinates the upstream TT worker connection.
+
+The daemon is normally managed by
+.BR systemd (1)
+through
+.I tt-daemon.service
+and is designed to run under the user service manager so it shares the same
+XDG paths and local socket contract as the CLI rather than acting as a public
+network daemon.
+
+TT records workstreams, work units, assignments, reports, decisions,
+proposals, thread state, and turn state in TT-native storage. The CLI
+connects to the daemon for inspection and control.
+
+The current daemon owns two live persistence systems: legacy collaboration and
+thread or turn mirror state in \fIstate.json\fR, and authority state in
+\fIstate.db\fR for authority workstreams, authority work units, and tracked
+threads.
+.SH OPTIONS
+.TP
+.B --tt-bin \fIPATH\fR
+Override the local TT binary path for this daemon process.
+
+.TP
+.B --listen-url \fIURL\fR
+Override the upstream TT app-server WebSocket URL.
+
+.TP
+.B --cwd \fIPATH\fR
+Override the default working directory for spawned work.
+
+.TP
+.B --model \fINAME\fR
+Override the default model for spawned work.
+
+.TP
+.B --connect-only
+Require connect-only mode instead of spawning a local TT app-server.
+
+.TP
+.B --force-spawn
+Require spawn mode instead of connect-only mode. This option conflicts with
+.BR --connect-only .
+.SH FILES
+.TP
+.I ~/.tt/config.toml
+User configuration file.
+
+.TP
+.I ~/.tt/state.json
+Legacy collaboration and thread or turn mirror state.
+
+.TP
+.I ~/.tt/state.db
+Authority workstream, authority work unit, and tracked-thread state.
+
+.TP
+.I ~/.tt/logs/ttd.log
+Daemon log file.
+
+.TP
+.I ${TT_HOME}/runtime/ttd.sock or ~/.tt/runtime/ttd.sock
+Local IPC socket used by supervisor clients.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls tracing verbosity for the daemon.
+
+.TP
+.B TT_RUNTIME_BIN
+Overrides the path to the local TT binary.
+
+.TP
+.B TT_RUNTIME_LISTEN_URL
+Overrides the upstream TT listen URL.
+
+.TP
+.B TT_DEFAULT_CWD
+Overrides the default working directory used for spawned work.
+
+.TP
+.B TT_DEFAULT_MODEL
+Overrides the default model used for spawned work.
+
+.TP
+.B TT_CONNECTION_MODE
+Accepts
+.B connect_only
+or
+.B spawn_always .
+If unset, TT keeps the configured or default
+.B spawn_if_needed
+behavior.
+.SH SEE ALSO
+.BR tt (1),
+.BR systemd (1)
+.SH AUTHOR
+TT contributors.
+.SH LICENSE
+Licensed under the Apache License, Version 2.0.

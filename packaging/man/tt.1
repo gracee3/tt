@@ -1,0 +1,147 @@
+.TH TT 1 "2026-03-17" "TT 0.1.0" "User Commands"
+.SH NAME
+tt \- operator CLI for local TT workflows
+.SH SYNOPSIS
+.B tt
+[\fICOMMAND\fR] [\fIOPTIONS\fR]
+.SH DESCRIPTION
+The
+.B tt
+command is the operator-facing CLI for the TT control plane. It connects to
+the local TT daemon over the Unix socket, inspects runtime state, and
+issues operator actions such as daemon lifecycle commands and workflow
+queries.
+
+TT does not talk to TT directly. The daemon owns authoritative state,
+IPC, snapshots, and event delivery, while
+.B tt
+acts as a client of that daemon.
+
+The current packaged
+.I tt-daemon.service
+unit is intended for the user service manager, so the CLI and daemon all
+share the same user-scoped config, data, log, and socket paths.
+
+The current workflow boundary is mixed. Legacy collaboration state remains in
+\fIstate.json\fR, while authority workstreams, authority work units, and tracked
+threads live in \fIstate.db\fR. The
+.B tt
+CLI now uses authority-backed planning hierarchy CRUD as the canonical operator
+surface via
+.B workstreams ,
+.B workunits ,
+and
+.B tracked-threads .
+There is no longer an operator-facing legacy planning command namespace.
+Any remaining collaboration planning compatibility is internal to the daemon or
+used for runtime detail; it is not a supported CLI expansion surface.
+.SH QUICK START
+Check the local TT environment:
+
+.P
+.B tt doctor
+
+.P
+Query daemon status:
+
+.P
+.B tt daemon status
+
+.SH EXAMPLES
+Start or inspect the daemon:
+
+.P
+.B tt daemon start
+
+.P
+.B tt daemon status
+
+Set debug logging for a single session:
+
+.P
+.B RUST_LOG=debug tt doctor
+.SH OPTIONS
+.TP
+.B --tt-bin \fIPATH\fR
+Override the local TT binary path for this command.
+
+.TP
+.B --listen-url \fIURL\fR
+Override the upstream TT app-server WebSocket URL.
+
+.TP
+.B --cwd \fIPATH\fR
+Override the default working directory for daemon-launched work during this command.
+
+.TP
+.B --model \fINAME\fR
+Override the default model for daemon-launched work during this command.
+
+.TP
+.B --connect-only
+Require connect-only mode instead of spawning a local TT app-server for this command.
+
+.TP
+.B --force-spawn
+Require spawn mode instead of connect-only mode for this command. This option conflicts with
+.BR --connect-only .
+.SH FILES
+.TP
+.I ~/.tt/config.toml
+User configuration file.
+
+.TP
+.I ~/.tt/state.json
+Legacy collaboration and thread or turn mirror state.
+
+.TP
+.I ~/.tt/state.db
+Authority workstream, authority work unit, and tracked-thread state.
+
+.TP
+.I ~/.tt/logs/tt.log
+Operator CLI log file.
+
+.TP
+.I ${TT_HOME}/runtime/ttd.sock or ~/.tt/runtime/ttd.sock
+Local IPC socket used to reach the daemon.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls tracing verbosity for TT binaries.
+
+.TP
+.B TT_RUNTIME_BIN
+Overrides the path to the local TT binary.
+
+.TP
+.B TT_RUNTIME_LISTEN_URL
+Overrides the upstream TT listen URL.
+
+.TP
+.B TT_DEFAULT_CWD
+Overrides the default working directory used for daemon-launched work.
+
+.TP
+.B TT_DEFAULT_MODEL
+Overrides the default model used for daemon-launched work.
+
+.TP
+.B TT_CONNECTION_MODE
+Accepts
+.B connect_only
+or
+.B spawn_always .
+If unset, TT keeps the configured or default
+.B spawn_if_needed
+behavior.
+.SH SEE ALSO
+.BR ttd (1)
+
+Project documentation is installed under:
+
+.I /usr/share/doc/tt/
+.SH AUTHOR
+TT contributors.
+.SH LICENSE
+Licensed under the Apache License, Version 2.0.
