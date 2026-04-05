@@ -174,13 +174,13 @@ These flags are accepted before any subcommand.
 - `orcas codex turns recent --thread <ID> [--limit <N>]`
 - `orcas codex turns get --thread <ID> --turn <ID>`
 
-`orcas tui` opens the Orcas tabbed dashboard wrapper. It can launch and resume live upstream `codex resume <THREAD>` TUI sessions inside the current terminal, switch between them, and show a border HUD with workstream/thread context and shortcut hints. The first screen is blank except for the HUD; when the HUD is hidden, the canvas shows a `press F2 for HUD` hint until a session is opened.
+`orcas tui` opens immediately as a blank dashboard wrapper. It can launch and resume live upstream `codex resume <THREAD>` TUI sessions inside the current terminal, switch between them, and show a border HUD with shortcut hints. The UI no longer renders left/right workstream or thread sidebars, and the first screen is blank except for the HUD; when the HUD is hidden, the canvas shows a `press F2 for HUD` hint.
 Closing the Orcas dashboard exits only the wrapper; the launched Codex TUI sessions are separate child processes and keep running until terminated directly.
 Dashboard key bindings:
 
 - `Ctrl+q` closes the Orcas wrapper only
 - `F2` fades the HUD in and out
-- `F5` refreshes the daemon snapshot
+- `F5` refreshes live session status
 - `F6` / `F7` switch between live Codex session tabs
 - `F8` terminates the active Codex session
 

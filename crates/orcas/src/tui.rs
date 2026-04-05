@@ -18,21 +18,13 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::service::SupervisorService;
 
 const HUD_TOP_HEIGHT: u16 = 3;
 const HUD_BOTTOM_HEIGHT: u16 = 4;
-const HUD_LEFT_WIDTH: u16 = 34;
-const HUD_RIGHT_WIDTH: u16 = 44;
 const HUD_FADE_STEP: f32 = 0.22;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusPane {
-    Workstreams,
-    Threads,
-}
 
 #[derive(Debug, Clone)]
 enum SessionStatus {
@@ -261,10 +253,6 @@ impl SessionTab {
 }
 
 struct DashboardState {
-    snapshot: ipc::StateSnapshot,
-    focus: FocusPane,
-    workstream_index: usize,
-    thread_index: usize,
     status: String,
     last_refresh: Instant,
     show_hud: bool,
@@ -274,12 +262,8 @@ struct DashboardState {
 }
 
 impl DashboardState {
-    fn new(snapshot: ipc::StateSnapshot) -> Self {
+    fn new() -> Self {
         Self {
-            snapshot,
-            focus: FocusPane::Workstreams,
-            workstream_index: 0,
-            thread_index: 0,
             status: "dashboard ready".to_string(),
             last_refresh: Instant::now(),
             show_hud: true,
@@ -289,50 +273,7 @@ impl DashboardState {
         }
     }
 
-    fn workstreams(&self) -> &[ipc::WorkstreamSummary] {
-        &self.snapshot.collaboration.workstreams
-    }
-
-    fn filtered_threads(&self) -> Vec<&ipc::ThreadSummary> {
-        let selected = self.selected_workstream_id();
-        self.snapshot
-            .threads
-            .iter()
-            .filter(|thread| match selected {
-                Some(workstream_id) => {
-                    thread.owner_workstream_id.as_deref() == Some(workstream_id)
-                        || thread.runtime_workstream_id.as_deref() == Some(workstream_id)
-                }
-                None => true,
-            })
-            .collect()
-    }
-
-    fn selected_workstream_id(&self) -> Option<&str> {
-        self.workstreams()
-            .get(self.workstream_index)
-            .map(|workstream| workstream.id.as_str())
-    }
-
-    fn selected_workstream(&self) -> Option<&ipc::WorkstreamSummary> {
-        self.workstreams().get(self.workstream_index)
-    }
-
-    fn selected_thread(&self) -> Option<&ipc::ThreadSummary> {
-        self.filtered_threads().get(self.thread_index).copied()
-    }
-
     fn normalize_selection(&mut self) {
-        if self.workstream_index >= self.workstreams().len() {
-            self.workstream_index = 0;
-        }
-        let thread_count = self.filtered_threads().len();
-        if self.thread_index >= thread_count {
-            self.thread_index = 0;
-        }
-        if matches!(self.focus, FocusPane::Threads) && thread_count == 0 {
-            self.focus = FocusPane::Workstreams;
-        }
         self.normalize_active_tab();
     }
 
@@ -358,90 +299,8 @@ impl DashboardState {
         self.hud_opacity > 0.0
     }
 
-    fn move_up(&mut self) {
-        match self.focus {
-            FocusPane::Workstreams => {
-                let len = self.workstreams().len();
-                if len > 0 {
-                    self.workstream_index = self.workstream_index.saturating_sub(1);
-                }
-                self.thread_index = 0;
-            }
-            FocusPane::Threads => {
-                let len = self.filtered_threads().len();
-                if len > 0 {
-                    self.thread_index = self.thread_index.saturating_sub(1);
-                }
-            }
-        }
-    }
-
-    fn move_down(&mut self) {
-        match self.focus {
-            FocusPane::Workstreams => {
-                let len = self.workstreams().len();
-                if len > 0 && self.workstream_index + 1 < len {
-                    self.workstream_index += 1;
-                }
-                self.thread_index = 0;
-            }
-            FocusPane::Threads => {
-                let len = self.filtered_threads().len();
-                if len > 0 && self.thread_index + 1 < len {
-                    self.thread_index += 1;
-                }
-            }
-        }
-    }
-
-    fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            FocusPane::Workstreams => FocusPane::Threads,
-            FocusPane::Threads => FocusPane::Workstreams,
-        };
-        self.normalize_selection();
-    }
-
-    fn thread_count(&self) -> usize {
-        self.filtered_threads().len()
-    }
-
     fn active_session(&self) -> Option<&SessionTab> {
         self.active_tab.and_then(|index| self.sessions.get(index))
-    }
-
-    fn focus_session(&mut self, thread_id: &str) -> Option<usize> {
-        if let Some(index) = self
-            .sessions
-            .iter()
-            .position(|tab| tab.session.thread_id == thread_id)
-        {
-            self.active_tab = Some(index);
-            self.show_hud = false;
-            return Some(index);
-        }
-        None
-    }
-
-    fn open_thread_session(
-        &mut self,
-        service: &SupervisorService,
-        thread: &ipc::ThreadSummary,
-        workstream: &ipc::WorkstreamSummary,
-        rows: u16,
-        cols: u16,
-    ) -> Result<()> {
-        if let Some(index) = self.focus_session(&thread.id) {
-            self.status = format!("focused existing session {}", thread.id);
-            self.active_tab = Some(index);
-            return Ok(());
-        }
-        let session = LiveSession::launch(service, thread, workstream, cols, rows)?;
-        self.sessions.push(SessionTab { session });
-        self.active_tab = Some(self.sessions.len().saturating_sub(1));
-        self.show_hud = false;
-        self.status = format!("opened live Codex session for {}", thread.id);
-        Ok(())
     }
 
     fn next_session(&mut self) {
@@ -498,7 +357,7 @@ impl DashboardState {
     }
 }
 
-pub async fn run_dashboard(service: SupervisorService) -> Result<()> {
+pub async fn run_dashboard(_service: SupervisorService) -> Result<()> {
     if !io::stdout().is_terminal() {
         bail!("orcas tui requires an interactive terminal");
     }
@@ -509,18 +368,14 @@ pub async fn run_dashboard(service: SupervisorService) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create dashboard terminal")?;
 
-    let result = run_dashboard_loop(&service, &mut terminal).await;
+    let result = run_dashboard_loop(&mut terminal).await;
 
     cleanup_terminal(&mut terminal);
     result
 }
 
-async fn run_dashboard_loop(
-    service: &SupervisorService,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-) -> Result<()> {
-    let snapshot = service.dashboard_snapshot().await?;
-    let mut state = DashboardState::new(snapshot);
+async fn run_dashboard_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    let mut state = DashboardState::new();
     let refresh_interval = Duration::from_millis(750);
 
     loop {
@@ -529,23 +384,15 @@ async fn run_dashboard_loop(
         state.step_hud_transition();
         let size = terminal.size().context("read terminal size")?;
         let root = Rect::new(0, 0, size.width, size.height);
-        let hud_layout = if state.hud_visible() {
-            Some(border_hud_layout(root))
-        } else {
-            None
-        };
-        let session_area = hud_layout
-            .as_ref()
-            .map(|layout| layout.center)
-            .unwrap_or(root);
-        state.resize_sessions(session_area.height, session_area.width);
+        let hud_layout = state.hud_visible().then(|| border_hud_layout(root));
+        state.resize_sessions(root.height, root.width);
 
         terminal
             .draw(|frame| render_dashboard_frame_internal(frame, &state, hud_layout))
             .context("render Orcas dashboard")?;
 
         if state.last_refresh.elapsed() >= refresh_interval {
-            state.snapshot = service.dashboard_snapshot().await?;
+            state.poll_session_statuses();
             state.last_refresh = Instant::now();
             continue;
         }
@@ -565,9 +412,9 @@ async fn run_dashboard_loop(
                     };
                 }
                 KeyCode::F(5) => {
-                    state.snapshot = service.dashboard_snapshot().await?;
+                    state.poll_session_statuses();
                     state.last_refresh = Instant::now();
-                    state.status = "refreshed daemon snapshot".to_string();
+                    state.status = "refreshed session status".to_string();
                 }
                 KeyCode::F(6) => {
                     state.next_session();
@@ -579,43 +426,6 @@ async fn run_dashboard_loop(
                     state.terminate_active_session()?;
                 }
                 _ if state.show_hud => match key.code {
-                    KeyCode::Tab => {
-                        state.toggle_focus();
-                        state.status = match state.focus {
-                            FocusPane::Workstreams => "focused workstreams".to_string(),
-                            FocusPane::Threads => "focused threads".to_string(),
-                        };
-                    }
-                    KeyCode::Up => state.move_up(),
-                    KeyCode::Down => state.move_down(),
-                    KeyCode::Enter => match state.focus {
-                        FocusPane::Workstreams => {
-                            if state.thread_count() > 0 {
-                                state.focus = FocusPane::Threads;
-                                state.thread_index = 0;
-                                state.status = "focused threads".to_string();
-                            } else {
-                                state.status = "selected workstream has no threads".to_string();
-                            }
-                        }
-                        FocusPane::Threads => {
-                            let selected_thread = state.selected_thread().cloned();
-                            let selected_workstream = state.selected_workstream().cloned();
-                            if let (Some(thread), Some(workstream)) =
-                                (selected_thread, selected_workstream)
-                            {
-                                state.open_thread_session(
-                                    service,
-                                    &thread,
-                                    &workstream,
-                                    session_area.height,
-                                    session_area.width,
-                                )?;
-                            } else {
-                                state.status = "no thread selected".to_string();
-                            }
-                        }
-                    },
                     KeyCode::Esc => {
                         state.show_hud = false;
                         state.status = "closed HUD".to_string();
@@ -640,11 +450,7 @@ fn render_dashboard_frame_internal(
     hud_layout: Option<BorderHudLayout>,
 ) {
     let root = frame.size();
-    let session_area = hud_layout
-        .as_ref()
-        .map(|layout| layout.center)
-        .unwrap_or(root);
-    render_main(frame, session_area, state);
+    render_main(frame, root, state);
     if let Some(layout) = hud_layout {
         render_border_hud(frame, layout, state);
     } else if !state.show_hud {
@@ -655,10 +461,7 @@ fn render_dashboard_frame_internal(
 #[derive(Clone, Copy)]
 struct BorderHudLayout {
     top: Rect,
-    center: Rect,
     bottom: Rect,
-    left: Rect,
-    right: Rect,
 }
 
 fn border_hud_layout(area: Rect) -> BorderHudLayout {
@@ -666,24 +469,13 @@ fn border_hud_layout(area: Rect) -> BorderHudLayout {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(HUD_TOP_HEIGHT),
-            Constraint::Min(3),
+            Constraint::Min(1),
             Constraint::Length(HUD_BOTTOM_HEIGHT),
         ])
         .split(area);
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(HUD_LEFT_WIDTH),
-            Constraint::Min(10),
-            Constraint::Length(HUD_RIGHT_WIDTH),
-        ])
-        .split(rows[1]);
     BorderHudLayout {
         top: rows[0],
-        center: cols[1],
         bottom: rows[2],
-        left: cols[0],
-        right: cols[2],
     }
 }
 
@@ -750,13 +542,6 @@ fn render_border_hud(
 ) {
     let hud_border = hud_style(state.hud_opacity);
     let hud_accent = hud_accent_style(state.hud_opacity);
-    let daemon = &state.snapshot.daemon;
-    let active = state
-        .snapshot
-        .session
-        .active_thread_id
-        .as_deref()
-        .unwrap_or("-");
     let tabs = if state.sessions.is_empty() {
         "sessions: none".to_string()
     } else {
@@ -778,9 +563,7 @@ fn render_border_hud(
         Span::styled(" Orcas TUI ", hud_accent),
         Span::raw(" border HUD "),
         Span::raw(" | "),
-        Span::raw(format!("daemon={}", daemon.upstream.status)),
-        Span::raw(" | "),
-        Span::raw(format!("active_thread={active}")),
+        Span::raw("blank canvas"),
     ]);
     let help = Line::from(vec![
         Span::styled("ctrl+q", hud_accent),
@@ -806,31 +589,6 @@ fn render_border_hud(
             .wrap(Wrap { trim: true }),
         layout.top,
     );
-
-    render_workstream_list(frame, layout.left, state, state.hud_opacity);
-    render_thread_list(frame, layout.right, state, state.hud_opacity);
-
-    let selected_workstream = state
-        .selected_workstream()
-        .map(|workstream| {
-            format!(
-                "selected_workstream: {} | id={} | status={:?} | objective={}",
-                workstream.title, workstream.id, workstream.status, workstream.objective
-            )
-        })
-        .unwrap_or_else(|| "selected_workstream: -".to_string());
-    let selected_thread = state
-        .selected_thread()
-        .map(|thread| {
-            format!(
-                "selected_thread: {} | cwd={} | model_provider={} | recent_event={}",
-                thread.id,
-                thread.cwd,
-                thread.model_provider,
-                thread.recent_event.as_deref().unwrap_or("-")
-            )
-        })
-        .unwrap_or_else(|| "selected_thread: -".to_string());
     let active_session = state
         .active_session()
         .map(|session| {
@@ -845,9 +603,23 @@ fn render_border_hud(
         .unwrap_or_else(|| "active_session: -".to_string());
     let bottom_lines = vec![
         Line::from(state.status.clone()),
-        Line::from(selected_workstream),
-        Line::from(selected_thread),
         Line::from(active_session),
+        Line::from(format!(
+            "mode: {}",
+            if state.show_hud { "hud" } else { "canvas" }
+        )),
+        Line::from(vec![
+            Span::styled("ctrl+q", hud_accent),
+            Span::raw(" quit  "),
+            Span::styled("f2", hud_accent),
+            Span::raw(" HUD  "),
+            Span::styled("f5", hud_accent),
+            Span::raw(" refresh  "),
+            Span::styled("f6/f7", hud_accent),
+            Span::raw(" tabs  "),
+            Span::styled("f8", hud_accent),
+            Span::raw(" terminate"),
+        ]),
     ];
     let bottom_block = Block::default()
         .borders(Borders::ALL)
@@ -860,101 +632,6 @@ fn render_border_hud(
             .wrap(Wrap { trim: true }),
         layout.bottom,
     );
-}
-
-fn render_workstream_list(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    state: &DashboardState,
-    opacity: f32,
-) {
-    let workstream_items: Vec<ListItem<'_>> = state
-        .workstreams()
-        .iter()
-        .map(|workstream| {
-            let mut lines = Vec::new();
-            lines.push(Line::from(vec![Span::styled(
-                workstream.title.clone(),
-                hud_accent_style(opacity),
-            )]));
-            lines.push(Line::from(format!("id: {}", workstream.id)));
-            lines.push(Line::from(format!("status: {:?}", workstream.status)));
-            lines.push(Line::from(format!("priority: {}", workstream.priority)));
-            ListItem::new(lines)
-        })
-        .collect();
-    let mut workstream_state = ListState::default();
-    if !state.workstreams().is_empty() {
-        workstream_state.select(Some(state.workstream_index));
-    }
-    let workstream_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(hud_style(opacity))
-        .title_style(hud_accent_style(opacity))
-        .title(if matches!(state.focus, FocusPane::Workstreams) {
-            "Workstreams (focused)"
-        } else {
-            "Workstreams"
-        });
-    let workstream_list = List::new(workstream_items)
-        .block(workstream_block)
-        .highlight_style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Rgb(220, 220, 255)),
-        )
-        .highlight_symbol(">> ");
-    frame.render_stateful_widget(workstream_list, area, &mut workstream_state);
-}
-
-fn render_thread_list(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    state: &DashboardState,
-    opacity: f32,
-) {
-    let thread_items: Vec<ListItem<'_>> = state
-        .filtered_threads()
-        .into_iter()
-        .map(|thread| {
-            let lines = vec![
-                Line::from(vec![Span::styled(
-                    thread.id.clone(),
-                    hud_accent_style(opacity),
-                )]),
-                Line::from(format!("status: {}", thread.status)),
-                Line::from(format!(
-                    "owner/runtime: {}/{}",
-                    thread.owner_workstream_id.as_deref().unwrap_or("-"),
-                    thread.runtime_workstream_id.as_deref().unwrap_or("-")
-                )),
-                Line::from(thread.preview.clone().replace('\n', " ")),
-            ];
-            ListItem::new(lines)
-        })
-        .collect();
-    let mut thread_state = ListState::default();
-    if !thread_items.is_empty() {
-        thread_state.select(Some(state.thread_index));
-    }
-    let thread_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(hud_style(opacity))
-        .title_style(hud_accent_style(opacity))
-        .title(if matches!(state.focus, FocusPane::Threads) {
-            "Threads (focused)"
-        } else {
-            "Threads"
-        });
-    let thread_list = List::new(thread_items)
-        .block(thread_block)
-        .highlight_style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Rgb(220, 220, 255)),
-        )
-        .highlight_symbol(">> ");
-    frame.render_stateful_widget(thread_list, area, &mut thread_state);
 }
 
 async fn poll_key_event(timeout: Duration) -> Result<Option<KeyEvent>> {
