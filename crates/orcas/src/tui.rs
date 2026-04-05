@@ -444,8 +444,18 @@ async fn launch_codex_resume(
     service: &SupervisorService,
     thread: &ipc::ThreadSummary,
 ) -> Result<()> {
+    let _ = service.prepare_shared_app_server_auth()?;
+    if !thread.cwd.is_empty() && Path::new(&thread.cwd).is_dir() {
+        let worktree_path = Path::new(&thread.cwd);
+        service.trust_shared_app_server_projects(&[worktree_path])?;
+    }
     let mut command = Command::new(&service.config.codex.binary_path);
     command.arg("resume").arg(&thread.id);
+    command.env("CODEX_HOME", service.shared_app_server_codex_home());
+    command.env(
+        "CODEX_SQLITE_HOME",
+        service.shared_app_server_sqlite_home(),
+    );
     if !thread.cwd.is_empty() && Path::new(&thread.cwd).is_dir() {
         command.current_dir(&thread.cwd);
     }

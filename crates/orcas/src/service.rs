@@ -14,6 +14,9 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+
 use orcas_core::config::{CodexAppServerOwner, CodexAppServerTransport};
 use orcas_core::{
     AppConfig, AppPaths, CodexThreadAssignmentStatus, DecisionType,
@@ -33,6 +36,8 @@ use crate::streaming::{
     ConsoleReporter, OrcasSupervisorStreamingBackend, RetryPolicy, StreamReporter,
     StreamingCommandRunner,
 };
+
+use toml::Value as TomlValue;
 
 pub use orcasd::OrcasRuntimeOverrides as RuntimeOverrides;
 
@@ -711,6 +716,166 @@ impl SupervisorService {
         home_root.join("codex-home/.codex")
     }
 
+    fn shared_app_server_auth_source(&self) -> Result<Option<PathBuf>> {
+        if let Some(auth_file) = self.config.codex.direct_api.auth_file.as_ref() {
+            if auth_file.is_file() {
+                return Ok(Some(auth_file.clone()));
+            }
+        }
+        let fallback = Self::home_dir()?.join(".codex/auth.json");
+        if fallback.is_file() {
+            Ok(Some(fallback))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn shared_app_server_auth_file(&self) -> PathBuf {
+        self.shared_app_server_codex_home().join("auth.json")
+    }
+
+    pub fn prepare_shared_app_server_auth(&self) -> Result<Option<PathBuf>> {
+        let Some(source) = self.shared_app_server_auth_source()? else {
+            return Ok(None);
+        };
+        let target = self.shared_app_server_auth_file();
+        if source == target {
+            return Ok(Some(target));
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if target.exists() {
+            let _ = fs::remove_file(&target);
+        }
+        #[cfg(unix)]
+        {
+            unix_fs::symlink(&source, &target)?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::copy(&source, &target)?;
+        }
+        Ok(Some(target))
+    }
+
+    fn shared_app_server_config_file(&self) -> PathBuf {
+        self.shared_app_server_codex_home().join("config.toml")
+    }
+
+    fn load_shared_app_server_config(&self) -> Result<TomlValue> {
+        let config_path = self.shared_app_server_config_file();
+        if !config_path.is_file() {
+            return Ok(TomlValue::Table(Default::default()));
+        }
+        let contents = fs::read_to_string(&config_path)
+            .map_err(|error| anyhow!("failed to read {}: {error}", config_path.display()))?;
+        contents
+            .parse::<TomlValue>()
+            .map_err(|error| anyhow!("failed to parse {}: {error}", config_path.display()))
+    }
+
+    fn write_shared_app_server_config(&self, config: &TomlValue) -> Result<()> {
+        let config_path = self.shared_app_server_config_file();
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let rendered = toml::to_string_pretty(config)
+            .map_err(|error| anyhow!("failed to render {}: {error}", config_path.display()))?;
+        fs::write(&config_path, rendered)
+            .map_err(|error| anyhow!("failed to write {}: {error}", config_path.display()))?;
+        Ok(())
+    }
+
+    fn shared_app_server_trusted_project_count(&self) -> Result<usize> {
+        let config = self.load_shared_app_server_config()?;
+        Ok(config
+            .as_table()
+            .and_then(|root| root.get("projects"))
+            .and_then(|projects| projects.as_table())
+            .map(|projects| projects.len())
+            .unwrap_or(0))
+    }
+
+    fn set_shared_app_server_project_trust(
+        &self,
+        project_path: &Path,
+        trust_level: &str,
+    ) -> Result<bool> {
+        let mut config = self.load_shared_app_server_config()?;
+        let root = config
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("shared app-server config is not a table"))?;
+        let projects = root
+            .entry("projects")
+            .or_insert_with(|| TomlValue::Table(Default::default()));
+        let projects = projects
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("shared app-server projects table is not a table"))?;
+        let key = project_path.display().to_string();
+        let existing = projects.get(&key).is_some();
+        let mut project_tbl = toml::map::Map::new();
+        project_tbl.insert(
+            "trust_level".to_string(),
+            TomlValue::String(trust_level.to_string()),
+        );
+        projects.insert(key, TomlValue::Table(project_tbl));
+        self.write_shared_app_server_config(&config)?;
+        Ok(!existing)
+    }
+
+    fn clear_shared_app_server_project_trust(&self, project_path: &Path) -> Result<bool> {
+        let config_path = self.shared_app_server_config_file();
+        if !config_path.is_file() {
+            return Ok(false);
+        }
+        let mut config = self.load_shared_app_server_config()?;
+        let Some(root) = config.as_table_mut() else {
+            return Ok(false);
+        };
+        let Some(projects) = root.get_mut("projects").and_then(|value| value.as_table_mut()) else {
+            return Ok(false);
+        };
+        let removed = projects.remove(&project_path.display().to_string()).is_some();
+        if removed {
+            if projects.is_empty() {
+                root.remove("projects");
+            }
+            self.write_shared_app_server_config(&config)?;
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn trust_shared_app_server_projects(
+        &self,
+        project_paths: &[&Path],
+    ) -> Result<Vec<PathBuf>> {
+        let mut trusted = Vec::new();
+        for project_path in project_paths {
+            if project_path.exists()
+                && self.set_shared_app_server_project_trust(project_path, "trusted")?
+            {
+                trusted.push(project_path.to_path_buf());
+            } else if project_path.exists() {
+                trusted.push(project_path.to_path_buf());
+            }
+        }
+        Ok(trusted)
+    }
+
+    pub(crate) fn clear_shared_app_server_projects(
+        &self,
+        project_paths: &[&Path],
+    ) -> Result<Vec<PathBuf>> {
+        let mut removed = Vec::new();
+        for project_path in project_paths {
+            if self.clear_shared_app_server_project_trust(project_path)? {
+                removed.push(project_path.to_path_buf());
+            }
+        }
+        Ok(removed)
+    }
+
     fn role_pack_installed(target_root: &Path) -> bool {
         target_root.join("config.toml").is_file() && target_root.join("agents").is_dir()
     }
@@ -764,6 +929,22 @@ impl SupervisorService {
         println!("listen_url: {configured_endpoint}");
         println!("binary_path: {}", config.codex.binary_path.display());
         println!("codex_home: {}", home_root.join("codex-home").display());
+        println!(
+            "codex_auth: {}",
+            if self.shared_app_server_auth_file().is_file() {
+                "installed"
+            } else {
+                "missing"
+            }
+        );
+        println!(
+            "codex_auth_file: {}",
+            self.shared_app_server_auth_file().display()
+        );
+        println!(
+            "trusted_projects: {}",
+            self.shared_app_server_trusted_project_count()?
+        );
         println!(
             "codex_role_pack: {}",
             if Self::role_pack_installed(&role_pack_root) {
@@ -1105,6 +1286,10 @@ impl SupervisorService {
         let sqlite_home = lane_root.join("sqlite-home");
         tokio::fs::create_dir_all(&codex_home).await?;
         tokio::fs::create_dir_all(&sqlite_home).await?;
+        self.trust_shared_app_server_projects(&[
+            repo_root.as_path(),
+            worktree_path.as_path(),
+        ])?;
 
         let execution_scope = build_execution_scope(
             Some(codex_home.display().to_string()),
@@ -1522,6 +1707,7 @@ impl SupervisorService {
         tokio::fs::create_dir_all(home_root.join("codex-home")).await?;
         tokio::fs::create_dir_all(home_root.join("sqlite-home")).await?;
         let role_pack_root = self.sync_codex_role_pack(name).await?;
+        let auth_file = self.prepare_shared_app_server_auth()?;
         info!(
             surface = "cli",
             action = "app_server_add",
@@ -1529,6 +1715,10 @@ impl SupervisorService {
             listen_url = %config.codex.effective_listen_url(),
             owner = ?config.codex.effective_app_server().owner,
             role_pack_root = %role_pack_root.display(),
+            auth_file = auth_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unset".to_string()),
             "configured shared app-server"
         );
         self.print_app_server_configuration(name, &config).await
@@ -1600,6 +1790,7 @@ impl SupervisorService {
         tokio::fs::create_dir_all(home_root.join("codex-home")).await?;
         tokio::fs::create_dir_all(home_root.join("sqlite-home")).await?;
         let role_pack_root = self.sync_codex_role_pack(name).await?;
+        let auth_file = self.prepare_shared_app_server_auth()?;
         let listen_url = config.codex.effective_listen_url().to_string();
         let existing = Self::discover_local_codex_app_servers()
             .await?
@@ -1612,6 +1803,11 @@ impl SupervisorService {
             println!("listen_url: {}", server.endpoint);
             println!("codex_role_pack: installed");
             println!("codex_role_pack_root: {}", role_pack_root.display());
+            if let Some(auth_file) = auth_file.as_ref() {
+                println!("codex_auth_file: {}", auth_file.display());
+            } else {
+                println!("codex_auth_file: unset");
+            }
             return Ok(());
         }
 
@@ -1657,6 +1853,10 @@ impl SupervisorService {
             listen_url = %config.codex.effective_listen_url(),
             pid = child_pid,
             role_pack_root = %role_pack_root.display(),
+            auth_file = auth_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unset".to_string()),
             "starting shared app-server"
         );
 
@@ -1671,6 +1871,11 @@ impl SupervisorService {
                 println!("pid: {}", child_pid);
                 println!("listen_url: {}", config.codex.effective_listen_url());
                 println!("log_file: {}", log_path.display());
+                if let Some(auth_file) = auth_file.as_ref() {
+                    println!("codex_auth_file: {}", auth_file.display());
+                } else {
+                    println!("codex_auth_file: unset");
+                }
                 return Ok(());
             }
             if let Some(status) = child.try_wait()? {
@@ -1787,6 +1992,10 @@ impl SupervisorService {
             }
             (Some(_), Some(_)) => unreachable!("validated above"),
         };
+        self.trust_shared_app_server_projects(&[
+            resolved.repo_root.as_path(),
+            resolved.worktree_path.as_path(),
+        ])?;
 
         let bootstrap_prompt = format!(
             "You are starting an Orcas-managed Codex session.\n\nRole: {role}\nWorkstream: {} ({})\nWorktree: {}\nMode: {}\n\nRole instructions:\n{}\n\nRespond with:\n1. A concise acknowledgement of the role and workstream.\n2. The cwd you will operate from.\n3. The first actions you will take.\n4. A note that the session will remain ready for the next turn.\n",
@@ -1849,6 +2058,14 @@ impl SupervisorService {
     pub async fn dashboard_snapshot(&self) -> Result<ipc::StateSnapshot> {
         let client = self.daemon_state_client().await?;
         Ok(client.state_get().await?.snapshot)
+    }
+
+    pub fn shared_app_server_codex_home(&self) -> PathBuf {
+        self.app_server_home_root("default").join("codex-home")
+    }
+
+    pub fn shared_app_server_sqlite_home(&self) -> PathBuf {
+        self.app_server_home_root("default").join("sqlite-home")
     }
 
     pub async fn daemon_discover_app_servers(&self) -> Result<()> {
@@ -2381,6 +2598,8 @@ impl SupervisorService {
 
         let worktree_removed = Self::git_prune_worktree(&repo_root, &worktree_path).await?;
         let branch_removed = Self::git_delete_branch(&repo_root, &branch_name).await?;
+        let trust_entries_removed =
+            self.clear_shared_app_server_projects(&[repo_root.as_path(), worktree_path.as_path()])?;
 
         match target {
             ResolvedCodexWorktreeCleanupTarget::Workstream { workstream, .. } => {
@@ -2404,6 +2623,7 @@ impl SupervisorService {
                     branch = %branch_name,
                     worktree_removed,
                     branch_removed,
+                    trust_entries_removed = trust_entries_removed.len(),
                     "pruned codex worktree lane"
                 );
                 println!("surface: codex_worktree_prune");
@@ -2416,6 +2636,7 @@ impl SupervisorService {
                 println!("branch_name: {branch_name}");
                 println!("worktree_removed: {worktree_removed}");
                 println!("branch_removed: {branch_removed}");
+                println!("trust_entries_removed: {}", trust_entries_removed.len());
                 println!("deleted: {}", response.workstream.deleted_at.is_some());
             }
             ResolvedCodexWorktreeCleanupTarget::TrackedThread { tracked_thread, .. } => {
@@ -2439,6 +2660,7 @@ impl SupervisorService {
                     branch = %branch_name,
                     worktree_removed,
                     branch_removed,
+                    trust_entries_removed = trust_entries_removed.len(),
                     "pruned codex worktree lane"
                 );
                 println!("surface: codex_worktree_prune");
@@ -2451,6 +2673,7 @@ impl SupervisorService {
                 println!("branch_name: {branch_name}");
                 println!("worktree_removed: {worktree_removed}");
                 println!("branch_removed: {branch_removed}");
+                println!("trust_entries_removed: {}", trust_entries_removed.len());
                 println!("deleted: {}", response.tracked_thread.deleted_at.is_some());
             }
         }
