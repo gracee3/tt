@@ -44,7 +44,7 @@ The current checked-in operator surface is CLI-first:
 - `orcas` is the strongest checked-in operator surface
 - `orcas tui` is the checked-in blank-first dashboard wrapper for launching and resuming live upstream Codex TUI sessions
 
-The dashboard wrapper can be closed independently of the Codex child sessions it launches. If you resume a thread into the Codex TUI, that child process stays separate and keeps running until you terminate it directly. The dashboard opens immediately on a blank canvas with a border HUD, no longer renders workstream/thread sidebars, fades the HUD in and out on `F2`, and keeps tab switching available for live sessions.
+The dashboard wrapper can be closed independently of the Codex child sessions it launches. If you resume a thread into the Codex TUI, that child process stays separate and keeps running until you terminate it directly. The dashboard opens immediately on a blank canvas with a border HUD and explicit shortcut legend, no longer renders workstream/thread sidebars, fades the HUD in and out on `F2`, and keeps tab switching available for live sessions.
 
 ## Logs
 

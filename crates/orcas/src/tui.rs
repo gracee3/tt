@@ -565,7 +565,9 @@ fn render_border_hud(
         Span::raw(" | "),
         Span::raw("blank canvas"),
     ]);
-    let help = Line::from(vec![
+    let shortcuts = Line::from(vec![
+        Span::styled("shortcuts:", hud_accent),
+        Span::raw(" "),
         Span::styled("ctrl+q", hud_accent),
         Span::raw(" quit  "),
         Span::styled("f2", hud_accent),
@@ -577,7 +579,7 @@ fn render_border_hud(
         Span::styled("f8", hud_accent),
         Span::raw(" terminate"),
     ]);
-    let top_lines = vec![title, help, Line::from(format!("tabs: {tabs}"))];
+    let top_lines = vec![title, shortcuts, Line::from(format!("tabs: {tabs}"))];
     let top_block = Block::default()
         .borders(Borders::ALL)
         .border_style(hud_border)
@@ -608,18 +610,6 @@ fn render_border_hud(
             "mode: {}",
             if state.show_hud { "hud" } else { "canvas" }
         )),
-        Line::from(vec![
-            Span::styled("ctrl+q", hud_accent),
-            Span::raw(" quit  "),
-            Span::styled("f2", hud_accent),
-            Span::raw(" HUD  "),
-            Span::styled("f5", hud_accent),
-            Span::raw(" refresh  "),
-            Span::styled("f6/f7", hud_accent),
-            Span::raw(" tabs  "),
-            Span::styled("f8", hud_accent),
-            Span::raw(" terminate"),
-        ]),
     ];
     let bottom_block = Block::default()
         .borders(Borders::ALL)
