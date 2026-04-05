@@ -18,7 +18,6 @@ reqwest.workspace = true
 gloo-net.workspace = true
 
 [dev-dependencies]
-axum = "0.8.6"
 chrono.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
