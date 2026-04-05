@@ -1,13 +1,13 @@
-# Workstream Todo
+# Direct Workstream Todo
 
-Tracked backlog for the active todo skill thread.
+Tracked backlog for the active direct skill thread.
 
 ## Inbox
 
-- Add a dedicated `todo` skill for iterative note ingestion, review, and planning.
+- Add a dedicated `direct` skill for iterative note ingestion, review, planning, and capability dispatch.
 - Use a tracked project-level backlog file on disk as the shared source of truth between exchanges.
 - Preserve pasted notes, bugs, and text with enough detail to recreate the issue or context later.
-- Support a commit-frequent workflow where the todo skill updates the backlog and returns a diff/changelog to the user.
+- Support a commit-frequent workflow where the direct skill updates the backlog and returns a diff/changelog to the user.
 - Keep clarification questions small and related, and let the user continue steering the backlog as needed.
 - Allow an `insert` mode for normal note intake.
 - Allow a `review` mode that prompts for missing requirements, undefined edges, and open gaps.
@@ -16,7 +16,7 @@ Tracked backlog for the active todo skill thread.
 
 ## Now
 
-- Define the todo skill interface and keep the tracked backlog current.
+- Define the direct skill interface and keep the tracked backlog current.
 
 ## Next
 
@@ -34,5 +34,5 @@ Tracked backlog for the active todo skill thread.
 
 ## Completed
 
-- Identified the need for a dedicated todo skill.
-- Established the project-level tracked backlog file for the todo workflow.
+- Identified the need for a dedicated direct skill.
+- Established the project-level tracked backlog file for the direct workflow.

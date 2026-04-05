@@ -72,14 +72,25 @@ The older `instructions` key should be avoided.
 .codex/agents/integration.toml
 .codex/agents/harness.toml
 .codex/agents/feature.toml
-.codex/agents/todo.toml
+.codex/agents/direct.toml
 .codex/orcas/role-instructions/integration.md
 .codex/orcas/role-instructions/harness.md
 .codex/orcas/role-instructions/feature.md
-.codex/orcas/role-instructions/todo.md
-.codex/orcas/role-instructions/supervisor.md
-.codex/skills/todo/SKILL.md
-.codex/skills/supervisor/SKILL.md
+.codex/orcas/role-instructions/direct.md
+.codex/skills/direct/SKILL.md
+.codex/skills/chat/SKILL.md
+.codex/skills/learn/SKILL.md
+.codex/skills/propose/SKILL.md
+.codex/skills/process/SKILL.md
+.codex/skills/i3/SKILL.md
+.codex/skills/codex/SKILL.md
+.codex/skills/doctor/SKILL.md
+.codex/skills/git/SKILL.md
+.codex/skills/test/SKILL.md
+.codex/skills/agent/SKILL.md
+.codex/skills/human/SKILL.md
+.codex/skills/clean/SKILL.md
+.codex/skills/services/SKILL.md
 .codex/docs/roles.md
 ```
 
@@ -124,12 +135,11 @@ Then, from a parent Codex session, explicitly spawn the role you want. The role 
 - `integration`: ledger, frontier truth, promotion gating
 - `harness`: runners, wrappers, bounded proof execution, operator docs
 - `feature`: proof-only runtime investigation
-- `todo`: backlog ingestion and maintenance
-- `supervisor`: operator liaison, lane coordination, and next-action triage
+- `direct`: main operator playbook, backlog intake, and capability dispatch
 
-The `todo` skill and lane are meant to work from a shared, tracked backlog file
-in `docs/WORKSTREAM_TODO.md` so user notes can be inserted, reviewed, and
-expanded into a planning phase over multiple exchanges.
+The `direct` skill and lane are meant to work from a shared, tracked backlog
+file in `docs/WORKSTREAM_TODO.md` so user notes can be inserted, reviewed,
+and expanded into a planning phase over multiple exchanges.
 
 If you later decide a lane should inherit extra tools or a different model, add those settings to the relevant `.toml` file rather than widening the prompt.
 
