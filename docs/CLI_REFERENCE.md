@@ -65,9 +65,11 @@ These flags are accepted before any subcommand.
 - `orcas workstream add <REPO_ROOT> <NAME>`
 - `orcas workstreams create --title <TEXT> --objective <TEXT> [--priority <TEXT>]`
 - `orcas workstreams edit --workstream <ID> [--title <TEXT>] [--objective <TEXT>] [--status <active|blocked|completed>] [--priority <TEXT>]`
-- `orcas workstreams delete --workstream <ID>`
+- `orcas workstream delete <WORKSTREAM>`
 - `orcas workstreams list`
 - `orcas workstreams get --workstream <ID>`
+
+`orcas workstream add` and `orcas codex spawn --new-workstream` generate `worktree/<slug>` branch names by default and create worktree directories under `~/openai/worktrees/<slug>`.
 
 ## Roles
 
