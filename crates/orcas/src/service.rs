@@ -687,6 +687,49 @@ impl SupervisorService {
         self.paths.data_dir.join("app-server").join(name)
     }
 
+    fn codex_role_pack_source_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../codex-role-pack/.codex")
+    }
+
+    fn codex_role_pack_target_root(home_root: &Path) -> PathBuf {
+        home_root.join("codex-home/.codex")
+    }
+
+    fn role_pack_installed(target_root: &Path) -> bool {
+        target_root.join("config.toml").is_file() && target_root.join("agents").is_dir()
+    }
+
+    fn copy_directory_tree(source: &Path, target: &Path) -> Result<()> {
+        if !source.is_dir() {
+            bail!("codex role pack source {} does not exist", source.display());
+        }
+        fs::create_dir_all(target)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let target_path = target.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                Self::copy_directory_tree(&source_path, &target_path)?;
+            } else if file_type.is_file() {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&source_path, &target_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn sync_codex_role_pack(&self, name: &str) -> Result<PathBuf> {
+        self.ensure_default_app_server_name(name)?;
+        let home_root = self.app_server_home_root(name);
+        let source_root = Self::codex_role_pack_source_root();
+        let target_root = Self::codex_role_pack_target_root(&home_root);
+        Self::copy_directory_tree(&source_root, &target_root)?;
+        Ok(target_root)
+    }
+
     async fn print_app_server_configuration(&self, name: &str, config: &AppConfig) -> Result<()> {
         let configured_endpoint = config.codex.effective_listen_url().to_string();
         let servers = Self::discover_local_codex_app_servers().await?;
@@ -696,6 +739,7 @@ impl SupervisorService {
             .collect::<Vec<_>>();
         let app_server = config.codex.effective_app_server();
         let home_root = self.app_server_home_root(name);
+        let role_pack_root = Self::codex_role_pack_target_root(&home_root);
 
         println!("app_server: {name}");
         println!("enabled: {}", app_server.enabled);
@@ -704,6 +748,8 @@ impl SupervisorService {
         println!("listen_url: {configured_endpoint}");
         println!("binary_path: {}", config.codex.binary_path.display());
         println!("codex_home: {}", home_root.join("codex-home").display());
+        println!("codex_role_pack: {}", if Self::role_pack_installed(&role_pack_root) { "installed" } else { "missing" });
+        println!("codex_role_pack_root: {}", role_pack_root.display());
         println!("sqlite_home: {}", home_root.join("sqlite-home").display());
         println!(
             "responses_base_url: {}",
@@ -1202,12 +1248,14 @@ impl SupervisorService {
         let home_root = self.app_server_home_root(name);
         tokio::fs::create_dir_all(home_root.join("codex-home")).await?;
         tokio::fs::create_dir_all(home_root.join("sqlite-home")).await?;
+        let role_pack_root = self.sync_codex_role_pack(name).await?;
         info!(
             surface = "cli",
             action = "app_server_add",
             app_server = name,
             listen_url = %config.codex.effective_listen_url(),
             owner = ?config.codex.effective_app_server().owner,
+            role_pack_root = %role_pack_root.display(),
             "configured shared app-server"
         );
         self.print_app_server_configuration(name, &config).await
@@ -1273,6 +1321,10 @@ impl SupervisorService {
             );
         }
 
+        let home_root = self.app_server_home_root(name);
+        tokio::fs::create_dir_all(home_root.join("codex-home")).await?;
+        tokio::fs::create_dir_all(home_root.join("sqlite-home")).await?;
+        let role_pack_root = self.sync_codex_role_pack(name).await?;
         let listen_url = config.codex.effective_listen_url().to_string();
         let existing = Self::discover_local_codex_app_servers()
             .await?
@@ -1283,14 +1335,13 @@ impl SupervisorService {
             println!("status: running");
             println!("pid: {}", server.pid);
             println!("listen_url: {}", server.endpoint);
+            println!("codex_role_pack: installed");
+            println!("codex_role_pack_root: {}", role_pack_root.display());
             return Ok(());
         }
 
-        let home_root = self.app_server_home_root(name);
         let codex_home = home_root.join("codex-home");
         let sqlite_home = home_root.join("sqlite-home");
-        tokio::fs::create_dir_all(&codex_home).await?;
-        tokio::fs::create_dir_all(&sqlite_home).await?;
         let log_path = self.paths.logs_dir.join(format!("app-server-{name}.log"));
         let stdout = fs::OpenOptions::new()
             .create(true)
@@ -1328,6 +1379,7 @@ impl SupervisorService {
             owner = ?app_server.owner,
             listen_url = %config.codex.effective_listen_url(),
             pid = child_pid,
+            role_pack_root = %role_pack_root.display(),
             "starting shared app-server"
         );
 
@@ -6720,6 +6772,35 @@ mod tests {
 
         let _ = fs::remove_dir_all(&repo_root);
         let _ = fs::remove_dir_all(&local_root);
+    }
+
+    #[test]
+    fn copy_directory_tree_recursively_syncs_nested_files() {
+        let source = unique_test_dir("role-pack-source");
+        let target = unique_test_dir("role-pack-target");
+        fs::create_dir_all(source.join("agents")).expect("source role dir");
+        fs::create_dir_all(source.join("nested/deeper")).expect("source nested dir");
+        fs::write(source.join("config.toml"), "config = true").expect("source config");
+        fs::write(source.join("agents/feature.toml"), "feature").expect("source agent");
+        fs::write(source.join("nested/deeper/file.txt"), "deep").expect("source nested file");
+
+        SupervisorService::copy_directory_tree(&source, &target).expect("copy role pack");
+
+        assert_eq!(
+            fs::read_to_string(target.join("config.toml")).expect("target config"),
+            "config = true"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("agents/feature.toml")).expect("target agent"),
+            "feature"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("nested/deeper/file.txt")).expect("target nested"),
+            "deep"
+        );
+
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&target);
     }
 
     #[test]

@@ -70,6 +70,7 @@ These flags are accepted before any subcommand.
 - `orcas workstreams get --workstream <ID>`
 
 `orcas workstream add` and `orcas codex spawn --new-workstream` generate `worktree/<slug>` branch names by default and create worktree directories under `~/openai/worktrees/<slug>`.
+`orcas app-server add default` and `orcas app-server start default` refresh the managed `codex-role-pack/.codex` template into the shared app-server `CODEX_HOME`.
 
 ## Roles
 

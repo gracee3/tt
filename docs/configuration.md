@@ -61,6 +61,8 @@ Operationally:
 3. `orcas daemon start` starts `orcasd`, which connects to the configured app-server endpoint.
 4. `orcas app-server status default` and `orcas app-server info default` show the shared runtime endpoint and listener details.
 
+Orcas also refreshes the checked-in `codex-role-pack/.codex` template into the shared app-server `CODEX_HOME` when the app-server is added or started. That gives the shared runtime a managed `config.toml` and lane-agent defaults without turning the pack into per-workstream state.
+
 ## Local Provider Example
 
 Profiles and provider definitions let you keep the shared app-server model while selecting a different model backend for specific roles or workstreams.
@@ -168,3 +170,14 @@ ${ORCAS_HOME:-~/.orcas}/runtime/orcasd.sock
 ```
 
 `orcasd` and the shared app-server both use the same host/home root unless you explicitly change `ORCAS_HOME`.
+
+## Role Pack
+
+The repo includes a checked-in `codex-role-pack/` scaffold that acts as the template for the shared app-server home.
+
+Orcas copies the `.codex` subtree from that pack into the shared app-server `CODEX_HOME`:
+
+- source template: `codex-role-pack/.codex`
+- runtime target: `${ORCAS_HOME}/data/app-server/default/codex-home/.codex`
+
+The runtime target is managed by Orcas and refreshed on `orcas app-server add` and `orcas app-server start`.
