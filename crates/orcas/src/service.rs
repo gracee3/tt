@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -21,6 +23,7 @@ use orcas_core::{
     ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, WorkUnitStatus, WorkstreamStatus,
     authority, ipc,
 };
+use orcas_core::config::{CodexAppServerOwner, CodexAppServerTransport};
 use orcasd::{
     OrcasDaemonLaunch, OrcasDaemonProcessManager, OrcasIpcClient, OrcasRuntimeOverrides,
     apply_runtime_overrides,
@@ -634,6 +637,15 @@ struct LocalCodexAppServer {
     reap_hint: String,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedSpawnWorkstream {
+    workstream: authority::WorkstreamSummary,
+    repo_root: PathBuf,
+    base_ref: String,
+    branch_name: String,
+    worktree_path: PathBuf,
+}
+
 impl SupervisorService {
     pub async fn load(overrides: &RuntimeOverrides) -> Result<Self> {
         let paths = AppPaths::discover()?;
@@ -650,6 +662,319 @@ impl SupervisorService {
         })
     }
 
+    fn ensure_default_app_server_name(&self, name: &str) -> Result<()> {
+        if name == "default" {
+            Ok(())
+        } else {
+            bail!("only the reserved shared app-server name `default` is supported in v1")
+        }
+    }
+
+    async fn persist_config(&self, config: &AppConfig) -> Result<()> {
+        let raw = toml::to_string_pretty(config)?;
+        tokio::fs::write(&self.paths.config_file, raw).await?;
+        Ok(())
+    }
+
+    fn app_server_home_root(&self, name: &str) -> PathBuf {
+        self.paths.data_dir.join("app-server").join(name)
+    }
+
+    async fn print_app_server_configuration(&self, name: &str, config: &AppConfig) -> Result<()> {
+        let configured_endpoint = config.codex.effective_listen_url().to_string();
+        let servers = Self::discover_local_codex_app_servers().await?;
+        let matching = servers
+            .iter()
+            .filter(|server| server.endpoint == configured_endpoint)
+            .collect::<Vec<_>>();
+        let app_server = config.codex.effective_app_server();
+        let home_root = self.app_server_home_root(name);
+
+        println!("app_server: {name}");
+        println!("enabled: {}", app_server.enabled);
+        println!("owner: {:?}", app_server.owner);
+        println!("transport: {:?}", app_server.transport);
+        println!("listen_url: {configured_endpoint}");
+        println!("binary_path: {}", config.codex.binary_path.display());
+        println!("codex_home: {}", home_root.join("codex-home").display());
+        println!("sqlite_home: {}", home_root.join("sqlite-home").display());
+        println!(
+            "responses_base_url: {}",
+            config.codex.responses.base_url.as_deref().unwrap_or("unset")
+        );
+        println!(
+            "direct_api_auth_file: {}",
+            config
+                .codex
+                .direct_api
+                .auth_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unset".to_string())
+        );
+        println!("status: {}", if matching.is_empty() { "stopped" } else { "running" });
+        println!("matching_listeners: {}", matching.len());
+        for server in matching {
+            println!("listener_pid: {}", server.pid);
+            println!("listener_endpoint: {}", server.endpoint);
+        }
+        Ok(())
+    }
+
+    async fn resolve_base_branch(repo_root: &Path) -> Result<String> {
+        let main = Command::new("git")
+            .args(["-C", &repo_root.display().to_string(), "show-ref", "--verify", "--quiet", "refs/heads/main"])
+            .status()
+            .await?;
+        if main.success() {
+            return Ok("main".to_string());
+        }
+        let output = Command::new("git")
+            .args(["-C", &repo_root.display().to_string(), "rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .await?;
+        if !output.status.success() {
+            bail!(
+                "failed to resolve base branch for repo root {}",
+                repo_root.display()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn home_dir() -> Result<PathBuf> {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("unable to resolve home directory"))
+    }
+
+    fn sanitize_workstream_name(name: &str) -> String {
+        let mut slug = String::new();
+        let mut last_was_dash = false;
+        for ch in name.chars() {
+            let lowered = ch.to_ascii_lowercase();
+            if lowered.is_ascii_alphanumeric() {
+                slug.push(lowered);
+                last_was_dash = false;
+            } else if !last_was_dash {
+                slug.push('-');
+                last_was_dash = true;
+            }
+        }
+        slug.trim_matches('-').to_string()
+    }
+
+    async fn ensure_git_worktree(
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+        base_ref: &str,
+    ) -> Result<()> {
+        let branch_exists = Command::new("git")
+            .args([
+                "-C",
+                &repo_root.display().to_string(),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch_name}"),
+            ])
+            .status()
+            .await?;
+        let mut command = Command::new("git");
+        command.arg("-C").arg(repo_root);
+        command.arg("worktree").arg("add");
+        if branch_exists.success() {
+            command.arg(worktree_path).arg(branch_name);
+        } else {
+            command
+                .arg("-b")
+                .arg(branch_name)
+                .arg(worktree_path)
+                .arg(base_ref);
+        }
+        let output = command.output().await?;
+        if !output.status.success() {
+            bail!(
+                "failed to create worktree {}: {}",
+                worktree_path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    async fn workstream_add_internal(
+        &self,
+        repo_root: PathBuf,
+        name: String,
+    ) -> Result<ResolvedSpawnWorkstream> {
+        let repo_root = repo_root.canonicalize().map_err(|error| {
+            anyhow!(
+                "failed to canonicalize repo root {}: {error}",
+                repo_root.display()
+            )
+        })?;
+        let branch_name = Self::sanitize_workstream_name(&name);
+        if branch_name.is_empty() {
+            bail!("workstream name must contain at least one alphanumeric character");
+        }
+        let base_ref = Self::resolve_base_branch(&repo_root).await?;
+        let worktree_root = Self::home_dir()?.join("openai/worktrees");
+        tokio::fs::create_dir_all(&worktree_root).await?;
+        let worktree_path = worktree_root.join(&branch_name);
+        if worktree_path.exists() {
+            bail!(
+                "worktree path already exists for workstream `{name}`: {}",
+                worktree_path.display()
+            );
+        }
+        Self::ensure_git_worktree(&repo_root, &worktree_path, &branch_name, &base_ref).await?;
+
+        let lane_root = worktree_path.join(".orcas");
+        let codex_home = lane_root.join("codex-home");
+        let sqlite_home = lane_root.join("sqlite-home");
+        tokio::fs::create_dir_all(&codex_home).await?;
+        tokio::fs::create_dir_all(&sqlite_home).await?;
+
+        let execution_scope = build_execution_scope(
+            Some(codex_home.display().to_string()),
+            Some(sqlite_home.display().to_string()),
+            None,
+            Some(authority::WorkstreamTransportKind::LocalAppServer),
+            Some(authority::WorkstreamAppServerPolicy::SharedCurrentDaemon),
+            Some(authority::WorkstreamExecutionConnectionMode::ConnectOnly),
+        )?;
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .authority_workstream_create(&ipc::AuthorityWorkstreamCreateRequest {
+                command: authority::CreateWorkstream {
+                    metadata: Self::authority_command_metadata(),
+                    workstream_id: authority::WorkstreamId::new(),
+                    title: name,
+                    objective: format!("Workspace rooted at {}", repo_root.display()),
+                    status: WorkstreamStatus::Active,
+                    priority: "medium".to_string(),
+                    execution_scope,
+                },
+            })
+            .await?;
+        info!(
+            surface = "cli",
+            action = "workstream_add",
+            workstream_id = %response.workstream.id,
+            workstream = %response.workstream.title,
+            repo_root = %repo_root.display(),
+            worktree_path = %worktree_path.display(),
+            branch = %branch_name,
+            base_ref = %base_ref,
+            "created workstream and worktree"
+        );
+        Ok(ResolvedSpawnWorkstream {
+            workstream: authority::WorkstreamSummary::from(&response.workstream),
+            repo_root,
+            base_ref,
+            branch_name,
+            worktree_path,
+        })
+    }
+
+    async fn print_workstream_selection_help(&self) -> Result<()> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .authority_workstream_list(&ipc::AuthorityWorkstreamListRequest::default())
+            .await?;
+        println!("available_workstreams: {}", response.workstreams.len());
+        for workstream in response.workstreams {
+            println!("{}\t{}", workstream.id, workstream.title);
+        }
+        Ok(())
+    }
+
+    async fn resolve_workstream_selector(
+        &self,
+        selector: &str,
+    ) -> Result<ResolvedSpawnWorkstream> {
+        let client = self.daemon_state_client().await?;
+        let response = client
+            .authority_workstream_list(&ipc::AuthorityWorkstreamListRequest::default())
+            .await?;
+        let matches = response
+            .workstreams
+            .into_iter()
+            .filter(|workstream| {
+                workstream.id.to_string() == selector || workstream.title == selector
+            })
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => bail!("no workstream matched selector `{selector}`"),
+            1 => {
+                let workstream = matches.into_iter().next().expect("single workstream");
+                let scope = workstream.execution_scope.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "workstream `{}` does not have an execution scope yet",
+                        workstream.title
+                    )
+                })?;
+                let worktree_path =
+                    Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home))
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "unable to derive worktree path from codex_home {}",
+                                scope.codex_home
+                            )
+                        })?;
+                let branch_name = worktree_path
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Ok(ResolvedSpawnWorkstream {
+                    workstream,
+                    repo_root: worktree_path.clone(),
+                    base_ref: "main".to_string(),
+                    branch_name,
+                    worktree_path,
+                })
+            }
+            _ => bail!(
+                "selector `{selector}` matched multiple workstreams; use the workstream id instead"
+            ),
+        }
+    }
+
+    fn derive_worktree_path_from_codex_home(codex_home: &Path) -> Option<PathBuf> {
+        let parent = codex_home.parent()?;
+        if parent
+            .file_name()
+            .is_some_and(|value| value.to_string_lossy() == ".orcas")
+        {
+            return parent.parent().map(Path::to_path_buf);
+        }
+        Some(parent.to_path_buf())
+    }
+
+    async fn load_role_prompt(&self, role: &str) -> Result<String> {
+        let override_path = Self::home_dir()?
+            .join(".orcas/roles")
+            .join(role)
+            .join("role.md");
+        if tokio::fs::try_exists(&override_path).await? {
+            return Ok(tokio::fs::read_to_string(&override_path).await?);
+        }
+        let repo_role = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../roles")
+            .join(role)
+            .join("role.md");
+        if tokio::fs::try_exists(&repo_role).await? {
+            return Ok(tokio::fs::read_to_string(&repo_role).await?);
+        }
+        bail!(
+            "role `{role}` was not found; expected {} or {}",
+            repo_role.display(),
+            override_path.display()
+        )
+    }
+
     pub async fn doctor(&self) -> Result<()> {
         let daemon_status = self.daemon.status().await?;
         println!("config: {}", self.paths.config_file.display());
@@ -660,8 +985,12 @@ impl SupervisorService {
         println!("daemon_running: {}", daemon_status.running);
         println!("daemon_log: {}", daemon_status.log_path.display());
         println!("codex_bin: {}", self.config.codex.binary_path.display());
-        println!("codex_endpoint: {}", self.config.codex.listen_url);
+        println!("codex_endpoint: {}", self.config.codex.effective_listen_url());
         println!("connection_mode: {:?}", self.config.codex.connection_mode);
+        println!(
+            "app_server_owner: {:?}",
+            self.config.codex.effective_app_server().owner
+        );
         Ok(())
     }
 
@@ -719,6 +1048,299 @@ impl SupervisorService {
                 );
             }
         }
+        Ok(())
+    }
+
+    pub async fn app_server_add(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        let mut config = self.config.clone();
+        config.codex.app_server.default.enabled = true;
+        self.persist_config(&config).await?;
+        let home_root = self.app_server_home_root(name);
+        tokio::fs::create_dir_all(home_root.join("codex-home")).await?;
+        tokio::fs::create_dir_all(home_root.join("sqlite-home")).await?;
+        info!(
+            surface = "cli",
+            action = "app_server_add",
+            app_server = name,
+            listen_url = %config.codex.effective_listen_url(),
+            owner = ?config.codex.effective_app_server().owner,
+            "configured shared app-server"
+        );
+        self.print_app_server_configuration(name, &config).await
+    }
+
+    pub async fn app_server_remove(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        let mut config = self.config.clone();
+        if config.codex.effective_app_server().owner == CodexAppServerOwner::Orcas {
+            let _ = self.app_server_stop(name).await;
+        }
+        config.codex.app_server.default.enabled = false;
+        self.persist_config(&config).await?;
+        info!(
+            surface = "cli",
+            action = "app_server_remove",
+            app_server = name,
+            "disabled shared app-server definition"
+        );
+        println!("app_server: {name}");
+        println!("enabled: false");
+        println!("listen_url: {}", config.codex.effective_listen_url());
+        Ok(())
+    }
+
+    pub async fn app_server_status(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        self.print_app_server_configuration(name, &self.config).await
+    }
+
+    pub async fn app_server_info(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        self.print_app_server_configuration(name, &self.config).await?;
+        let configured_endpoint = self.config.codex.effective_listen_url().to_string();
+        let servers = Self::discover_local_codex_app_servers().await?;
+        for server in servers
+            .iter()
+            .filter(|server| server.endpoint == configured_endpoint)
+        {
+            println!();
+            Self::print_discovered_app_server(server);
+        }
+        Ok(())
+    }
+
+    pub async fn app_server_start(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        let config = self.config.clone();
+        let app_server = config.codex.effective_app_server().clone();
+        if !app_server.enabled {
+            bail!("app-server `{name}` is disabled; run `orcas app-server add {name}` first");
+        }
+        if app_server.owner != CodexAppServerOwner::Orcas {
+            bail!(
+                "app-server `{name}` is owned by {:?}; use that owner to start it",
+                app_server.owner
+            );
+        }
+        if app_server.transport != CodexAppServerTransport::Websocket {
+            bail!(
+                "app-server `{name}` uses {:?}; Orcas-managed start currently supports websocket listeners only",
+                app_server.transport
+            );
+        }
+
+        let listen_url = config.codex.effective_listen_url().to_string();
+        let existing = Self::discover_local_codex_app_servers()
+            .await?
+            .into_iter()
+            .find(|server| server.endpoint == listen_url);
+        if let Some(server) = existing {
+            println!("app_server: {name}");
+            println!("status: running");
+            println!("pid: {}", server.pid);
+            println!("listen_url: {}", server.endpoint);
+            return Ok(());
+        }
+
+        let home_root = self.app_server_home_root(name);
+        let codex_home = home_root.join("codex-home");
+        let sqlite_home = home_root.join("sqlite-home");
+        tokio::fs::create_dir_all(&codex_home).await?;
+        tokio::fs::create_dir_all(&sqlite_home).await?;
+        let log_path = self.paths.logs_dir.join(format!("app-server-{name}.log"));
+        let stdout = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let stderr = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+
+        let mut command = Command::new(&config.codex.binary_path);
+        command.kill_on_drop(false);
+        command.arg("app-server");
+        command.arg("--listen").arg(config.codex.effective_listen_url());
+        for override_arg in &config.codex.config_overrides {
+            command.arg("--config").arg(override_arg);
+        }
+        command.env("CODEX_HOME", &codex_home);
+        command.env("CODEX_SQLITE_HOME", &sqlite_home);
+        command.stdout(Stdio::from(stdout));
+        command.stderr(Stdio::from(stderr));
+
+        let mut child = command.spawn().map_err(|error| {
+            anyhow!(
+                "failed to start `{}` app-server at {}: {error}",
+                config.codex.binary_path.display(),
+                config.codex.effective_listen_url()
+            )
+        })?;
+        let child_pid = child.id().unwrap_or_default();
+        info!(
+            surface = "cli",
+            action = "app_server_start",
+            app_server = name,
+            owner = ?app_server.owner,
+            listen_url = %config.codex.effective_listen_url(),
+            pid = child_pid,
+            "starting shared app-server"
+        );
+
+        for _ in 0..40 {
+            if Self::discover_local_codex_app_servers()
+                .await?
+                .into_iter()
+                .any(|server| server.endpoint == listen_url)
+            {
+                println!("app_server: {name}");
+                println!("status: running");
+                println!("pid: {}", child_pid);
+                println!("listen_url: {}", config.codex.effective_listen_url());
+                println!("log_file: {}", log_path.display());
+                return Ok(());
+            }
+            if let Some(status) = child.try_wait()? {
+                bail!("app-server exited before becoming ready: {status}");
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+
+        bail!(
+            "timed out waiting for app-server `{name}` at {} to become ready",
+            config.codex.effective_listen_url()
+        );
+    }
+
+    pub async fn app_server_stop(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        let config = self.config.clone();
+        let app_server = config.codex.effective_app_server();
+        if app_server.owner != CodexAppServerOwner::Orcas {
+            bail!(
+                "app-server `{name}` is owned by {:?}; use that owner to stop it",
+                app_server.owner
+            );
+        }
+        let listen_url = config.codex.effective_listen_url().to_string();
+        let Some(server) = Self::discover_local_codex_app_servers()
+            .await?
+            .into_iter()
+            .find(|server| server.endpoint == listen_url)
+        else {
+            println!("app_server: {name}");
+            println!("status: stopped");
+            return Ok(());
+        };
+        let status = Command::new("kill")
+            .args(["-TERM", &server.pid.to_string()])
+            .status()
+            .await
+            .map_err(|error| anyhow!("failed to run `kill -TERM {}`: {error}", server.pid))?;
+        if !status.success() {
+            bail!("`kill -TERM {}` failed with status {}", server.pid, status);
+        }
+        info!(
+            surface = "cli",
+            action = "app_server_stop",
+            app_server = name,
+            pid = server.pid,
+            listen_url = %server.endpoint,
+            "stopped shared app-server"
+        );
+        println!("app_server: {name}");
+        println!("status: stopped");
+        println!("pid: {}", server.pid);
+        Ok(())
+    }
+
+    pub async fn app_server_restart(&self, name: &str) -> Result<()> {
+        self.ensure_default_app_server_name(name)?;
+        let _ = self.app_server_stop(name).await;
+        self.app_server_start(name).await
+    }
+
+    pub async fn workstream_add(&self, repo_root: PathBuf, name: String) -> Result<()> {
+        let created = self.workstream_add_internal(repo_root, name).await?;
+        println!("surface: authority");
+        println!("workstream_id: {}", created.workstream.id);
+        println!("title: {}", created.workstream.title);
+        println!("objective: {}", created.workstream.objective);
+        println!("status: {:?}", created.workstream.status);
+        println!("priority: {}", created.workstream.priority);
+        println!("base_ref: {}", created.base_ref);
+        println!("branch: {}", created.branch_name);
+        println!("repo_root: {}", created.repo_root.display());
+        println!("worktree_path: {}", created.worktree_path.display());
+        print_workstream_execution_scope(created.workstream.execution_scope.as_ref());
+        Ok(())
+    }
+
+    pub async fn codex_spawn(
+        &self,
+        role: &str,
+        workstream_selector: Option<&str>,
+        new_workstream: Option<&str>,
+        repo_root: Option<PathBuf>,
+        headless: bool,
+        model: Option<String>,
+    ) -> Result<()> {
+        let resolved = match (workstream_selector, new_workstream) {
+            (Some(_), Some(_)) => bail!(
+                "use either --workstream <selector> or --new-workstream <name>, not both"
+            ),
+            (None, Some(name)) => {
+                let repo_root = repo_root.ok_or_else(|| {
+                    anyhow!("`--repo-root <path>` is required with `--new-workstream <name>`")
+                })?;
+                self.workstream_add_internal(repo_root, name.to_string()).await?
+            }
+            (Some(selector), None) => self.resolve_workstream_selector(selector).await?,
+            (None, None) => {
+                self.print_workstream_selection_help().await?;
+                bail!(
+                    "workstream is required; pass `--workstream <selector>` or `--new-workstream <name> --repo-root <path>`"
+                );
+            }
+        };
+
+        let role_prompt = self.load_role_prompt(role).await?;
+        let bootstrap_prompt = format!(
+            "You are starting an Orcas-managed Codex session.\n\nRole: {role}\nWorkstream: {} ({})\nWorktree: {}\nMode: {}\n\nRole instructions:\n{}\n\nRespond with:\n1. A concise acknowledgement of the role and workstream.\n2. The cwd you will operate from.\n3. The first actions you will take.\n4. A note that the session will remain ready for the next turn.\n",
+            resolved.workstream.title,
+            resolved.workstream.id,
+            resolved.worktree_path.display(),
+            if headless { "headless" } else { "attached" },
+            role_prompt.trim()
+        );
+
+        let thread_id = self
+            .thread_start(Some(resolved.worktree_path.clone()), model, false)
+            .await?;
+        info!(
+            surface = "cli",
+            action = "codex_spawn",
+            role,
+            workstream_id = %resolved.workstream.id,
+            workstream = %resolved.workstream.title,
+            thread_id,
+            headless,
+            cwd = %resolved.worktree_path.display(),
+            "launched codex session"
+        );
+        let first_response = self.prompt(&thread_id, &bootstrap_prompt).await?;
+        println!("spawn_mode: {}", if headless { "headless" } else { "attached" });
+        println!("role: {role}");
+        println!("workstream_id: {}", resolved.workstream.id);
+        println!("workstream: {}", resolved.workstream.title);
+        println!("worktree_path: {}", resolved.worktree_path.display());
+        println!("thread_id: {thread_id}");
+        println!(
+            "resume_hint: orcas codex threads resume --thread {thread_id} --cwd {}",
+            resolved.worktree_path.display()
+        );
+        println!("first_response_len: {}", first_response.len());
         Ok(())
     }
 
