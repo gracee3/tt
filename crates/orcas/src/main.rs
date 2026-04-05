@@ -3,6 +3,7 @@
 mod remote;
 mod service;
 mod streaming;
+mod tui;
 
 use std::path::PathBuf;
 
@@ -124,6 +125,8 @@ enum TopCommand {
         #[command(subcommand)]
         command: AppServerCommand,
     },
+    #[command(about = "Open the Orcas dashboard TUI")]
+    Tui,
     Supervisor {
         #[command(subcommand)]
         command: SupervisorCommand,
@@ -2044,6 +2047,10 @@ async fn main() -> Result<()> {
             let service = SupervisorService::load(&overrides).await?;
             service.worktrees_list().await?;
         }
+        TopCommand::Tui => {
+            let service = SupervisorService::load(&overrides).await?;
+            tui::run_dashboard(service).await?;
+        }
         TopCommand::Codex { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
@@ -2169,6 +2176,7 @@ mod tests {
         assert!(help.contains("roles"));
         assert!(help.contains("worktrees"));
         assert!(help.contains("app-server"));
+        assert!(help.contains("tui"));
         assert!(help.contains("supervisor"));
         assert!(!help.contains("tracked-threads"));
         assert!(!help.contains("planning-sessions"));
@@ -2273,6 +2281,16 @@ mod tests {
 
         match cli.command {
             TopCommand::Worktrees => {}
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_tui_command() {
+        let cli = Cli::parse_from(["orcas", "tui"]);
+
+        match cli.command {
+            TopCommand::Tui => {}
             other => panic!("unexpected command parse: {other:?}"),
         }
     }

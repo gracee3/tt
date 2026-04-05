@@ -1226,13 +1226,15 @@ impl SupervisorService {
                 workstream.title
             )
         })?;
-        let worktree_path = Self::derive_worktree_path_from_codex_home(Path::new(&scope.codex_home))
-            .ok_or_else(|| {
-                anyhow!(
-                    "unable to derive worktree path from codex_home {}",
-                    scope.codex_home
-                )
-            })?;
+        let worktree_path = Self::derive_worktree_path_from_codex_home(Path::new(
+            &scope.codex_home,
+        ))
+        .ok_or_else(|| {
+            anyhow!(
+                "unable to derive worktree path from codex_home {}",
+                scope.codex_home
+            )
+        })?;
         let repo_root = Self::derive_repo_root_from_worktree(&worktree_path)
             .await
             .ok_or_else(|| {
@@ -1267,9 +1269,10 @@ impl SupervisorService {
             })
             .await?
             .tracked_thread;
-        let workspace = tracked_thread.workspace.clone().ok_or_else(|| {
-            anyhow!("tracked thread `{tracked_thread_id}` has no workspace")
-        })?;
+        let workspace = tracked_thread
+            .workspace
+            .clone()
+            .ok_or_else(|| anyhow!("tracked thread `{tracked_thread_id}` has no workspace"))?;
         Ok(ResolvedCodexWorktreeCleanupTarget::TrackedThread {
             repo_root: PathBuf::from(&workspace.repository_root),
             worktree_path: PathBuf::from(&workspace.worktree_path),
@@ -1283,19 +1286,24 @@ impl SupervisorService {
         selector: &str,
     ) -> Result<ResolvedCodexWorktreeCleanupTarget> {
         let workstream_result = self.resolve_workstream_summary_selector(selector).await;
-        let tracked_thread_result = if authority::TrackedThreadId::parse(selector.to_string())
-            .is_ok()
-        {
-            Some(self.resolve_cleanup_target_from_tracked_thread(selector).await)
-        } else {
-            None
-        };
+        let tracked_thread_result =
+            if authority::TrackedThreadId::parse(selector.to_string()).is_ok() {
+                Some(
+                    self.resolve_cleanup_target_from_tracked_thread(selector)
+                        .await,
+                )
+            } else {
+                None
+            };
 
         match (workstream_result, tracked_thread_result) {
             (Ok(_), Some(Ok(_))) => bail!(
                 "selector `{selector}` matched both a workstream and a tracked-thread; use a more specific selector"
             ),
-            (Ok(workstream), _) => self.resolve_cleanup_target_from_workstream(workstream).await,
+            (Ok(workstream), _) => {
+                self.resolve_cleanup_target_from_workstream(workstream)
+                    .await
+            }
             (Err(workstream_error), Some(Ok(tracked_thread))) => Ok(tracked_thread),
             (Err(workstream_error), Some(Err(tracked_thread_error))) => {
                 Err(anyhow!("{workstream_error}; {tracked_thread_error}"))
@@ -1838,6 +1846,11 @@ impl SupervisorService {
         Ok(())
     }
 
+    pub async fn dashboard_snapshot(&self) -> Result<ipc::StateSnapshot> {
+        let client = self.daemon_state_client().await?;
+        Ok(client.state_get().await?.snapshot)
+    }
+
     pub async fn daemon_discover_app_servers(&self) -> Result<()> {
         let servers = Self::discover_local_codex_app_servers().await?;
         if servers.is_empty() {
@@ -2360,7 +2373,9 @@ impl SupervisorService {
             };
 
         let delete_plan = client
-            .authority_delete_plan(&ipc::AuthorityDeletePlanRequest { target: delete_target })
+            .authority_delete_plan(&ipc::AuthorityDeletePlanRequest {
+                target: delete_target,
+            })
             .await?
             .delete_plan;
 
@@ -2403,9 +2418,7 @@ impl SupervisorService {
                 println!("branch_removed: {branch_removed}");
                 println!("deleted: {}", response.workstream.deleted_at.is_some());
             }
-            ResolvedCodexWorktreeCleanupTarget::TrackedThread {
-                tracked_thread, ..
-            } => {
+            ResolvedCodexWorktreeCleanupTarget::TrackedThread { tracked_thread, .. } => {
                 let response = client
                     .authority_tracked_thread_delete(&ipc::AuthorityTrackedThreadDeleteRequest {
                         command: authority::DeleteTrackedThread {
