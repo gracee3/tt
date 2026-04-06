@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 mod remote;
+mod docs;
 mod service;
 mod skill_runtime;
 mod streaming;
@@ -104,6 +105,10 @@ enum TopCommand {
         command: DaemonCommand,
     },
     Doctor,
+    Docs {
+        #[command(subcommand)]
+        command: DocsCommand,
+    },
     Remote {
         #[command(subcommand)]
         command: RemoteCommand,
@@ -170,6 +175,12 @@ enum DaemonCommand {
     Status,
     Restart,
     Stop,
+}
+
+#[derive(Debug, Subcommand)]
+#[command(about = "Export rendered CLI documentation")]
+enum DocsCommand {
+    ExportCli(DocsExportCliArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -560,6 +571,16 @@ struct LaneCleanupArgs {
     scope: LaneCleanupScopeArg,
     #[arg(long, default_value_t = false)]
     force: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DocsExportCliArgs {
+    #[arg(
+        long,
+        default_value = "docs/CLI_REFERENCE.md",
+        help = "Write the generated CLI reference to this file"
+    )]
+    out: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1669,6 +1690,11 @@ async fn main() -> Result<()> {
             let service = SupervisorService::load(&overrides).await?;
             service.doctor().await?;
         }
+        TopCommand::Docs { command } => match command {
+            DocsCommand::ExportCli(args) => {
+                docs::export_cli_markdown(&args.out)?;
+            }
+        },
         TopCommand::Events { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
