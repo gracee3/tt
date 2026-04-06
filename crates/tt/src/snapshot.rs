@@ -13,7 +13,7 @@ use tt_core::lane::{LanePaths, RepoManifest, WorkspaceManifest, read_toml, write
 use tt_core::snapshot::{
     PromptBundle, SnapshotConfigRef, SnapshotContextSummary, SnapshotConversationSelection,
     SnapshotDiff, SnapshotLogEntry, SnapshotRecord, SnapshotSkillSelection, SnapshotStatus,
-    SnapshotTurn, SnapshotTurnRange, SnapshotWorkspaceBinding,
+    SnapshotTurn, SnapshotTurnRange, SnapshotTurnRecord, SnapshotWorkspaceBinding,
 };
 use tt_skills::SkillApplyArgs;
 use ttd::TTIpcClient;
@@ -222,6 +222,7 @@ pub enum SnapshotCommand {
     Restore(SnapshotRestoreArgs),
     Diff(SnapshotDiffArgs),
     Prune(SnapshotPruneArgs),
+    Compact(ContextSummarizeArgs),
     List(SnapshotListArgs),
     Get(SnapshotGetArgs),
 }
@@ -283,10 +284,57 @@ impl SnapshotStore {
             .workspace_snapshot_db_file(&self.repo_org, &self.repo_name, &self.workspace_slug)
     }
 
+    fn turn_log_path(&self) -> PathBuf {
+        self.lane_paths
+            .workspace_turn_log_file(&self.repo_org, &self.repo_name, &self.workspace_slug)
+    }
+
     fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(self.workspace_root())
             .with_context(|| format!("create {}", self.workspace_root().display()))?;
         Ok(())
+    }
+
+    fn append_turn_history(&self, thread: &tt_core::ipc::ThreadView) -> Result<()> {
+        self.ensure_dirs()?;
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.turn_log_path())
+            .with_context(|| format!("open {}", self.turn_log_path().display()))?;
+        for turn in &thread.turns {
+            let entry = SnapshotTurnRecord {
+                thread_id: thread.summary.id.clone(),
+                turn: turn.clone(),
+                recorded_at: Utc::now().to_rfc3339(),
+            };
+            writeln!(
+                log,
+                "{}",
+                serde_json::to_string(&entry).expect("serialize turn log entry")
+            )
+            .with_context(|| format!("write {}", self.turn_log_path().display()))?;
+        }
+        Ok(())
+    }
+
+    fn load_turn_history(&self) -> Result<Vec<tt_core::ipc::TurnView>> {
+        let path = self.turn_log_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
+        let mut turns = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let entry: SnapshotTurnRecord =
+                serde_json::from_str(&line).with_context(|| format!("decode {}", path.display()))?;
+            turns.push(entry.turn);
+        }
+        Ok(turns)
     }
 
     fn ensure_sqlite(&self) -> Result<Connection> {
@@ -575,6 +623,7 @@ impl SnapshotService {
     async fn create_snapshot(&self, args: &SnapshotCreateArgs) -> Result<SnapshotRecord> {
         let thread = self.thread_history(&args.thread).await?;
         let store = self.store(&args.scope)?;
+        store.append_turn_history(&thread)?;
         let manifest = store.load_workspace_manifest()?.unwrap_or_else(|| {
             let lane_slug = LanePaths::slugify(&args.scope.lane);
             let lane_paths = LanePaths::from_app_paths(&self.paths, &lane_slug);
@@ -603,7 +652,7 @@ impl SnapshotService {
             args.commit.as_deref(),
             args.branch.as_deref(),
         )?;
-        let selection = build_selection(&thread, &args.selection, &args.thread);
+        let mut selection = build_selection(&thread.turns, &args.selection, &args.thread);
         let skills = SnapshotSkillSelection {
             skill_ids: args.skills.clone(),
             skill_versions: BTreeMap::new(),
@@ -623,6 +672,9 @@ impl SnapshotService {
             summary_version: 1,
             generated_at: Utc::now().to_rfc3339(),
         });
+        if summary.is_some() {
+            selection.summary_source_turn_ids = selection.included_turn_ids.clone();
+        }
         let prompt_bundle = build_prompt_bundle(&workspace, &selection, &skills, &config, &summary);
         let snapshot = SnapshotRecord {
             snapshot_id: generate_snapshot_id(),
@@ -649,6 +701,8 @@ impl SnapshotService {
 
     async fn fork_snapshot(&self, args: &SnapshotForkArgs) -> Result<SnapshotRecord> {
         let base = self.load_snapshot(&args.from_snapshot).await?;
+        let store = self.store_for_record(&base)?;
+        let _turns = store.load_turn_history()?;
         let mut fork = base.clone();
         fork.snapshot_id = generate_snapshot_id();
         fork.parent_snapshot_id = Some(base.snapshot_id.clone());
@@ -659,7 +713,7 @@ impl SnapshotService {
         fork.lineage_hash = hash_lineage(Some(&base.lineage_hash), &fork.prompt_hash);
         fork.tags.sort();
         fork.tags.dedup();
-        self.store_for_record(&base)?.append_snapshot(&fork)?;
+        store.append_snapshot(&fork)?;
         Ok(fork)
     }
 
@@ -804,6 +858,7 @@ impl SnapshotService {
     fn update_context(
         &self,
         base: &SnapshotRecord,
+        turns: &[tt_core::ipc::TurnView],
         selection: SnapshotSelectionArgs,
         summary: Option<String>,
         created_by: Option<String>,
@@ -816,13 +871,15 @@ impl SnapshotService {
         next.created_at = Utc::now().to_rfc3339();
         next.created_by = created_by.unwrap_or_else(|| "tt".to_string());
         next.tags.extend(tags);
-        next.conversation = mutate_selection(&base.conversation, selection, summary.clone(), mode)?;
-        next.summary = summary.map(|summary_text| SnapshotContextSummary {
-            summary_text,
-            source_turn_ids: next.conversation.summary_source_turn_ids.clone(),
-            summary_version: base.summary.as_ref().map(|value| value.summary_version + 1).unwrap_or(1),
-            generated_at: Utc::now().to_rfc3339(),
-        });
+        next.conversation = mutate_selection(turns, &base.conversation, selection, summary.clone(), mode)?;
+        if let Some(summary_text) = summary {
+            next.summary = Some(SnapshotContextSummary {
+                summary_text,
+                source_turn_ids: next.conversation.summary_source_turn_ids.clone(),
+                summary_version: base.summary.as_ref().map(|value| value.summary_version + 1).unwrap_or(1),
+                generated_at: Utc::now().to_rfc3339(),
+            });
+        }
         next.prompt_hash = compute_prompt_hash(&next.workspace, &next.conversation, &next.skills, &next.config, &next.summary);
         next.lineage_hash = hash_lineage(Some(&base.lineage_hash), &next.prompt_hash);
         next.tags.sort();
@@ -854,6 +911,7 @@ enum ContextMutationMode {
     Include,
     Exclude,
     Pin,
+    Compact,
 }
 
 fn parse_repo_spec(spec: &str) -> Result<(String, String)> {
@@ -972,7 +1030,7 @@ fn build_prompt_bundle(
 }
 
 fn build_selection(
-    thread: &tt_core::ipc::ThreadView,
+    turns: &[tt_core::ipc::TurnView],
     selection: &SnapshotSelectionArgs,
     thread_id: &str,
 ) -> SnapshotConversationSelection {
@@ -984,7 +1042,7 @@ fn build_selection(
     let mut excluded_ranges = Vec::new();
 
     if selection.include_turn_range.is_empty() && selection.include_turn.is_empty() {
-        included_turn_ids.extend(thread.turns.iter().map(|turn| turn.id.clone()));
+        included_turn_ids.extend(turns.iter().map(|turn| turn.id.clone()));
     } else {
         included_turn_ids.extend(selection.include_turn.iter().cloned());
         for spec in &selection.include_turn_range {
@@ -994,7 +1052,7 @@ fn build_selection(
                 end_turn_id: spec.clone(),
             });
             included_ranges.push(range.clone());
-            if let Some(expanded) = expand_range_ids(thread, spec) {
+            if let Some(expanded) = expand_range_ids(turns, thread_id, spec) {
                 included_turn_ids.extend(expanded);
             }
         }
@@ -1007,17 +1065,17 @@ fn build_selection(
             end_turn_id: spec.clone(),
         });
         excluded_ranges.push(range.clone());
-        if let Some(expanded) = expand_range_ids(thread, spec) {
+        if let Some(expanded) = expand_range_ids(turns, thread_id, spec) {
             excluded_turn_ids.extend(expanded);
         }
     }
     pinned_turn_ids.extend(selection.pin_turn.iter().cloned());
     if included_turn_ids.is_empty() {
-        included_turn_ids.extend(thread.turns.iter().map(|turn| turn.id.clone()));
+        included_turn_ids.extend(turns.iter().map(|turn| turn.id.clone()));
     }
     included_turn_ids.retain(|turn_id| !excluded_turn_ids.contains(turn_id));
     let history_hash = hash_json(&(included_turn_ids.clone(), excluded_turn_ids.clone(), pinned_turn_ids.clone(), pinned_facts.clone()));
-    let selected_turns = materialize_selected_turns_from_ids(thread, &included_turn_ids);
+    let selected_turns = materialize_selected_turns_from_ids(turns, &included_turn_ids);
 
     SnapshotConversationSelection {
         thread_id: thread_id.to_string(),
@@ -1035,17 +1093,17 @@ fn build_selection(
 }
 
 fn materialize_selected_turns_from_ids(
-    thread: &tt_core::ipc::ThreadView,
+    turns: &[tt_core::ipc::TurnView],
     selected_turn_ids: &[String],
 ) -> Vec<SnapshotTurn> {
     let mut selected = Vec::new();
     let mut turn_ids = BTreeSet::new();
     if selected_turn_ids.is_empty() {
-        turn_ids.extend(thread.turns.iter().map(|turn| turn.id.clone()));
+        turn_ids.extend(turns.iter().map(|turn| turn.id.clone()));
     } else {
         turn_ids.extend(selected_turn_ids.iter().cloned());
     }
-    for turn in &thread.turns {
+    for turn in turns {
         if !turn_ids.contains(&turn.id) {
             continue;
         }
@@ -1065,11 +1123,51 @@ fn materialize_selected_turns_from_ids(
     selected
 }
 
-fn expand_range_ids(thread: &tt_core::ipc::ThreadView, spec: &str) -> Option<Vec<String>> {
-    let range = parse_turn_range(&thread.summary.id, spec).ok()?;
+fn snapshot_turns_or_fallback(
+    turns: Vec<tt_core::ipc::TurnView>,
+    selected_turns: &[SnapshotTurn],
+    thread_id: &str,
+) -> Vec<tt_core::ipc::TurnView> {
+    if !turns.is_empty() {
+        return turns;
+    }
+    selected_turns
+        .iter()
+        .map(|turn| tt_core::ipc::TurnView {
+            id: turn.id.clone(),
+            status: turn.status.clone(),
+            error_message: None,
+            error_summary: None,
+            started_at: None,
+            completed_at: None,
+            latest_diff: None,
+            latest_plan_snapshot: None,
+            token_usage_snapshot: None,
+            latest_plan: None,
+            token_usage: None,
+            items: vec![tt_core::ipc::ItemView {
+                id: format!("{thread_id}-{}", turn.id),
+                item_type: "message".to_string(),
+                status: None,
+                text: Some(turn.text.clone()),
+                summary: None,
+                payload: None,
+                detail_kind: None,
+                detail: None,
+            }],
+        })
+        .collect()
+}
+
+fn expand_range_ids(
+    turns: &[tt_core::ipc::TurnView],
+    thread_id: &str,
+    spec: &str,
+) -> Option<Vec<String>> {
+    let range = parse_turn_range(thread_id, spec).ok()?;
     let mut ids = Vec::new();
     let mut recording = false;
-    for turn in &thread.turns {
+    for turn in turns {
         if turn.id == range.start_turn_id {
             recording = true;
         }
@@ -1100,6 +1198,7 @@ fn parse_turn_range(thread_id: &str, spec: &str) -> Result<SnapshotTurnRange> {
 }
 
 fn mutate_selection(
+    turns: &[tt_core::ipc::TurnView],
     base: &SnapshotConversationSelection,
     selection: SnapshotSelectionArgs,
     summary: Option<String>,
@@ -1123,18 +1222,48 @@ fn mutate_selection(
             next.pinned_turn_ids.extend(selection.pin_turn);
             next.pinned_facts.extend(selection.pin_fact);
         }
+        ContextMutationMode::Compact => {
+            let mut summarized_turn_ids = selection.include_turn;
+            for spec in selection.include_turn_range {
+                if let Some(expanded) = expand_range_ids(turns, &base.thread_id, &spec) {
+                    summarized_turn_ids.extend(expanded);
+                }
+            }
+            summarized_turn_ids.sort();
+            summarized_turn_ids.dedup();
+            next.summary_source_turn_ids = summarized_turn_ids.clone();
+            next.excluded_turn_ids.extend(summarized_turn_ids.clone());
+            next.excluded_turn_ranges.extend(
+                summarized_turn_ids
+                    .iter()
+                    .map(|turn_id| SnapshotTurnRange {
+                        thread_id: base.thread_id.clone(),
+                        start_turn_id: turn_id.clone(),
+                        end_turn_id: turn_id.clone(),
+                    }),
+            );
+        }
     }
     next.included_turn_ids.retain(|turn_id| !next.excluded_turn_ids.contains(turn_id));
     next.pinned_turn_ids.sort();
     next.pinned_turn_ids.dedup();
     next.pinned_facts.sort();
     next.pinned_facts.dedup();
-    next.summary = summary.map(|summary_text| SnapshotContextSummary {
-        summary_text,
-        source_turn_ids: next.included_turn_ids.clone(),
-        summary_version: base.summary.as_ref().map(|value| value.summary_version + 1).unwrap_or(1),
-        generated_at: Utc::now().to_rfc3339(),
-    });
+    next.selected_turns = materialize_selected_turns_from_ids(turns, &next.included_turn_ids);
+    if let Some(summary_text) = summary {
+        if !matches!(mode, ContextMutationMode::Compact) {
+            next.summary_source_turn_ids = next.included_turn_ids.clone();
+        }
+        next.summary = Some(SnapshotContextSummary {
+            summary_text,
+            source_turn_ids: match mode {
+                ContextMutationMode::Compact => next.summary_source_turn_ids.clone(),
+                _ => next.included_turn_ids.clone(),
+            },
+            summary_version: base.summary.as_ref().map(|value| value.summary_version + 1).unwrap_or(1),
+            generated_at: Utc::now().to_rfc3339(),
+        });
+    }
     next.history_hash = hash_json(&(next.included_turn_ids.clone(), next.excluded_turn_ids.clone(), next.pinned_turn_ids.clone(), next.pinned_facts.clone()));
     Ok(next)
 }
@@ -1289,6 +1418,28 @@ pub async fn snapshot_command(paths: tt_core::AppPaths, command: SnapshotCommand
             let pruned = service.prune_snapshots(&args.snapshots, args.force)?;
             println!("pruned: {pruned}");
         }
+        SnapshotCommand::Compact(args) => {
+            let base = service.load_snapshot(&args.from_snapshot).await?;
+            let turns = snapshot_turns_or_fallback(
+                service.store_for_record(&base)?.load_turn_history()?,
+                &base.conversation.selected_turns,
+                &base.conversation.thread_id,
+            );
+            let next = service.update_context(
+                &base,
+                &turns,
+                SnapshotSelectionArgs {
+                    include_turn: args.source_turn.clone(),
+                    ..SnapshotSelectionArgs::default()
+                },
+                Some(args.summary),
+                args.created_by,
+                args.tags,
+                ContextMutationMode::Compact,
+            )?;
+            service.store_for_record(&base)?.append_snapshot(&next)?;
+            print_snapshot_record(&next);
+        }
         SnapshotCommand::List(args) => {
             let snapshots = if let (Some(lane), Some(repo), Some(workspace)) =
                 (args.lane, args.repo, args.workspace)
@@ -1329,8 +1480,14 @@ pub async fn context_command(
     match command {
         ContextCommand::Include(args) => {
             let base = service.load_snapshot(&args.from_snapshot).await?;
+            let turns = snapshot_turns_or_fallback(
+                service.store_for_record(&base)?.load_turn_history()?,
+                &base.conversation.selected_turns,
+                &base.conversation.thread_id,
+            );
             let next = service.update_context(
                 &base,
+                &turns,
                 args.selection,
                 args.summary,
                 args.created_by,
@@ -1342,8 +1499,14 @@ pub async fn context_command(
         }
         ContextCommand::Exclude(args) => {
             let base = service.load_snapshot(&args.from_snapshot).await?;
+            let turns = snapshot_turns_or_fallback(
+                service.store_for_record(&base)?.load_turn_history()?,
+                &base.conversation.selected_turns,
+                &base.conversation.thread_id,
+            );
             let next = service.update_context(
                 &base,
+                &turns,
                 args.selection,
                 args.summary,
                 args.created_by,
@@ -1355,8 +1518,14 @@ pub async fn context_command(
         }
         ContextCommand::Pin(args) => {
             let base = service.load_snapshot(&args.from_snapshot).await?;
+            let turns = snapshot_turns_or_fallback(
+                service.store_for_record(&base)?.load_turn_history()?,
+                &base.conversation.selected_turns,
+                &base.conversation.thread_id,
+            );
             let next = service.update_context(
                 &base,
+                &turns,
                 SnapshotSelectionArgs {
                     pin_turn: args.pin_turn,
                     pin_fact: args.pin_fact,
@@ -1372,35 +1541,25 @@ pub async fn context_command(
         }
         ContextCommand::Summarize(args) => {
             let base = service.load_snapshot(&args.from_snapshot).await?;
+            let turns = snapshot_turns_or_fallback(
+                service.store_for_record(&base)?.load_turn_history()?,
+                &base.conversation.selected_turns,
+                &base.conversation.thread_id,
+            );
             let next = service.update_context(
                 &base,
-                SnapshotSelectionArgs::default(),
+                &turns,
+                SnapshotSelectionArgs {
+                    include_turn: args.source_turn.clone(),
+                    ..SnapshotSelectionArgs::default()
+                },
                 Some(args.summary),
                 args.created_by,
                 args.tags,
-                ContextMutationMode::Include,
+                ContextMutationMode::Compact,
             )?;
-            let mut updated = next.clone();
-            updated.summary = Some(SnapshotContextSummary {
-                summary_text: updated
-                    .summary
-                    .as_ref()
-                    .map(|summary| summary.summary_text.clone())
-                    .unwrap_or_default(),
-                source_turn_ids: args.source_turn,
-                summary_version: base.summary.as_ref().map(|value| value.summary_version + 1).unwrap_or(1),
-                generated_at: Utc::now().to_rfc3339(),
-            });
-            updated.prompt_hash = compute_prompt_hash(
-                &updated.workspace,
-                &updated.conversation,
-                &updated.skills,
-                &updated.config,
-                &updated.summary,
-            );
-            updated.lineage_hash = hash_lineage(Some(&base.lineage_hash), &updated.prompt_hash);
-            service.store_for_record(&base)?.append_snapshot(&updated)?;
-            print_snapshot_record(&updated);
+            service.store_for_record(&base)?.append_snapshot(&next)?;
+            print_snapshot_record(&next);
         }
     }
     Ok(())
@@ -1587,10 +1746,12 @@ fn print_snapshot_diff(diff: &SnapshotDiff) {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use std::collections::BTreeMap;
     use tt_core::ipc::{
         ItemView, ThreadLoadedStatus, ThreadManagementState, ThreadMonitorState, ThreadSummary,
         ThreadView, TurnView,
     };
+    use tt_core::AppPaths;
 
     fn sample_thread_view() -> ThreadView {
         ThreadView {
@@ -1673,6 +1834,46 @@ mod tests {
         }
     }
 
+    fn sample_snapshot_record() -> SnapshotRecord {
+        let thread = sample_thread_view();
+        let turns = thread.turns.clone();
+        let selection = build_selection(&turns, &SnapshotSelectionArgs::default(), "thread-1");
+        SnapshotRecord {
+            snapshot_id: "snapshot-1".to_string(),
+            parent_snapshot_id: None,
+            tags: Vec::new(),
+            status: SnapshotStatus::Active,
+            created_at: Utc::now().to_rfc3339(),
+            created_by: "tt".to_string(),
+            workspace: SnapshotWorkspaceBinding {
+                lane_label: "lane".to_string(),
+                lane_slug: "lane".to_string(),
+                repo_org: "openai".to_string(),
+                repo_name: "codex".to_string(),
+                workspace_slug: "default".to_string(),
+                repo_root_path: "/tmp/repo".to_string(),
+                worktree_path: "/tmp/worktree".to_string(),
+                branch_name: Some("main".to_string()),
+                commit_sha: "abc123".to_string(),
+                dirty_state_hash: Some("dirty".to_string()),
+                canonical: false,
+                promoted_from_snapshot_id: None,
+                bound_at: Utc::now().to_rfc3339(),
+            },
+            conversation: selection,
+            skills: SnapshotSkillSelection {
+                skill_ids: vec!["chat".to_string()],
+                skill_versions: BTreeMap::new(),
+                loaded_skill_ids: vec!["chat".to_string()],
+            },
+            config: SnapshotConfigRef::default(),
+            summary: None,
+            prompt_hash: "prompt-hash".to_string(),
+            lineage_hash: "lineage-hash".to_string(),
+            note: None,
+        }
+    }
+
     #[test]
     fn build_selection_includes_requested_turns_and_ranges() {
         let thread = sample_thread_view();
@@ -1680,7 +1881,7 @@ mod tests {
             include_turn_range: vec!["thread-1:turn-1..turn-2".to_string()],
             ..SnapshotSelectionArgs::default()
         };
-        let built = build_selection(&thread, &selection, "thread-1");
+        let built = build_selection(&thread.turns, &selection, "thread-1");
         assert_eq!(built.included_turn_ids, vec!["turn-1", "turn-2"]);
         assert_eq!(built.selected_turns.len(), 2);
         assert_eq!(built.selected_turns[0].text, "first");
@@ -1690,7 +1891,7 @@ mod tests {
     #[test]
     fn prompt_hash_is_stable_for_identical_input() {
         let thread = sample_thread_view();
-        let selection = build_selection(&thread, &SnapshotSelectionArgs::default(), "thread-1");
+        let selection = build_selection(&thread.turns, &SnapshotSelectionArgs::default(), "thread-1");
         let workspace = SnapshotWorkspaceBinding {
             lane_label: "lane".to_string(),
             lane_slug: "lane".to_string(),
@@ -1729,7 +1930,7 @@ mod tests {
     #[test]
     fn diff_detects_workspace_and_prompt_changes() {
         let thread = sample_thread_view();
-        let selection = build_selection(&thread, &SnapshotSelectionArgs::default(), "thread-1");
+        let selection = build_selection(&thread.turns, &SnapshotSelectionArgs::default(), "thread-1");
         let workspace = SnapshotWorkspaceBinding {
             lane_label: "lane".to_string(),
             lane_slug: "lane".to_string(),
@@ -1790,5 +1991,53 @@ mod tests {
         assert!(diff.workspace_changed);
         assert!(diff.prompt_hash_changed);
         assert!(diff.lineage_changed);
+    }
+
+    #[test]
+    fn raw_turn_log_is_separate_from_snapshot_log() {
+        let root = std::env::temp_dir().join(format!("tt-snapshot-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::from_home(root.join(".tt"));
+        let service = SnapshotService::new(paths);
+        let scope = SnapshotScopeArgs {
+            lane: "lane".to_string(),
+            repo: "openai/codex".to_string(),
+            workspace: "default".to_string(),
+        };
+        let store = service.store(&scope).expect("store");
+        let thread = sample_thread_view();
+
+        store.append_turn_history(&thread).expect("append raw turns");
+        assert!(store.turn_log_path().exists());
+        assert_ne!(store.turn_log_path(), store.snapshot_log_path());
+
+        let turns = store.load_turn_history().expect("load raw turns");
+        assert_eq!(turns.len(), 2);
+        let selection = build_selection(&turns, &SnapshotSelectionArgs::default(), "thread-1");
+        assert_eq!(selection.selected_turns.len(), 2);
+    }
+
+    #[test]
+    fn compact_excludes_summarized_turns_and_tracks_sources() {
+        let turns = sample_thread_view().turns;
+        let base = sample_snapshot_record();
+        let selection = SnapshotSelectionArgs {
+            include_turn: vec!["turn-1".to_string()],
+            ..SnapshotSelectionArgs::default()
+        };
+        let updated = mutate_selection(
+            &turns,
+            &base.conversation,
+            selection,
+            Some("summary".to_string()),
+            ContextMutationMode::Compact,
+        )
+        .expect("compact selection");
+
+        assert_eq!(updated.summary_source_turn_ids, vec!["turn-1"]);
+        assert!(!updated.included_turn_ids.contains(&"turn-1".to_string()));
+        assert_eq!(
+            updated.summary.as_ref().expect("summary").source_turn_ids,
+            vec!["turn-1"]
+        );
     }
 }

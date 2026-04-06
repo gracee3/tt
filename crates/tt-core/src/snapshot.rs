@@ -53,6 +53,13 @@ pub struct SnapshotTurn {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotTurnRecord {
+    pub thread_id: String,
+    pub turn: crate::ipc::TurnView,
+    pub recorded_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SnapshotWorkspaceBinding {
     pub lane_label: String,

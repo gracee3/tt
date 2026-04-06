@@ -272,6 +272,10 @@ impl LanePaths {
         self.workspace_root(org, repo, workspace).join("snapshots.sqlite")
     }
 
+    pub fn workspace_turn_log_file(&self, org: &str, repo: &str, workspace: &str) -> PathBuf {
+        self.workspace_root(org, repo, workspace).join("turns.jsonl")
+    }
+
     pub fn ensure(&self) -> TTResult<()> {
         fs::create_dir_all(&self.root)?;
         fs::create_dir_all(&self.shared_tt_dir)?;
