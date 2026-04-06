@@ -290,6 +290,14 @@ impl SnapshotStore {
     }
 
     fn ensure_dirs(&self) -> Result<()> {
+        self.lane_paths.ensure()?;
+        fs::create_dir_all(self.lane_paths.repo_root(&self.repo_org, &self.repo_name))
+            .with_context(|| {
+                format!(
+                    "create {}",
+                    self.lane_paths.repo_root(&self.repo_org, &self.repo_name).display()
+                )
+            })?;
         fs::create_dir_all(self.workspace_root())
             .with_context(|| format!("create {}", self.workspace_root().display()))?;
         Ok(())
@@ -1994,29 +2002,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_turn_log_is_separate_from_snapshot_log() {
-        let root = std::env::temp_dir().join(format!("tt-snapshot-{}", uuid::Uuid::new_v4()));
-        let paths = AppPaths::from_home(root.join(".tt"));
-        let service = SnapshotService::new(paths);
-        let scope = SnapshotScopeArgs {
-            lane: "lane".to_string(),
-            repo: "openai/codex".to_string(),
-            workspace: "default".to_string(),
-        };
-        let store = service.store(&scope).expect("store");
-        let thread = sample_thread_view();
-
-        store.append_turn_history(&thread).expect("append raw turns");
-        assert!(store.turn_log_path().exists());
-        assert_ne!(store.turn_log_path(), store.snapshot_log_path());
-
-        let turns = store.load_turn_history().expect("load raw turns");
-        assert_eq!(turns.len(), 2);
-        let selection = build_selection(&turns, &SnapshotSelectionArgs::default(), "thread-1");
-        assert_eq!(selection.selected_turns.len(), 2);
-    }
-
-    #[test]
     fn compact_excludes_summarized_turns_and_tracks_sources() {
         let turns = sample_thread_view().turns;
         let base = sample_snapshot_record();
@@ -2039,5 +2024,151 @@ mod tests {
             updated.summary.as_ref().expect("summary").source_turn_ids,
             vec!["turn-1"]
         );
+    }
+
+    #[test]
+    fn restore_from_compacted_snapshot_keeps_prompt_hash_stable() {
+        let turns = sample_thread_view().turns;
+        let base = sample_snapshot_record();
+        let selection = SnapshotSelectionArgs {
+            include_turn: vec!["turn-1".to_string()],
+            ..SnapshotSelectionArgs::default()
+        };
+        let compacted_conversation = mutate_selection(
+            &turns,
+            &base.conversation,
+            selection,
+            Some("summary".to_string()),
+            ContextMutationMode::Compact,
+        )
+        .expect("compact selection");
+        let summary = Some(SnapshotContextSummary {
+            summary_text: "summary".to_string(),
+            source_turn_ids: vec!["turn-1".to_string()],
+            summary_version: 2,
+            generated_at: Utc::now().to_rfc3339(),
+        });
+        let snapshot = SnapshotRecord {
+            snapshot_id: "compact-1".to_string(),
+            conversation: compacted_conversation.clone(),
+            summary: summary.clone(),
+            ..base.clone()
+        };
+        let prompt_hash = compute_prompt_hash(
+            &snapshot.workspace,
+            &snapshot.conversation,
+            &snapshot.skills,
+            &snapshot.config,
+            &snapshot.summary,
+        );
+        let snapshot = SnapshotRecord {
+            prompt_hash: prompt_hash.clone(),
+            lineage_hash: hash_lineage(None, &prompt_hash),
+            ..snapshot
+        };
+        let root = std::env::temp_dir().join(format!("tt-snapshot-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::from_home(root.join(".tt"));
+        let service = SnapshotService::new(paths);
+        let scope = SnapshotScopeArgs {
+            lane: snapshot.workspace.lane_label.clone(),
+            repo: format!("{}/{}", snapshot.workspace.repo_org, snapshot.workspace.repo_name),
+            workspace: snapshot.workspace.workspace_slug.clone(),
+        };
+        let store = service.store(&scope).expect("store");
+        store
+            .append_turn_history(&sample_thread_view())
+            .expect("append turns");
+        store.append_snapshot(&snapshot).expect("append snapshot");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let restored = rt
+            .block_on(service.restore_snapshot(&SnapshotRestoreArgs {
+                snapshot_id: snapshot.snapshot_id.clone(),
+                bind: false,
+                out: Some(root.join("restored.txt")),
+            }))
+            .expect("restore snapshot");
+
+        assert_eq!(
+            restored.prompt_hash,
+            compute_prompt_hash(
+                &snapshot.workspace,
+                &snapshot.conversation,
+                &snapshot.skills,
+                &snapshot.config,
+                &snapshot.summary
+            )
+        );
+        assert!(restored.rendered_prompt.contains("summary"));
+        assert!(!restored.rendered_prompt.contains("first"));
+        assert_eq!(restored.prompt_hash, snapshot.prompt_hash);
+    }
+
+    #[test]
+    fn excluded_turns_do_not_reappear_in_prompt_projection() {
+        let thread = sample_thread_view();
+        let selection = SnapshotSelectionArgs {
+            exclude_turn: vec!["turn-1".to_string()],
+            ..SnapshotSelectionArgs::default()
+        };
+        let built = build_selection(&thread.turns, &selection, "thread-1");
+        let workspace = SnapshotWorkspaceBinding {
+            lane_label: "lane".to_string(),
+            lane_slug: "lane".to_string(),
+            repo_org: "openai".to_string(),
+            repo_name: "codex".to_string(),
+            workspace_slug: "default".to_string(),
+            repo_root_path: "/tmp/repo".to_string(),
+            worktree_path: "/tmp/worktree".to_string(),
+            branch_name: Some("main".to_string()),
+            commit_sha: "abc123".to_string(),
+            dirty_state_hash: Some("dirty".to_string()),
+            canonical: false,
+            promoted_from_snapshot_id: None,
+            bound_at: Utc::now().to_rfc3339(),
+        };
+        let skills = SnapshotSkillSelection {
+            skill_ids: vec!["chat".to_string()],
+            skill_versions: BTreeMap::new(),
+            loaded_skill_ids: vec!["chat".to_string()],
+        };
+        let config = SnapshotConfigRef::default();
+        let prompt = build_prompt_bundle(&workspace, &built, &skills, &config, &None);
+
+        assert!(!prompt.rendered_prompt.contains("turn-1 ["));
+        assert!(!prompt.rendered_prompt.contains("first"));
+        assert!(prompt.rendered_prompt.contains("turn-2"));
+    }
+
+    #[test]
+    fn raw_turn_log_and_snapshot_log_round_trip_independently() {
+        let root = std::env::temp_dir().join(format!("tt-snapshot-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::from_home(root.join(".tt"));
+        let service = SnapshotService::new(paths);
+        let scope = SnapshotScopeArgs {
+            lane: "lane".to_string(),
+            repo: "openai/codex".to_string(),
+            workspace: "default".to_string(),
+        };
+        let store = service.store(&scope).expect("store");
+        let thread = sample_thread_view();
+        let snapshot = sample_snapshot_record();
+
+        store.append_turn_history(&thread).expect("append raw turns");
+        let turn_log_before = fs::read_to_string(store.turn_log_path()).expect("read turn log");
+        store.append_snapshot(&snapshot).expect("append snapshot");
+        let turn_log_after = fs::read_to_string(store.turn_log_path()).expect("read turn log again");
+        let snapshots = store.list_snapshots().expect("list snapshots");
+
+        assert_eq!(turn_log_before, turn_log_after);
+        assert!(store.turn_log_path().exists());
+        assert!(store.snapshot_log_path().exists());
+        assert_ne!(store.turn_log_path(), store.snapshot_log_path());
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].snapshot_id, snapshot.snapshot_id);
+        assert_eq!(store.load_turn_history().expect("load raw turns").len(), 2);
     }
 }
