@@ -35,14 +35,18 @@ Prefer the typed `tt skill i3 ...` entrypoint:
 
 - `tt skill i3 status`
 - `tt skill i3 attach`
+
 - `tt skill i3 focus [--workspace <name>]`
+
 - `tt skill i3 workspace focus --workspace <name>`
 - `tt skill i3 workspace move --workspace <name>`
 - `tt skill i3 workspace list`
+
 - `tt skill i3 window focus --criteria <i3 criteria>`
 - `tt skill i3 window move --criteria <i3 criteria> --workspace <name>`
 - `tt skill i3 window close --criteria <i3 criteria>`
 - `tt skill i3 window info --criteria <i3 criteria>`
+
 - `tt skill i3 message <raw args...>`
 
 ## Runtime State
