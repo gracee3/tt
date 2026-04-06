@@ -1503,6 +1503,78 @@ impl SupervisorService {
         Ok(entries)
     }
 
+    fn lane_workspace_manifest_path(
+        &self,
+        label: &str,
+        repo: &str,
+        workspace: &str,
+    ) -> Result<PathBuf> {
+        let (_slug, lane_paths) = self.lane_paths_for_label(label)?;
+        let (org, repo_name, _) = Self::parse_lane_repo_spec(repo)?;
+        Ok(lane_paths.workspace_manifest_file(&org, &repo_name, workspace))
+    }
+
+    async fn load_lane_workspace_manifest(
+        &self,
+        label: &str,
+        repo: &str,
+        workspace: &str,
+    ) -> Result<(LanePaths, String, String, WorkspaceManifest)> {
+        let (slug, lane_paths) = self.lane_paths_for_label(label)?;
+        let (org, repo_name, _) = Self::parse_lane_repo_spec(repo)?;
+        let manifest_path = lane_paths.workspace_manifest_file(&org, &repo_name, workspace);
+        let manifest = read_toml::<WorkspaceManifest>(&manifest_path)?
+            .ok_or_else(|| anyhow!("lane workspace `{label}` / `{org}/{repo_name}` / `{workspace}` does not exist"))?;
+        Ok((lane_paths, slug, format!("{org}/{repo_name}"), manifest))
+    }
+
+    fn build_authority_workspace(
+        tracked_thread_id: authority::TrackedThreadId,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+        base_ref: &str,
+    ) -> authority::TrackedThreadWorkspace {
+        authority::TrackedThreadWorkspace {
+            repository_root: repo_root.display().to_string(),
+            owner_tracked_thread_id: tracked_thread_id,
+            strategy: authority::TrackedThreadWorkspaceStrategy::DedicatedThreadWorktree,
+            worktree_path: worktree_path.display().to_string(),
+            branch_name: branch_name.to_string(),
+            base_ref: base_ref.to_string(),
+            base_commit: None,
+            landing_target: base_ref.trim_start_matches("origin/").to_string(),
+            landing_policy: authority::TrackedThreadWorkspaceLandingPolicy::MergeToMain,
+            sync_policy: authority::TrackedThreadWorkspaceSyncPolicy::Manual,
+            cleanup_policy: authority::TrackedThreadWorkspaceCleanupPolicy::KeepUntilCampaignClosed,
+            last_reported_head_commit: None,
+            status: authority::TrackedThreadWorkspaceStatus::Ready,
+        }
+    }
+
+    fn update_workspace_attachment_ids(
+        mut manifest: WorkspaceManifest,
+        tracked_thread_id: &str,
+        attached: bool,
+    ) -> WorkspaceManifest {
+        if attached {
+            if !manifest
+                .attached_tracked_thread_ids
+                .iter()
+                .any(|existing| existing == tracked_thread_id)
+            {
+                manifest
+                    .attached_tracked_thread_ids
+                    .push(tracked_thread_id.to_string());
+            }
+        } else {
+            manifest
+                .attached_tracked_thread_ids
+                .retain(|existing| existing != tracked_thread_id);
+        }
+        manifest
+    }
+
     pub async fn lane_inspect(&self, label: &str) -> Result<()> {
         let (slug, lane_paths) = self.lane_paths_for_label(label)?;
         println!("lane_label: {label}");
@@ -1533,8 +1605,132 @@ impl SupervisorService {
             println!("workspace_root: {}", workspace_path.display());
             if let Some(manifest) = read_toml::<WorkspaceManifest>(&workspace_manifest_file)? {
                 Self::lane_print_manifest("workspace_manifest.", &manifest)?;
+                if !manifest.attached_tracked_thread_ids.is_empty() {
+                    println!(
+                        "workspace_attached_tracked_threads: {}",
+                        manifest.attached_tracked_thread_ids.join(",")
+                    );
+                }
             }
         }
+        Ok(())
+    }
+
+    pub async fn lane_attach(
+        &self,
+        label: &str,
+        repo: &str,
+        workspace: Option<&str>,
+        tracked_thread_id: &str,
+    ) -> Result<()> {
+        let workspace_name = workspace.unwrap_or("default");
+        let (lane_paths, lane_slug, repo_key, manifest) = self
+            .load_lane_workspace_manifest(label, repo, workspace_name)
+            .await?;
+        let (org, repo_name, _) = Self::parse_lane_repo_spec(repo)?;
+        let repo_root = lane_paths.repo_root(&org, &repo_name);
+        let base_ref = Self::resolve_base_branch(&repo_root).await?;
+        let tracked_thread_id = authority::TrackedThreadId::parse(tracked_thread_id.to_string())?;
+        let workspace_record = Self::build_authority_workspace(
+            tracked_thread_id.clone(),
+            &repo_root,
+            &PathBuf::from(&manifest.worktree_path),
+            &manifest.branch_name,
+            &base_ref,
+        );
+        workspace_record.validate_for_owner(&tracked_thread_id)?;
+
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: tracked_thread_id.clone(),
+            })
+            .await?
+            .tracked_thread;
+        let response = client
+            .authority_tracked_thread_edit(&ipc::AuthorityTrackedThreadEditRequest {
+                command: authority::EditTrackedThread {
+                    metadata: Self::authority_command_metadata(),
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    expected_revision: tracked_thread.revision,
+                    changes: authority::TrackedThreadPatch {
+                        title: None,
+                        notes: None,
+                        backend_kind: None,
+                        upstream_thread_id: None,
+                        binding_state: Some(authority::TrackedThreadBindingState::Bound),
+                        preferred_cwd: None,
+                        preferred_model: None,
+                        last_seen_turn_id: None,
+                        workspace: Some(Some(workspace_record)),
+                    },
+                },
+            })
+            .await?;
+
+        let workspace_manifest_path = lane_paths.workspace_manifest_file(&org, &repo_name, workspace_name);
+        let updated_manifest =
+            Self::update_workspace_attachment_ids(manifest, tracked_thread_id.as_str(), true);
+        write_toml(&workspace_manifest_path, &updated_manifest)?;
+        println!("lane_label: {label}");
+        println!("lane_slug: {lane_slug}");
+        println!("lane_repo: {repo_key}");
+        println!("lane_workspace: {workspace_name}");
+        println!("tracked_thread_id: {}", response.tracked_thread.id);
+        println!("binding_state: {:?}", response.tracked_thread.binding_state);
+        Ok(())
+    }
+
+    pub async fn lane_detach(
+        &self,
+        label: &str,
+        repo: &str,
+        workspace: Option<&str>,
+        tracked_thread_id: &str,
+    ) -> Result<()> {
+        let workspace_name = workspace.unwrap_or("default");
+        let (lane_paths, lane_slug, repo_key, manifest) = self
+            .load_lane_workspace_manifest(label, repo, workspace_name)
+            .await?;
+        let tracked_thread_id = authority::TrackedThreadId::parse(tracked_thread_id.to_string())?;
+        let client = self.daemon_state_client().await?;
+        let tracked_thread = client
+            .authority_tracked_thread_get(&ipc::AuthorityTrackedThreadGetRequest {
+                tracked_thread_id: tracked_thread_id.clone(),
+            })
+            .await?
+            .tracked_thread;
+        let response = client
+            .authority_tracked_thread_edit(&ipc::AuthorityTrackedThreadEditRequest {
+                command: authority::EditTrackedThread {
+                    metadata: Self::authority_command_metadata(),
+                    tracked_thread_id: tracked_thread.id.clone(),
+                    expected_revision: tracked_thread.revision,
+                    changes: authority::TrackedThreadPatch {
+                        title: None,
+                        notes: None,
+                        backend_kind: None,
+                        upstream_thread_id: None,
+                        binding_state: Some(authority::TrackedThreadBindingState::Detached),
+                        preferred_cwd: None,
+                        preferred_model: None,
+                        last_seen_turn_id: None,
+                        workspace: None,
+                    },
+                },
+            })
+            .await?;
+        let (org, repo_name, _) = Self::parse_lane_repo_spec(repo)?;
+        let workspace_manifest_path = lane_paths.workspace_manifest_file(&org, &repo_name, workspace_name);
+        let updated_manifest =
+            Self::update_workspace_attachment_ids(manifest, tracked_thread_id.as_str(), false);
+        write_toml(&workspace_manifest_path, &updated_manifest)?;
+        println!("lane_label: {label}");
+        println!("lane_slug: {lane_slug}");
+        println!("lane_repo: {repo_key}");
+        println!("lane_workspace: {workspace_name}");
+        println!("tracked_thread_id: {}", response.tracked_thread.id);
+        println!("binding_state: {:?}", response.tracked_thread.binding_state);
         Ok(())
     }
 
@@ -2124,6 +2320,28 @@ impl SupervisorService {
                     println!("lane_manifest.repos_root_path: {}", manifest.repos_root_path);
                     println!("lane_manifest.worktrees_root_path: {}", manifest.worktrees_root_path);
                     println!("lane_manifest.runtime_root_path: {}", manifest.runtime_root_path);
+                }
+                for (org, repo, workspace_name, workspace_path) in
+                    Self::lane_workspace_records(&lane_root.join("worktrees"))?
+                {
+                    let workspace_manifest_file =
+                        lane_root.join("worktrees").join(&org).join(&repo).join(&workspace_name).join("workspace.toml");
+                    if let Some(workspace_manifest) =
+                        read_toml::<WorkspaceManifest>(&workspace_manifest_file)?
+                    {
+                        println!(
+                            "workspace: {}\t{}\t{}",
+                            workspace_manifest.repo,
+                            workspace_manifest.slug,
+                            workspace_path.display()
+                        );
+                        if !workspace_manifest.attached_tracked_thread_ids.is_empty() {
+                            println!(
+                                "workspace_attached_tracked_threads: {}",
+                                workspace_manifest.attached_tracked_thread_ids.join(",")
+                            );
+                        }
+                    }
                 }
             }
         }

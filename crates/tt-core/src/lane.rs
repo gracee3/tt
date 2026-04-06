@@ -119,6 +119,8 @@ pub struct WorkspaceManifest {
     pub branch_name: String,
     pub created_at: String,
     pub cleanup_scope: LaneCleanupScope,
+    #[serde(default)]
+    pub attached_tracked_thread_ids: Vec<String>,
 }
 
 impl WorkspaceManifest {
@@ -152,6 +154,7 @@ impl WorkspaceManifest {
             branch_name: branch_name.into(),
             created_at: Utc::now().to_rfc3339(),
             cleanup_scope: LaneCleanupScope::Runtime,
+            attached_tracked_thread_ids: Vec::new(),
         }
     }
 }
@@ -329,5 +332,6 @@ mod tests {
         let encoded = toml::to_string(&workspace).expect("encode workspace");
         let decoded: WorkspaceManifest = toml::from_str(&encoded).expect("decode workspace");
         assert_eq!(decoded.label, "Default");
+        assert!(decoded.attached_tracked_thread_ids.is_empty());
     }
 }

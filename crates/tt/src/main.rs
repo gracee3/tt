@@ -217,6 +217,8 @@ enum TTWorktreeCommand {
 enum LaneCommand {
     Init(LaneInitArgs),
     Inspect(LaneInspectArgs),
+    Attach(LaneAttachArgs),
+    Detach(LaneDetachArgs),
     Cleanup(LaneCleanupArgs),
 }
 
@@ -521,6 +523,28 @@ struct LaneInitArgs {
 #[derive(Debug, Clone, Args)]
 struct LaneInspectArgs {
     label: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct LaneAttachArgs {
+    label: String,
+    #[arg(long)]
+    repo: String,
+    #[arg(long)]
+    workspace: Option<String>,
+    #[arg(long = "tracked-thread")]
+    tracked_thread: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct LaneDetachArgs {
+    label: String,
+    #[arg(long)]
+    repo: String,
+    #[arg(long)]
+    workspace: Option<String>,
+    #[arg(long = "tracked-thread")]
+    tracked_thread: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1597,6 +1621,26 @@ async fn main() -> Result<()> {
             match command {
                 LaneCommand::Init(args) => service.lane_init(&args.label, &args.repos).await?,
                 LaneCommand::Inspect(args) => service.lane_inspect(&args.label).await?,
+                LaneCommand::Attach(args) => {
+                    service
+                        .lane_attach(
+                            &args.label,
+                            &args.repo,
+                            args.workspace.as_deref(),
+                            &args.tracked_thread,
+                        )
+                        .await?
+                }
+                LaneCommand::Detach(args) => {
+                    service
+                        .lane_detach(
+                            &args.label,
+                            &args.repo,
+                            args.workspace.as_deref(),
+                            &args.tracked_thread,
+                        )
+                        .await?
+                }
                 LaneCommand::Cleanup(args) => {
                     let scope = match args.scope {
                         LaneCleanupScopeArg::Runtime => LaneCleanupScopeModel::Runtime,
@@ -2446,6 +2490,58 @@ mod tests {
             } => {
                 assert_eq!(args.label, "directory and worktree requirements");
                 assert_eq!(args.repos, vec!["openai/codex"]);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_lane_attach_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "lane",
+            "attach",
+            "directory and worktree requirements",
+            "--repo",
+            "openai/codex",
+            "--tracked-thread",
+            "tt-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Lane {
+                command: LaneCommand::Attach(args),
+            } => {
+                assert_eq!(args.label, "directory and worktree requirements");
+                assert_eq!(args.repo, "openai/codex");
+                assert_eq!(args.tracked_thread, "tt-1");
+                assert!(args.workspace.is_none());
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_lane_detach_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "lane",
+            "detach",
+            "directory and worktree requirements",
+            "--repo",
+            "openai/codex",
+            "--tracked-thread",
+            "tt-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Lane {
+                command: LaneCommand::Detach(args),
+            } => {
+                assert_eq!(args.label, "directory and worktree requirements");
+                assert_eq!(args.repo, "openai/codex");
+                assert_eq!(args.tracked_thread, "tt-1");
+                assert!(args.workspace.is_none());
             }
             other => panic!("unexpected command parse: {other:?}"),
         }

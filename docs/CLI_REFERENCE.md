@@ -64,9 +64,12 @@ These flags are accepted before any subcommand.
 
 - `tt lane init <LABEL> [--repo <ORG/REPO[=URL]>...]`
 - `tt lane inspect <LABEL>`
+- `tt lane attach <LABEL> --repo <ORG/REPO> [--workspace <NAME>] --tracked-thread <ID>`
+- `tt lane detach <LABEL> --repo <ORG/REPO> [--workspace <NAME>] --tracked-thread <ID>`
 - `tt lane cleanup <LABEL> [--repo <ORG/REPO[=URL]>] [--workspace <NAME>] [--scope <runtime|worktree|repo|lane>]`
 
 Lane init renders a lane root under `~/.tt/lanes/<lane-slug>/`, seeds shared read-only home overlays, clones the requested repos, and creates a default workspace per repo. Lane cleanup is explicit and does not auto-garbage-collect inactive worktrees.
+Lane attach and detach update the tracked-thread binding state through the authority store and mirror the attached tracked-thread ids into the workspace manifest on disk.
 
 ## Events
 
