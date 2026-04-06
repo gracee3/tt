@@ -26,6 +26,7 @@ pub mod lane;
 pub mod events;
 pub mod ipc;
 pub mod jsonrpc;
+pub mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod logging;
 #[cfg(not(target_arch = "wasm32"))]
@@ -78,6 +79,7 @@ pub use lane::{
     LaneCleanupScope, LaneManifest, LanePaths, RepoManifest, WorkspaceManifest, read_toml,
     write_toml,
 };
+pub use snapshot::*;
 pub use events::{ConnectionState, EventEnvelope, TTEvent, TTItemEvent, TTTurnEvent};
 pub use ipc::*;
 pub use jsonrpc::{

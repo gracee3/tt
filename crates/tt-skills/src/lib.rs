@@ -65,6 +65,7 @@ pub enum SkillCommand {
         #[command(subcommand)]
         command: GitCommand,
     },
+    Apply(SkillApplyArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -218,6 +219,16 @@ pub struct TTSpawnArgs {
     pub headless: bool,
     #[arg(long)]
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SkillApplyArgs {
+    #[arg(long = "snapshot")]
+    pub snapshot_id: String,
+    #[arg(long = "skill")]
+    pub skills: Vec<String>,
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -515,6 +526,11 @@ pub trait SkillBackend: Send + Sync {
         context: &SkillContext,
         args: &I3ListArgs,
     ) -> Result<SkillOutcome>;
+    async fn skill_apply(
+        &self,
+        context: &SkillContext,
+        args: &SkillApplyArgs,
+    ) -> Result<SkillOutcome>;
 }
 
 pub async fn dispatch<B: SkillBackend + ?Sized>(
@@ -591,6 +607,7 @@ pub async fn dispatch<B: SkillBackend + ?Sized>(
                 GitWorktreeCommand::List(args) => backend.git_worktree_list(context, &args).await,
             },
         },
+        SkillCommand::Apply(args) => backend.skill_apply(context, &args).await,
     }
 }
 
@@ -923,6 +940,15 @@ mod tests2 {
         ) -> Result<SkillOutcome> {
             self.push("i3.workspace.list");
             Ok(SkillOutcome::new("i3.workspace.list"))
+        }
+
+        async fn skill_apply(
+            &self,
+            _: &SkillContext,
+            _: &SkillApplyArgs,
+        ) -> Result<SkillOutcome> {
+            self.push("skill.apply");
+            Ok(SkillOutcome::new("skill.apply"))
         }
     }
 
@@ -1354,6 +1380,15 @@ mod tests {
             self.push("i3.message");
             Ok(SkillOutcome::new("i3.message"))
         }
+
+        async fn skill_apply(
+            &self,
+            _: &SkillContext,
+            _: &SkillApplyArgs,
+        ) -> Result<SkillOutcome> {
+            self.push("skill.apply");
+            Ok(SkillOutcome::new("skill.apply"))
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1397,6 +1432,23 @@ mod tests {
         assert_eq!(
             backend.calls.lock().expect("lock call log").as_slice(),
             ["tt.app_server.restart", "git.worktree.list"]
+        );
+
+        let outcome = dispatch(
+            &backend,
+            &context,
+            SkillCommand::Apply(SkillApplyArgs {
+                snapshot_id: "snapshot-1".to_string(),
+                skills: vec!["chat".to_string()],
+                out: None,
+            }),
+        )
+        .await
+        .expect("dispatch");
+        assert_eq!(outcome.summary, "skill.apply");
+        assert_eq!(
+            backend.calls.lock().expect("lock call log").as_slice(),
+            ["tt.app_server.restart", "git.worktree.list", "skill.apply"]
         );
     }
 }

@@ -6,11 +6,12 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 
 use super::service::{RuntimeOverrides, SupervisorService};
+use crate::snapshot;
 use tt_skills::{
     AgentInspectArgs, AgentRetireArgs, AppServerNameArgs, GitRepoArgs, I3AttachArgs, I3ListArgs,
     I3MessageArgs, I3StatusArgs, I3WindowArgs, I3WindowMoveArgs, I3WorkspaceArgs,
     ManagedServiceArgs, ManagedServiceKind, ProcessSignalArgs, ProcessStartArgs, ProcessTargetArgs,
-    ResumeArgs, SkillBackend, SkillContext, SkillOutcome, TTStatusArgs,
+    ResumeArgs, SkillApplyArgs, SkillBackend, SkillContext, SkillOutcome, TTStatusArgs,
 };
 
 #[derive(Debug, Clone)]
@@ -853,5 +854,15 @@ impl SkillBackend for TTSkillBackend {
         println!("action: list");
         println!("workspace_bytes: {}", workspaces.len());
         Ok(Self::outcome("i3.workspace.list"))
+    }
+
+    async fn skill_apply(
+        &self,
+        _: &SkillContext,
+        args: &SkillApplyArgs,
+    ) -> Result<SkillOutcome> {
+        let paths = tt_core::AppPaths::discover()?;
+        snapshot::skill_apply_command(paths, args).await?;
+        Ok(Self::outcome("skill.apply"))
     }
 }

@@ -117,6 +117,20 @@ pub struct WorkspaceManifest {
     pub runtime_path: String,
     pub home_path: String,
     pub branch_name: String,
+    #[serde(default)]
+    pub bound_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub canonical_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub bound_commit_sha: Option<String>,
+    #[serde(default)]
+    pub bound_worktree_path: Option<String>,
+    #[serde(default)]
+    pub bound_thread_id: Option<String>,
+    #[serde(default)]
+    pub bound_at: Option<String>,
+    #[serde(default)]
+    pub promoted_at: Option<String>,
     pub created_at: String,
     pub cleanup_scope: LaneCleanupScope,
     #[serde(default)]
@@ -152,6 +166,13 @@ impl WorkspaceManifest {
             runtime_path: runtime_path.into(),
             home_path: home_path.into(),
             branch_name: branch_name.into(),
+            bound_snapshot_id: None,
+            canonical_snapshot_id: None,
+            bound_commit_sha: None,
+            bound_worktree_path: None,
+            bound_thread_id: None,
+            bound_at: None,
+            promoted_at: None,
             created_at: Utc::now().to_rfc3339(),
             cleanup_scope: LaneCleanupScope::Runtime,
             attached_tracked_thread_ids: Vec::new(),
@@ -241,6 +262,14 @@ impl LanePaths {
 
     pub fn workspace_home_dir(&self, org: &str, repo: &str, workspace: &str) -> PathBuf {
         self.workspace_root(org, repo, workspace).join("home")
+    }
+
+    pub fn workspace_snapshot_log_file(&self, org: &str, repo: &str, workspace: &str) -> PathBuf {
+        self.workspace_root(org, repo, workspace).join("snapshots.jsonl")
+    }
+
+    pub fn workspace_snapshot_db_file(&self, org: &str, repo: &str, workspace: &str) -> PathBuf {
+        self.workspace_root(org, repo, workspace).join("snapshots.sqlite")
     }
 
     pub fn ensure(&self) -> TTResult<()> {

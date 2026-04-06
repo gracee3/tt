@@ -3,6 +3,7 @@
 mod remote;
 mod docs;
 mod service;
+mod snapshot;
 mod skill_runtime;
 mod streaming;
 mod tui;
@@ -18,6 +19,7 @@ use tt_core::{
 use tt_core::lane::LaneCleanupScope as LaneCleanupScopeModel;
 use tt_core::lane::LanePaths;
 
+use snapshot::{ContextCommand as SnapshotContextCommand, SnapshotCommand as SnapshotRuntimeCommand, WorkspaceCommand as SnapshotWorkspaceCommand};
 use remote::{RemoteCommand, run_remote};
 use service::{RuntimeOverrides, SupervisorService};
 use skill_runtime::TTSkillBackend;
@@ -139,6 +141,18 @@ enum TopCommand {
     Lane {
         #[command(subcommand)]
         command: LaneCommand,
+    },
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotRuntimeCommand,
+    },
+    Context {
+        #[command(subcommand)]
+        command: SnapshotContextCommand,
+    },
+    Workspace {
+        #[command(subcommand)]
+        command: SnapshotWorkspaceCommand,
     },
     #[command(about = "Open the tt dashboard TUI")]
     Tui,
@@ -1686,6 +1700,15 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        TopCommand::Snapshot { command } => {
+            snapshot::snapshot_command(paths.clone(), command).await?;
+        }
+        TopCommand::Context { command } => {
+            snapshot::context_command(paths.clone(), command).await?;
+        }
+        TopCommand::Workspace { command } => {
+            snapshot::workspace_command(paths.clone(), command).await?;
+        }
         TopCommand::Doctor => {
             let service = SupervisorService::load(&overrides).await?;
             service.doctor().await?;
@@ -2432,6 +2455,9 @@ mod tests {
         assert!(help.contains("worktrees"));
         assert!(help.contains("app-server"));
         assert!(help.contains("lane"));
+        assert!(help.contains("snapshot"));
+        assert!(help.contains("context"));
+        assert!(help.contains("workspace"));
         assert!(help.contains("tui"));
         assert!(help.contains("supervisor"));
         assert!(!help.contains("tracked-threads"));
@@ -2610,6 +2636,85 @@ mod tests {
                 assert_eq!(args.label, "directory and worktree requirements");
                 assert_eq!(args.repo.as_deref(), Some("openai/codex"));
                 assert!(args.force);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_snapshot_create_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "snapshot",
+            "create",
+            "--lane",
+            "my lane",
+            "--repo",
+            "openai/codex",
+            "--workspace",
+            "default",
+            "--thread",
+            "thread-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Snapshot {
+                command: SnapshotRuntimeCommand::Create(args),
+            } => {
+                assert_eq!(args.scope.lane, "my lane");
+                assert_eq!(args.scope.repo, "openai/codex");
+                assert_eq!(args.scope.workspace, "default");
+                assert_eq!(args.thread, "thread-1");
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_context_include_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "context",
+            "include",
+            "--from",
+            "snapshot-1",
+            "--include-turn",
+            "turn-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Context {
+                command: SnapshotContextCommand::Include(args),
+            } => {
+                assert_eq!(args.from_snapshot, "snapshot-1");
+                assert_eq!(args.selection.include_turn, vec!["turn-1"]);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_workspace_bind_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "workspace",
+            "bind",
+            "--lane",
+            "my lane",
+            "--repo",
+            "openai/codex",
+            "--workspace",
+            "default",
+            "--snapshot",
+            "snapshot-1",
+        ]);
+
+        match cli.command {
+            TopCommand::Workspace {
+                command: SnapshotWorkspaceCommand::Bind(args),
+            } => {
+                assert_eq!(args.scope.workspace, "default");
+                assert_eq!(args.snapshot_id.as_deref(), Some("snapshot-1"));
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
