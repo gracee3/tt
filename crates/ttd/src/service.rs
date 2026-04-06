@@ -69,6 +69,7 @@ use tt_runtime::{
     DaemonLaunch as TTDaemonLaunch, LocalTTDaemonLaunchSpec, LocalTTDaemonManager,
     RejectingApprovalRouter, TTClient, TTDaemonManager, WebSocketTransport,
 };
+use tt_sandboxing::workspace as sandbox_workspace;
 
 use crate::assignment_comm::parse::{ParsedWorkerReport, parse_worker_report_for_turn};
 use crate::assignment_comm::policy::validate_assignment_packet;
@@ -3276,12 +3277,10 @@ impl TTDaemonService {
                         })
                         .filter(|value| !value.is_empty())
                 });
-            let writable_roots = if cwd.as_deref() == Some(scope.repository_root.as_str()) {
-                scope.workspace_lifecycle_roots
-            } else {
-                scope.worker_turn_roots
-            };
-            return Ok(Self::workspace_write_policy(writable_roots));
+            return Ok(sandbox_workspace::workspace_write_policy_for_turn(
+                &scope,
+                cwd.as_deref(),
+            ));
         }
 
         let writable_roots = requested_cwd
@@ -3289,20 +3288,7 @@ impl TTDaemonService {
             .filter(|value| !value.is_empty())
             .into_iter()
             .collect::<Vec<_>>();
-        Ok(Self::workspace_write_policy(writable_roots))
-    }
-
-    fn workspace_write_policy(writable_roots: Vec<String>) -> Option<types::SandboxPolicy> {
-        if writable_roots.is_empty() {
-            return None;
-        }
-        Some(types::SandboxPolicy::WorkspaceWrite {
-            writable_roots,
-            read_only_access: Value::Null,
-            network_access: false,
-            exclude_tmpdir_env_var: false,
-            exclude_slash_tmp: true,
-        })
+        Ok(sandbox_workspace::workspace_write_policy(writable_roots))
     }
 
     async fn turn_start(&self, params: ipc::TurnStartRequest) -> TTResult<ipc::TurnStartResponse> {
