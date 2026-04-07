@@ -14,6 +14,11 @@ Use this skill for operator conversation, concise status, and turn-to-turn hando
 - keeps tone and scope aligned with the current turn
 - returns a useful next-step summary
 
+## Tool preference
+
+- prefer `request_user_input` when a single missing fact blocks the conversation
+- avoid write-capable tools unless the operator explicitly switches to a durable workflow
+
 ## What this skill does not do
 
 - code changes

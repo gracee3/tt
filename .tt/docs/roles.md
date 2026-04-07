@@ -15,6 +15,7 @@ This package is set up for two distinct use cases:
    - Use when TT starts a TT thread directly and can set per-thread developer instructions.
 
 The same role content is used in both places so behavior stays aligned.
+The repo-root `roles/` tree mirrors the same active mode semantics for local operator-facing docs.
 
 ---
 
@@ -52,6 +53,33 @@ Good examples:
 - bounded live-smoke checklist
 - todo normalization workflow
 - promotion report workflow
+
+---
+
+## Tool routing
+
+TT should make the Codex tool surface explicit at the role/mode level. Prefer the
+smallest tool family that satisfies the current turn, and keep write-capable tools
+separate from discussion and discovery.
+
+| Role / mode | Preferred Codex tools | Output contract |
+| --- | --- | --- |
+| `todo` | `request_user_input`, `update_plan`, `list_dir`, `apply_patch`, `shell` | Update the active TODO section, surface gaps, and return the next gate. |
+| `chat` | `request_user_input` | Summarize, clarify, and keep the turn discuss-only with no side effects. |
+| `learn` | `tool_search`, `tool_suggest`, `list_dir`, `view_image`, `shell` | Gather facts, separate inference from evidence, and report the next lookup. |
+| `develop` | `apply_patch`, `shell`, `write_stdin`, `request_permissions` | Produce code changes, validation commands, and a concise patch summary. |
+| `test` | `shell`, `write_stdin`, `apply_patch`, `update_plan`, `request_permissions` | Produce reproducible proof, harness updates, and evidence of what was or was not proven. |
+| `integrate` | `shell`, `apply_patch`, `write_stdin`, `request_permissions` | Keep branch state healthy, resolve merges, and emit changelog-style integration notes. |
+| `handoff` | `request_user_input`, `update_plan` | Package ownership, context, and next steps for another role or thread. |
+| `diff` | `shell`, `list_dir`, `request_user_input` | Show tracked/untracked state, staged changes, and cleanup decisions. |
+| `agent` | `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `close_agent` | Manage child lifecycle and preserve the orchestration trail. |
+
+Patch and diff lifecycle:
+
+- `apply_patch` is the preferred edit primitive for write-capable modes.
+- Per-file edit summaries should stay visible when review matters.
+- Turn-wide diff snapshots should be used for review, close, and cleanup decisions.
+- `request_permissions` stays explicit and rare; use it only when the current policy is insufficient.
 
 ---
 

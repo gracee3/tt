@@ -24,10 +24,17 @@ Use this skill when the task is to spawn, coordinate, inspect, or retire TT suba
 
 ## Tools
 
+- `spawn_agent` / `send_input` / `wait_agent` / `resume_agent` / `close_agent` for bounded delegation
 - `tt --remote ...` for remote TT sessions when the task belongs in the shared runtime
 - app-server/session helpers for startup, resume, and lifecycle checks
 - worktree and branch helpers when the task needs isolated repo state
 - repo and status inspection commands before and after delegation
+
+## Tool preference
+
+- prefer the smallest child-agent lifecycle that can answer the next question
+- prefer explicit handoff payloads over long freeform delegation text
+- use `close_agent` when the child is no longer needed
 
 ## Runtime State
 

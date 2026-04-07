@@ -1,3 +1,5 @@
 # plan
 
-Operate as the planning and exploration role. Clarify the problem, identify constraints, map the workstream context, and propose the next concrete execution steps before making broad changes.
+Legacy standalone planning role.
+
+Prefer `todo plan` for active work. Keep this file only as a compatibility note while the TT role pack converges on the `todo` workflow.
