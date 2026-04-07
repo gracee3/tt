@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::{Error, Result, anyhow, bail};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::sleep;
@@ -678,6 +679,25 @@ struct ResolvedRoleDefinition {
     name: String,
     path: PathBuf,
     is_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ParkRecord {
+    selector: String,
+    repo_root: String,
+    worktree_path: String,
+    branch_name: String,
+    parked_at: String,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GitWorktreeInspection {
+    branch_name: Option<String>,
+    upstream_branch: Option<String>,
+    staged: Vec<String>,
+    unstaged: Vec<String>,
+    untracked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2788,6 +2808,7 @@ impl SupervisorService {
         new_workstream: Option<&str>,
         repo_root: Option<PathBuf>,
         headless: bool,
+        ephemeral: bool,
         model: Option<String>,
     ) -> Result<()> {
         let role_prompt = self.load_role_prompt(role).await?;
@@ -2825,16 +2846,17 @@ impl SupervisorService {
         ])?;
 
         let bootstrap_prompt = format!(
-            "You are starting an TT-managed TT session.\n\nRole: {role}\nWorkstream: {} ({})\nWorktree: {}\nMode: {}\n\nRole instructions:\n{}\n\nRespond with:\n1. A concise acknowledgement of the role and workstream.\n2. The cwd you will operate from.\n3. The first actions you will take.\n4. A note that the session will remain ready for the next turn.\n",
+            "You are starting an TT-managed TT session.\n\nRole: {role}\nWorkstream: {} ({})\nWorktree: {}\nMode: {}\nThread persistence: {}\n\nRole instructions:\n{}\n\nRespond with:\n1. A concise acknowledgement of the role and workstream.\n2. The cwd you will operate from.\n3. The first actions you will take.\n4. A note that the session will remain ready for the next turn.\n",
             resolved.workstream.title,
             resolved.workstream.id,
             resolved.worktree_path.display(),
             if headless { "headless" } else { "attached" },
+            if ephemeral { "ephemeral" } else { "durable" },
             role_prompt.trim()
         );
 
         let thread_id = self
-            .thread_start(Some(resolved.worktree_path.clone()), model, false)
+            .thread_start(Some(resolved.worktree_path.clone()), model, ephemeral)
             .await?;
         info!(
             surface = "cli",
@@ -2844,6 +2866,7 @@ impl SupervisorService {
             workstream = %resolved.workstream.title,
             thread_id,
             headless,
+            ephemeral,
             cwd = %resolved.worktree_path.display(),
             "launched tt session"
         );
@@ -2857,11 +2880,236 @@ impl SupervisorService {
         println!("workstream: {}", resolved.workstream.title);
         println!("worktree_path: {}", resolved.worktree_path.display());
         println!("thread_id: {thread_id}");
+        println!("thread_ephemeral: {ephemeral}");
         println!(
             "resume_hint: tt tt threads resume --thread {thread_id} --cwd {}",
             resolved.worktree_path.display()
         );
         println!("first_response_len: {}", first_response.len());
+        Ok(())
+    }
+
+    pub async fn spawn_role_session(
+        &self,
+        role: &str,
+        workstream_selector: Option<&str>,
+        new_workstream: Option<&str>,
+        repo_root: Option<PathBuf>,
+        headless: bool,
+        ephemeral: bool,
+        model: Option<String>,
+    ) -> Result<()> {
+        self.tt_spawn(
+            role,
+            workstream_selector,
+            new_workstream,
+            repo_root,
+            headless,
+            ephemeral,
+            model,
+        )
+        .await
+    }
+
+    fn parked_marker_path(worktree_path: &Path) -> PathBuf {
+        worktree_path.join(".tt").join("parked.json")
+    }
+
+    async fn inspect_git_worktree(
+        repo_root: &Path,
+        worktree_path: &Path,
+    ) -> Result<GitWorktreeInspection> {
+        let mut inspection = GitWorktreeInspection::default();
+        inspection.branch_name = Self::current_worktree_branch_name(worktree_path).await;
+
+        let upstream = Command::new("git")
+            .arg("-C")
+            .arg(worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+            .output()
+            .await
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if raw.is_empty() { None } else { Some(raw) }
+                } else {
+                    None
+                }
+            });
+        inspection.upstream_branch = upstream;
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(worktree_path)
+            .args(["status", "--short", "--untracked-files=all"])
+            .output()
+            .await
+            .with_context(|| format!("inspect git status for {}", worktree_path.display()))?;
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            for line in raw.lines() {
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let entry = trimmed.to_string();
+                let path = entry.get(3..).unwrap_or("").trim().to_string();
+                match entry.chars().take(2).collect::<String>().as_str() {
+                    "??" => inspection.untracked.push(path),
+                    s if s.starts_with(' ') => inspection.unstaged.push(path),
+                    _ => inspection.staged.push(path),
+                }
+            }
+        }
+
+        Ok(inspection)
+    }
+
+    pub async fn worktree_diff(
+        &self,
+        selector: Option<&str>,
+        repo_root: Option<PathBuf>,
+        worktree_path: Option<PathBuf>,
+    ) -> Result<()> {
+        let (repo_root, worktree_path, branch_name) = if let Some(selector) = selector {
+            match self.resolve_tt_worktree_cleanup_target(selector).await? {
+                ResolvedTTWorktreeCleanupTarget::Workstream {
+                    repo_root,
+                    worktree_path,
+                    branch_name,
+                    ..
+                }
+                | ResolvedTTWorktreeCleanupTarget::TrackedThread {
+                    repo_root,
+                    worktree_path,
+                    branch_name,
+                    ..
+                } => (repo_root, worktree_path, branch_name),
+            }
+        } else {
+            let worktree_path = worktree_path
+                .ok_or_else(|| anyhow!("`diff` requires either --selector or --worktree-path"))?;
+            let repo_root = repo_root.unwrap_or_else(|| worktree_path.clone());
+            let branch_name = Self::current_worktree_branch_name(&worktree_path)
+                .await
+                .unwrap_or_else(|| "unknown".to_string());
+            (repo_root, worktree_path, branch_name)
+        };
+
+        let inspection = Self::inspect_git_worktree(&repo_root, &worktree_path).await?;
+        println!("surface: diff");
+        println!("repo_root: {}", repo_root.display());
+        println!("worktree_path: {}", worktree_path.display());
+        println!("branch_name: {branch_name}");
+        println!(
+            "upstream_branch: {}",
+            inspection.upstream_branch.as_deref().unwrap_or("unset")
+        );
+        println!(
+            "staged_files: {}",
+            if inspection.staged.is_empty() {
+                "none".to_string()
+            } else {
+                inspection.staged.join(",")
+            }
+        );
+        println!(
+            "unstaged_files: {}",
+            if inspection.unstaged.is_empty() {
+                "none".to_string()
+            } else {
+                inspection.unstaged.join(",")
+            }
+        );
+        println!(
+            "untracked_files: {}",
+            if inspection.untracked.is_empty() {
+                "none".to_string()
+            } else {
+                inspection.untracked.join(",")
+            }
+        );
+        println!(
+            "dirty: {}",
+            !(inspection.staged.is_empty()
+                && inspection.unstaged.is_empty()
+                && inspection.untracked.is_empty())
+        );
+        Ok(())
+    }
+
+    pub async fn close_worktree(&self, selector: &str, force: bool) -> Result<()> {
+        let target = self.resolve_tt_worktree_cleanup_target(selector).await?;
+        let (repo_root, worktree_path, branch_name) = match target {
+            ResolvedTTWorktreeCleanupTarget::Workstream {
+                repo_root,
+                worktree_path,
+                branch_name,
+                ..
+            }
+            | ResolvedTTWorktreeCleanupTarget::TrackedThread {
+                repo_root,
+                worktree_path,
+                branch_name,
+                ..
+            } => (repo_root, worktree_path, branch_name),
+        };
+
+        let inspection = Self::inspect_git_worktree(&repo_root, &worktree_path).await?;
+        let dirty = !inspection.staged.is_empty()
+            || !inspection.unstaged.is_empty()
+            || !inspection.untracked.is_empty();
+        if dirty && !force {
+            bail!(
+                "worktree `{}` has dirty or untracked changes; run `tt diff` or pass --force",
+                worktree_path.display()
+            );
+        }
+
+        self.tt_worktree_prune(selector).await?;
+        println!("close_selector: {selector}");
+        println!("close_branch_name: {branch_name}");
+        println!("close_dirty: {dirty}");
+        Ok(())
+    }
+
+    pub async fn park_worktree(&self, selector: &str, note: Option<String>) -> Result<()> {
+        let target = self.resolve_tt_worktree_cleanup_target(selector).await?;
+        let (repo_root, worktree_path, branch_name) = match target {
+            ResolvedTTWorktreeCleanupTarget::Workstream {
+                repo_root,
+                worktree_path,
+                branch_name,
+                ..
+            }
+            | ResolvedTTWorktreeCleanupTarget::TrackedThread {
+                repo_root,
+                worktree_path,
+                branch_name,
+                ..
+            } => (repo_root, worktree_path, branch_name),
+        };
+        let parked = ParkRecord {
+            selector: selector.to_string(),
+            repo_root: repo_root.display().to_string(),
+            worktree_path: worktree_path.display().to_string(),
+            branch_name: branch_name.clone(),
+            parked_at: Utc::now().to_rfc3339(),
+            note,
+        };
+        let parked_path = Self::parked_marker_path(&worktree_path);
+        if let Some(parent) = parked_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&parked_path, serde_json::to_string_pretty(&parked)?)
+            .with_context(|| format!("write {}", parked_path.display()))?;
+        println!("surface: park");
+        println!("selector: {selector}");
+        println!("repo_root: {}", repo_root.display());
+        println!("worktree_path: {}", worktree_path.display());
+        println!("branch_name: {branch_name}");
+        println!("parked_marker: {}", parked_path.display());
         Ok(())
     }
 

@@ -160,6 +160,7 @@ impl SkillBackend for TTSkillBackend {
                 args.new_workstream.as_deref(),
                 args.repo_root.clone(),
                 args.headless,
+                false,
                 args.model.clone(),
             )
             .await?;
@@ -375,6 +376,7 @@ impl SkillBackend for TTSkillBackend {
                 args.new_workstream.as_deref(),
                 args.repo_root.clone(),
                 args.headless,
+                false,
                 args.model.clone(),
             )
             .await?;

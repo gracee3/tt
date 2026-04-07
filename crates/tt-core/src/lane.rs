@@ -131,6 +131,12 @@ pub struct WorkspaceManifest {
     pub bound_at: Option<String>,
     #[serde(default)]
     pub promoted_at: Option<String>,
+    #[serde(default)]
+    pub parked_at: Option<String>,
+    #[serde(default)]
+    pub parked_thread_id: Option<String>,
+    #[serde(default)]
+    pub parked_note: Option<String>,
     pub created_at: String,
     pub cleanup_scope: LaneCleanupScope,
     #[serde(default)]
@@ -173,6 +179,9 @@ impl WorkspaceManifest {
             bound_thread_id: None,
             bound_at: None,
             promoted_at: None,
+            parked_at: None,
+            parked_thread_id: None,
+            parked_note: None,
             created_at: Utc::now().to_rfc3339(),
             cleanup_scope: LaneCleanupScope::Runtime,
             attached_tracked_thread_ids: Vec::new(),
@@ -366,5 +375,6 @@ mod tests {
         let decoded: WorkspaceManifest = toml::from_str(&encoded).expect("decode workspace");
         assert_eq!(decoded.label, "Default");
         assert!(decoded.attached_tracked_thread_ids.is_empty());
+        assert!(decoded.parked_at.is_none());
     }
 }

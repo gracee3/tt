@@ -51,6 +51,9 @@ fn render_command_tree(command: &Command, level: usize, prefix: &[String], out: 
     writeln!(out).expect("write markdown");
 
     for subcommand in command.get_subcommands() {
+        if subcommand.is_hide_set() {
+            continue;
+        }
         if subcommand.get_name() == "TT" {
             continue;
         }
@@ -83,5 +86,9 @@ mod tests {
         assert!(markdown.contains("`tt lane`"));
         assert!(markdown.contains("`tt docs`"));
         assert!(markdown.contains("`tt skill`"));
+        assert!(markdown.contains("`tt todo`"));
+        assert!(markdown.contains("`tt split`"));
+        assert!(!markdown.contains("`tt roles`"));
+        assert!(!markdown.contains("`tt supervisor`"));
     }
 }

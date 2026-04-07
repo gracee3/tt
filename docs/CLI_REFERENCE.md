@@ -17,12 +17,24 @@ Commands:
   events      
   project     Manage durable tt project records
   worktree    Canonical authority-backed CRUD for planning work units
-  roles       Inspect tt role definitions
+  todo        
+  develop     
+  test        
+  integrate   
+  chat        
+  learn       
+  handoff     
+  diff        
+  split       
+  close       
+  park        
   worktrees   
   app-server  Manage the shared tt app-server lifecycle
   lane        Manage lane-local runtimes and rendered directory state
+  snapshot    
+  context     
+  workspace   
   tui         Open the tt dashboard TUI
-  supervisor  
   app         
   i3          
   skill       Run a typed skill runtime command
@@ -1122,43 +1134,327 @@ Options:
           Print help
 ```
 
-### `tt roles`
+### `tt todo`
 
 ```text
-Inspect tt role definitions
-
-Usage: roles <COMMAND>
+Usage: todo <COMMAND>
 
 Commands:
-  list  
-  info  
-  help  Print this message or the help of the given subcommand(s)
+  note    
+  review  
+  plan    
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
           Print help
 ```
 
-#### `tt roles list`
+#### `tt todo note`
 
 ```text
-Usage: list
+Usage: note [OPTIONS]
 
 Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
   -h, --help
           Print help
 ```
 
-#### `tt roles info`
+#### `tt todo review`
 
 ```text
-Usage: info <ROLE>
+Usage: review [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt todo plan`
+
+```text
+Usage: plan [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt develop`
+
+```text
+Usage: develop [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt test`
+
+```text
+Usage: test [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt integrate`
+
+```text
+Usage: integrate [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt chat`
+
+```text
+Usage: chat [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt learn`
+
+```text
+Usage: learn [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt handoff`
+
+```text
+Usage: handoff [OPTIONS]
+
+Options:
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt diff`
+
+```text
+Usage: diff [OPTIONS]
+
+Options:
+      --selector <SELECTOR>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --worktree-path <WORKTREE_PATH>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt split`
+
+```text
+Usage: split [OPTIONS]
+
+Options:
+      --role <ROLE>
+          
+
+      --workstream <WORKSTREAM>
+          
+
+      --new-workstream <NEW_WORKSTREAM>
+          
+
+      --repo-root <REPO_ROOT>
+          
+
+      --headless
+          
+
+      --model <MODEL>
+          
+
+      --ephemeral
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt close`
+
+```text
+Usage: close [OPTIONS] <SELECTOR>
 
 Arguments:
-  <ROLE>
+  <SELECTOR>
           
 
 Options:
+      --force
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt park`
+
+```text
+Usage: park [OPTIONS] <SELECTOR>
+
+Arguments:
+  <SELECTOR>
+          
+
+Options:
+      --note <NOTE>
+          
+
   -h, --help
           Print help
 ```
@@ -1430,28 +1726,20 @@ Options:
           Print help
 ```
 
-### `tt tui`
+### `tt snapshot`
 
 ```text
-Open the tt dashboard TUI
-
-Usage: tui
-
-Options:
-  -h, --help
-          Print help
-```
-
-### `tt supervisor`
-
-```text
-Usage: supervisor <COMMAND>
+Usage: snapshot <COMMAND>
 
 Commands:
-  plan     Supervisor-owned planning session orchestration
-  work     
-  review   
-  session  
+  create   
+  fork     
+  restore  
+  diff     
+  prune    
+  compact  
+  list     
+  get      
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1459,956 +1747,439 @@ Options:
           Print help
 ```
 
-#### `tt supervisor plan`
+#### `tt snapshot create`
 
 ```text
-Supervisor-owned planning session orchestration
-
-Usage: plan <COMMAND>
-
-Commands:
-  create                      Create a draft planning session; readiness must be set later with mark-ready-for-review
-  get                         
-  list                        
-  update-summary              Update the descriptive planning summary only; use mark-ready-for-review for readiness
-  request-supervisor-context  Request more supervisor context while the session is still chatting
-  request-research            Request the bounded one-turn research assignment for this session
-  mark-ready-for-review       Explicitly transition a chat session into awaiting-approval
-  abort                       Abort the planning session without mutating canonical plan state
-  approve                     Stage a canonical plan revision proposal from the session summary
-  reject                      Reject the planning session without mutating canonical plan state
-  supersede                   Supersede the planning session without mutating canonical plan state
-  help                        Print this message or the help of the given subcommand(s)
+Usage: create [OPTIONS] --lane <LANE> --repo <REPO> --workspace <WORKSPACE> --thread <THREAD>
 
 Options:
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan create`
-
-```text
-Create a draft planning session; readiness must be set later with mark-ready-for-review
-
-Usage: create [OPTIONS] --workstream <WORKSTREAM> --objective <OBJECTIVE>
-
-Options:
-      --workstream <WORKSTREAM>
+      --lane <LANE>
           
 
-      --planning-thread <PLANNING_THREAD_ID>
+      --repo <REPO>
           
 
-      --objective <OBJECTIVE>
+      --workspace <WORKSPACE>
           
 
-      --requirement <REQUIREMENTS>
+      --thread <THREAD>
           
 
-      --constraint <CONSTRAINTS>
+      --include-turn-range <INCLUDE_TURN_RANGE>
           
 
-      --non-goal <NON_GOALS>
+      --exclude-turn-range <EXCLUDE_TURN_RANGE>
           
 
-      --open-question <OPEN_QUESTIONS>
+      --include-turn <INCLUDE_TURN>
           
 
-      --research-status <RESEARCH_STATUS>
-          [default: not-requested]
-          [possible values: not-requested, requested, completed, failed]
-
-      --draft-plan-summary <DRAFT_PLAN_SUMMARY>
+      --exclude-turn <EXCLUDE_TURN>
           
 
-      --ready-for-review
-          Reserved for the explicit mark-ready-for-review transition; create/update should leave this false
+      --pin-turn <PIN_TURN>
+          
+
+      --pin-fact <PIN_FACT>
+          
+
+      --summary <SUMMARY>
+          
+
+      --skill <SKILLS>
+          
+
+      --tag <TAGS>
+          
 
       --created-by <CREATED_BY>
           
 
-      --request-note <REQUEST_NOTE>
-          
-
-      --model <MODEL>
+      --note <NOTE>
           
 
       --cwd <CWD>
           
 
-  -h, --help
-          Print help
-```
+      --worktree <WORKTREE>
+          
 
-##### `tt supervisor plan get`
+      --commit <COMMIT>
+          
 
-```text
-Usage: get --session <SESSION>
+      --branch <BRANCH>
+          
 
-Options:
-      --session <SESSION>
+      --model <MODEL>
           
 
   -h, --help
           Print help
 ```
 
-##### `tt supervisor plan list`
+#### `tt snapshot fork`
+
+```text
+Usage: fork [OPTIONS] --from <FROM_SNAPSHOT>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --created-by <CREATED_BY>
+          
+
+      --tag <TAGS>
+          
+
+      --note <NOTE>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt snapshot restore`
+
+```text
+Usage: restore [OPTIONS] --snapshot <SNAPSHOT_ID>
+
+Options:
+      --snapshot <SNAPSHOT_ID>
+          
+
+      --bind
+          
+
+      --out <OUT>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt snapshot diff`
+
+```text
+Usage: diff --from <FROM_SNAPSHOT> --to <TO_SNAPSHOT>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --to <TO_SNAPSHOT>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt snapshot prune`
+
+```text
+Usage: prune [OPTIONS]
+
+Options:
+      --snapshot <SNAPSHOTS>
+          
+
+      --force
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt snapshot compact`
+
+```text
+Usage: compact [OPTIONS] --from <FROM_SNAPSHOT> --summary <SUMMARY>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --summary <SUMMARY>
+          
+
+      --source-turn <SOURCE_TURN>
+          
+
+      --created-by <CREATED_BY>
+          
+
+      --tag <TAGS>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt snapshot list`
 
 ```text
 Usage: list [OPTIONS]
 
 Options:
-      --workstream <WORKSTREAM>
+      --lane <LANE>
           
 
-      --include-closed
+      --repo <REPO>
+          
+
+      --workspace <WORKSPACE>
           
 
   -h, --help
           Print help
 ```
 
-##### `tt supervisor plan update-summary`
+#### `tt snapshot get`
 
 ```text
-Update the descriptive planning summary only; use mark-ready-for-review for readiness
-
-Usage: update-summary [OPTIONS] --session <SESSION> --objective <OBJECTIVE>
+Usage: get --snapshot <SNAPSHOT_ID>
 
 Options:
-      --session <SESSION>
-          
-
-      --objective <OBJECTIVE>
-          
-
-      --requirement <REQUIREMENTS>
-          
-
-      --constraint <CONSTRAINTS>
-          
-
-      --non-goal <NON_GOALS>
-          
-
-      --open-question <OPEN_QUESTIONS>
-          
-
-      --research-status <RESEARCH_STATUS>
-          [default: not-requested]
-          [possible values: not-requested, requested, completed, failed]
-
-      --draft-plan-summary <DRAFT_PLAN_SUMMARY>
-          
-
-      --ready-for-review
-          Reserved for the explicit mark-ready-for-review transition; create/update should leave this false
-
-      --updated-by <UPDATED_BY>
-          
-
-      --note <NOTE>
+      --snapshot <SNAPSHOT_ID>
           
 
   -h, --help
           Print help
 ```
 
-##### `tt supervisor plan request-supervisor-context`
+### `tt context`
 
 ```text
-Request more supervisor context while the session is still chatting
-
-Usage: request-supervisor-context [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --note <NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan request-research`
-
-```text
-Request the bounded one-turn research assignment for this session
-
-Usage: request-research [OPTIONS] --session <SESSION> --worker <WORKER>
-
-Options:
-      --session <SESSION>
-          
-
-      --worker <WORKER>
-          
-
-      --worker-kind <WORKER_KIND>
-          
-
-      --model <MODEL>
-          
-
-      --cwd <CWD>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --request-note <REQUEST_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan mark-ready-for-review`
-
-```text
-Explicitly transition a chat session into awaiting-approval
-
-Usage: mark-ready-for-review [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --updated-by <UPDATED_BY>
-          
-
-      --note <NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan abort`
-
-```text
-Abort the planning session without mutating canonical plan state
-
-Usage: abort [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --updated-by <UPDATED_BY>
-          
-
-      --note <NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan approve`
-
-```text
-Stage a canonical plan revision proposal from the session summary
-
-Usage: approve [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --approved-by <APPROVED_BY>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan reject`
-
-```text
-Reject the planning session without mutating canonical plan state
-
-Usage: reject [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --rejected-by <REJECTED_BY>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor plan supersede`
-
-```text
-Supersede the planning session without mutating canonical plan state
-
-Usage: supersede [OPTIONS] --session <SESSION>
-
-Options:
-      --session <SESSION>
-          
-
-      --superseded-by-session <SUPERSEDED_BY_SESSION>
-          
-
-      --updated-by <UPDATED_BY>
-          
-
-      --note <NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt supervisor work`
-
-```text
-Usage: work <COMMAND>
+Usage: context <COMMAND>
 
 Commands:
-  assignments  
-  reports      
-  decisions    
-  proposals    
-  help         Print this message or the help of the given subcommand(s)
+  include    
+  exclude    
+  pin        
+  summarize  
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
           Print help
 ```
 
-##### `tt supervisor work assignments`
+#### `tt context include`
 
 ```text
-Usage: assignments <COMMAND>
+Usage: include [OPTIONS] --from <FROM_SNAPSHOT>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --include-turn-range <INCLUDE_TURN_RANGE>
+          
+
+      --exclude-turn-range <EXCLUDE_TURN_RANGE>
+          
+
+      --include-turn <INCLUDE_TURN>
+          
+
+      --exclude-turn <EXCLUDE_TURN>
+          
+
+      --pin-turn <PIN_TURN>
+          
+
+      --pin-fact <PIN_FACT>
+          
+
+      --summary <SUMMARY>
+          
+
+      --tag <TAGS>
+          
+
+      --created-by <CREATED_BY>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt context exclude`
+
+```text
+Usage: exclude [OPTIONS] --from <FROM_SNAPSHOT>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --include-turn-range <INCLUDE_TURN_RANGE>
+          
+
+      --exclude-turn-range <EXCLUDE_TURN_RANGE>
+          
+
+      --include-turn <INCLUDE_TURN>
+          
+
+      --exclude-turn <EXCLUDE_TURN>
+          
+
+      --pin-turn <PIN_TURN>
+          
+
+      --pin-fact <PIN_FACT>
+          
+
+      --summary <SUMMARY>
+          
+
+      --tag <TAGS>
+          
+
+      --created-by <CREATED_BY>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt context pin`
+
+```text
+Usage: pin [OPTIONS] --from <FROM_SNAPSHOT>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --pin-turn <PIN_TURN>
+          
+
+      --pin-fact <PIN_FACT>
+          
+
+      --created-by <CREATED_BY>
+          
+
+      --tag <TAGS>
+          
+
+  -h, --help
+          Print help
+```
+
+#### `tt context summarize`
+
+```text
+Usage: summarize [OPTIONS] --from <FROM_SNAPSHOT> --summary <SUMMARY>
+
+Options:
+      --from <FROM_SNAPSHOT>
+          
+
+      --summary <SUMMARY>
+          
+
+      --source-turn <SOURCE_TURN>
+          
+
+      --created-by <CREATED_BY>
+          
+
+      --tag <TAGS>
+          
+
+  -h, --help
+          Print help
+```
+
+### `tt workspace`
+
+```text
+Usage: workspace <COMMAND>
 
 Commands:
-  start          
-  get            
-  communication  
-  help           Print this message or the help of the given subcommand(s)
+  bind     
+  promote  
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
           Print help
 ```
 
-###### `tt supervisor work assignments start`
+#### `tt workspace bind`
 
 ```text
-Usage: start [OPTIONS] --workunit <WORKUNIT> --worker <WORKER>
+Usage: bind [OPTIONS] --lane <LANE> --repo <REPO> --workspace <WORKSPACE>
 
 Options:
-      --workunit <WORKUNIT>
+      --lane <LANE>
           
 
-      --worker <WORKER>
+      --repo <REPO>
           
 
-      --instructions <INSTRUCTIONS>
+      --workspace <WORKSPACE>
           
 
-      --worker-kind <WORKER_KIND>
+      --snapshot <SNAPSHOT_ID>
           
 
-      --cwd <CWD>
+      --commit <COMMIT>
           
 
-      --model <MODEL>
+      --worktree <WORKTREE>
           
 
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work assignments get`
-
-```text
-Usage: get --assignment <ASSIGNMENT>
-
-Options:
-      --assignment <ASSIGNMENT>
+      --branch <BRANCH>
           
 
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work assignments communication`
-
-```text
-Usage: communication --assignment <ASSIGNMENT>
-
-Options:
-      --assignment <ASSIGNMENT>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor work reports`
-
-```text
-Usage: reports <COMMAND>
-
-Commands:
-  get                
-  list-for-workunit  
-  help               Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work reports get`
-
-```text
-Usage: get --report <REPORT>
-
-Options:
-      --report <REPORT>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work reports list-for-workunit`
-
-```text
-Usage: list-for-workunit --workunit <WORKUNIT>
-
-Options:
-      --workunit <WORKUNIT>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor work decisions`
-
-```text
-Usage: decisions <COMMAND>
-
-Commands:
-  apply  
-  help   Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work decisions apply`
-
-```text
-Usage: apply [OPTIONS] --workunit <WORKUNIT> --rationale <RATIONALE> --type <DECISION_TYPE>
-
-Options:
-      --workunit <WORKUNIT>
-          
-
-      --rationale <RATIONALE>
-          
-
-      --report <REPORT>
-          
-
-      --type <DECISION_TYPE>
-          [possible values: accept, continue, redirect, mark-complete, escalate-to-human]
-
-      --instructions <INSTRUCTIONS>
-          
-
-      --worker <WORKER>
-          
-
-      --worker-kind <WORKER_KIND>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor work proposals`
-
-```text
-Usage: proposals <COMMAND>
-
-Commands:
-  create             
-  get                
-  artifact-summary   
-  artifact-detail    
-  artifact-export    
-  list-for-workunit  
-  approve            
-  reject             
-  help               Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals create`
-
-```text
-Usage: create [OPTIONS] --workunit <WORKUNIT>
-
-Options:
-      --workunit <WORKUNIT>
-          
-
-      --report <REPORT>
-          
-
-      --note <NOTE>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --supersede-open
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals get`
-
-```text
-Usage: get --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals artifact-summary`
-
-```text
-Usage: artifact-summary --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals artifact-detail`
-
-```text
-Usage: artifact-detail --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals artifact-export`
-
-```text
-Usage: artifact-export [OPTIONS] --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-      --format <FORMAT>
-          [default: json]
-          [possible values: json, md]
-
-      --output <OUTPUT>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals list-for-workunit`
-
-```text
-Usage: list-for-workunit --workunit <WORKUNIT>
-
-Options:
-      --workunit <WORKUNIT>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals approve`
-
-```text
-Usage: approve [OPTIONS] --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-      --reviewed-by <REVIEWED_BY>
-          
-
-      --type <DECISION_TYPE>
-          [possible values: accept, continue, redirect, mark-complete, escalate-to-human]
-
-      --rationale <RATIONALE>
-          
-
-      --worker <WORKER>
-          
-
-      --worker-kind <WORKER_KIND>
-          
-
-      --objective <OBJECTIVE>
-          
-
-      --instruction <INSTRUCTIONS>
-          
-
-      --acceptance <ACCEPTANCE_CRITERIA>
-          
-
-      --stop-condition <STOP_CONDITIONS>
-          
-
-      --expected-report-field <EXPECTED_REPORT_FIELDS>
-          
-
-  -h, --help
-          Print help
-```
-
-###### `tt supervisor work proposals reject`
-
-```text
-Usage: reject [OPTIONS] --proposal <PROPOSAL>
-
-Options:
-      --proposal <PROPOSAL>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-      --reviewed-by <REVIEWED_BY>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt supervisor review`
-
-```text
-Usage: review <COMMAND>
-
-Commands:
-  list                   
-  queue                  
-  history                
-  get                    
-  propose-steer          
-  replace-pending-steer  
-  record-no-action       
-  manual-refresh         
-  approve                
-  reject                 
-  help                   Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review list`
-
-```text
-Usage: list [OPTIONS]
-
-Options:
       --thread <THREAD>
           
 
-      --assignment <ASSIGNMENT>
-          
-
-      --workstream <WORKSTREAM>
-          
-
-      --workunit <WORKUNIT>
-          
-
-      --supervisor <SUPERVISOR>
-          
-
-      --status <STATUS>
-          [possible values: proposed-to-human, recorded, sent, rejected, stale, superseded]
-
-      --kind <KIND>
-          [possible values: next-turn, steer-active-turn, interrupt-active-turn, no-action]
-
-      --include-superseded
-          
-
-      --limit <LIMIT>
-          
-
-      --include-closed
+      --canonical
           
 
   -h, --help
           Print help
 ```
 
-##### `tt supervisor review queue`
+#### `tt workspace promote`
 
 ```text
-Usage: queue [OPTIONS]
+Usage: promote [OPTIONS] --lane <LANE> --repo <REPO> --workspace <WORKSPACE> --snapshot <SNAPSHOT_ID>
 
 Options:
-      --thread <THREAD>
+      --lane <LANE>
           
 
-      --assignment <ASSIGNMENT>
+      --repo <REPO>
           
 
-      --workstream <WORKSTREAM>
+      --workspace <WORKSPACE>
           
 
-      --workunit <WORKUNIT>
+      --snapshot <SNAPSHOT_ID>
           
 
-      --supervisor <SUPERVISOR>
+      --commit <COMMIT>
           
 
-      --status <STATUS>
-          [possible values: proposed-to-human, recorded, sent, rejected, stale, superseded]
-
-      --kind <KIND>
-          [possible values: next-turn, steer-active-turn, interrupt-active-turn, no-action]
-
-      --include-superseded
-          
-
-      --limit <LIMIT>
+      --worktree <WORKTREE>
           
 
   -h, --help
           Print help
 ```
 
-##### `tt supervisor review history`
+### `tt tui`
 
 ```text
-Usage: history [OPTIONS]
+Open the tt dashboard TUI
 
-Options:
-      --thread <THREAD>
-          
-
-      --assignment <ASSIGNMENT>
-          
-
-      --include-superseded
-          
-
-      --limit <LIMIT>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review get`
-
-```text
-Usage: get --decision <DECISION>
-
-Options:
-      --decision <DECISION>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review propose-steer`
-
-```text
-Usage: propose-steer [OPTIONS] --thread <THREAD> --text <TEXT>
-
-Options:
-      --thread <THREAD>
-          
-
-      --text <TEXT>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --rationale-note <RATIONALE_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review replace-pending-steer`
-
-```text
-Usage: replace-pending-steer [OPTIONS] --decision <DECISION> --text <TEXT>
-
-Options:
-      --decision <DECISION>
-          
-
-      --text <TEXT>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --rationale-note <RATIONALE_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review record-no-action`
-
-```text
-Usage: record-no-action [OPTIONS] --decision <DECISION>
-
-Options:
-      --decision <DECISION>
-          
-
-      --reviewed-by <REVIEWED_BY>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review manual-refresh`
-
-```text
-Usage: manual-refresh [OPTIONS]
-
-Options:
-      --thread <THREAD>
-          
-
-      --assignment <ASSIGNMENT>
-          
-
-      --requested-by <REQUESTED_BY>
-          
-
-      --rationale-note <RATIONALE_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review approve`
-
-```text
-Usage: approve [OPTIONS] --decision <DECISION>
-
-Options:
-      --decision <DECISION>
-          
-
-      --reviewed-by <REVIEWED_BY>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor review reject`
-
-```text
-Usage: reject [OPTIONS] --decision <DECISION>
-
-Options:
-      --decision <DECISION>
-          
-
-      --reviewed-by <REVIEWED_BY>
-          
-
-      --review-note <REVIEW_NOTE>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt supervisor session`
-
-```text
-Usage: session <COMMAND>
-
-Commands:
-  active  
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt supervisor session active`
-
-```text
-Usage: active
+Usage: tui
 
 Options:
   -h, --help
@@ -2785,6 +2556,7 @@ Commands:
   process   
   services  
   git       
+  apply     
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -3608,296 +3380,19 @@ Options:
           Print help
 ```
 
-### `tt tt`
+#### `tt skill apply`
 
 ```text
-Usage: tt <COMMAND>
-
-Commands:
-  models    
-  spawn     
-  resume    
-  worktree  TT lane worktree lifecycle helpers
-  threads   
-  turns     
-  help      Print this message or the help of the given subcommand(s)
+Usage: apply [OPTIONS] --snapshot <SNAPSHOT_ID>
 
 Options:
-  -h, --help
-          Print help
-```
-
-#### `tt tt models`
-
-```text
-Usage: models <COMMAND>
-
-Commands:
-  list  
-  help  Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt models list`
-
-```text
-Usage: list --workstream <WORKSTREAM>
-
-Options:
-      --workstream <WORKSTREAM>
+      --snapshot <SNAPSHOT_ID>
           
 
-  -h, --help
-          Print help
-```
-
-#### `tt tt spawn`
-
-```text
-Usage: spawn [OPTIONS] <ROLE>
-
-Arguments:
-  <ROLE>
+      --skill <SKILLS>
           
 
-Options:
-      --workstream <WORKSTREAM>
-          
-
-      --new-workstream <NEW_WORKSTREAM>
-          
-
-      --repo-root <REPO_ROOT>
-          
-
-      --headless
-          
-
-      --model <MODEL>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt tt resume`
-
-```text
-Usage: resume [OPTIONS] <THREAD>
-
-Arguments:
-  <THREAD>
-          
-
-Options:
-      --cwd <CWD>
-          
-
-      --model <MODEL>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt tt worktree`
-
-```text
-TT lane worktree lifecycle helpers
-
-Usage: worktree <COMMAND>
-
-Commands:
-  add    
-  prune  
-  help   Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt worktree add`
-
-```text
-Usage: add <REPO_ROOT> <NAME>
-
-Arguments:
-  <REPO_ROOT>
-          
-
-  <NAME>
-          
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt worktree prune`
-
-```text
-Usage: prune <SELECTOR>
-
-Arguments:
-  <SELECTOR>
-          
-
-Options:
-  -h, --help
-          Print help
-```
-
-#### `tt tt threads`
-
-```text
-Usage: threads <COMMAND>
-
-Commands:
-  list         
-  list-loaded  
-  read         
-  start        
-  resume       
-  help         Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt threads list`
-
-```text
-Usage: list --workstream <WORKSTREAM>
-
-Options:
-      --workstream <WORKSTREAM>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt tt threads list-loaded`
-
-```text
-Usage: list-loaded --workstream <WORKSTREAM>
-
-Options:
-      --workstream <WORKSTREAM>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt tt threads read`
-
-```text
-Usage: read --thread <THREAD>
-
-Options:
-      --thread <THREAD>
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt tt threads start`
-
-```text
-Usage: start [OPTIONS]
-
-Options:
-      --cwd <CWD>
-          
-
-      --model <MODEL>
-          
-
-      --ephemeral
-          
-
-  -h, --help
-          Print help
-```
-
-##### `tt tt threads resume`
-
-```text
-Usage: resume [OPTIONS] --thread <THREAD>
-
-Options:
-      --thread <THREAD>
-          
-
-      --cwd <CWD>
-          
-
-      --model <MODEL>
-          
-
-  -h, --help
-          Print help
-```
-
-#### `tt tt turns`
-
-```text
-Usage: turns <COMMAND>
-
-Commands:
-  list-active  
-  recent       
-  get          
-  help         Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt turns list-active`
-
-```text
-Usage: list-active
-
-Options:
-  -h, --help
-          Print help
-```
-
-##### `tt tt turns recent`
-
-```text
-Usage: recent [OPTIONS] --thread <THREAD>
-
-Options:
-      --thread <THREAD>
-          
-
-      --limit <LIMIT>
-          [default: 10]
-
-  -h, --help
-          Print help
-```
-
-##### `tt tt turns get`
-
-```text
-Usage: get --thread <THREAD> --turn <TURN>
-
-Options:
-      --thread <THREAD>
-          
-
-      --turn <TURN>
+      --out <OUT>
           
 
   -h, --help

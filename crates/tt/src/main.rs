@@ -129,6 +129,21 @@ enum TopCommand {
         #[command(subcommand)]
         command: WorkunitCommand,
     },
+    Todo {
+        #[command(subcommand)]
+        command: TodoCommand,
+    },
+    Develop(ModeSpawnArgs),
+    Test(ModeSpawnArgs),
+    Integrate(ModeSpawnArgs),
+    Chat(ModeSpawnArgs),
+    Learn(ModeSpawnArgs),
+    Handoff(ModeSpawnArgs),
+    Diff(DiffArgs),
+    Split(SplitArgs),
+    Close(CloseArgs),
+    Park(ParkArgs),
+    #[command(hide = true)]
     Roles {
         #[command(subcommand)]
         command: RolesCommand,
@@ -156,6 +171,7 @@ enum TopCommand {
     },
     #[command(about = "Open the tt dashboard TUI")]
     Tui,
+    #[command(hide = true)]
     Supervisor {
         #[command(subcommand)]
         command: SupervisorCommand,
@@ -527,6 +543,62 @@ struct TTSpawnArgs {
     headless: bool,
     #[arg(long)]
     model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ModeSpawnArgs {
+    #[arg(long)]
+    workstream: Option<String>,
+    #[arg(long = "new-workstream")]
+    new_workstream: Option<String>,
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    headless: bool,
+    #[arg(long)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct SplitArgs {
+    #[arg(long)]
+    role: Option<String>,
+    #[command(flatten)]
+    spawn: ModeSpawnArgs,
+    #[arg(long, default_value_t = false)]
+    ephemeral: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct CloseArgs {
+    selector: String,
+    #[arg(long, default_value_t = false)]
+    force: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ParkArgs {
+    selector: String,
+    #[arg(long)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DiffArgs {
+    #[arg(long)]
+    selector: Option<String>,
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+    #[arg(long)]
+    worktree_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum TodoCommand {
+    Note(ModeSpawnArgs),
+    Review(ModeSpawnArgs),
+    Plan(ModeSpawnArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1886,6 +1958,163 @@ async fn main() -> Result<()> {
                 },
             }
         }
+        TopCommand::Todo { command } => {
+            let service = SupervisorService::load(&overrides).await?;
+            match command {
+                TodoCommand::Note(args) => {
+                    service
+                        .spawn_role_session(
+                            "todo-note",
+                            args.workstream.as_deref(),
+                            args.new_workstream.as_deref(),
+                            args.repo_root,
+                            args.headless,
+                            false,
+                            args.model,
+                        )
+                        .await?;
+                }
+                TodoCommand::Review(args) => {
+                    service
+                        .spawn_role_session(
+                            "todo-review",
+                            args.workstream.as_deref(),
+                            args.new_workstream.as_deref(),
+                            args.repo_root,
+                            args.headless,
+                            false,
+                            args.model,
+                        )
+                        .await?;
+                }
+                TodoCommand::Plan(args) => {
+                    service
+                        .spawn_role_session(
+                            "todo-plan",
+                            args.workstream.as_deref(),
+                            args.new_workstream.as_deref(),
+                            args.repo_root,
+                            args.headless,
+                            false,
+                            args.model,
+                        )
+                        .await?;
+                }
+            }
+        }
+        TopCommand::Develop(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "develop",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    false,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Test(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "test",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    false,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Integrate(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "integrate",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    false,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Chat(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "chat",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    true,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Learn(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "learn",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    false,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Handoff(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .spawn_role_session(
+                    "handoff",
+                    args.workstream.as_deref(),
+                    args.new_workstream.as_deref(),
+                    args.repo_root,
+                    args.headless,
+                    false,
+                    args.model,
+                )
+                .await?;
+        }
+        TopCommand::Diff(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service
+                .worktree_diff(args.selector.as_deref(), args.repo_root, args.worktree_path)
+                .await?;
+        }
+        TopCommand::Split(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            let role = args.role.as_deref().unwrap_or("develop");
+            service
+                .spawn_role_session(
+                    role,
+                    args.spawn.workstream.as_deref(),
+                    args.spawn.new_workstream.as_deref(),
+                    args.spawn.repo_root,
+                    args.spawn.headless,
+                    args.ephemeral,
+                    args.spawn.model,
+                )
+                .await?;
+        }
+        TopCommand::Close(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service.close_worktree(&args.selector, args.force).await?;
+        }
+        TopCommand::Park(args) => {
+            let service = SupervisorService::load(&overrides).await?;
+            service.park_worktree(&args.selector, args.note).await?;
+        }
         TopCommand::Supervisor { command } => {
             let service = SupervisorService::load(&overrides).await?;
             match command {
@@ -2262,6 +2491,7 @@ async fn main() -> Result<()> {
                                 args.new_workstream.as_deref(),
                                 args.repo_root,
                                 args.headless,
+                                false,
                                 args.model,
                             )
                             .await?;
@@ -2345,6 +2575,7 @@ async fn main() -> Result<()> {
                             args.new_workstream.as_deref(),
                             args.repo_root,
                             args.headless,
+                            false,
                             args.model,
                         )
                         .await?;
@@ -2451,7 +2682,6 @@ mod tests {
 
         assert!(help.contains("project"));
         assert!(help.contains("worktree"));
-        assert!(help.contains("roles"));
         assert!(help.contains("worktrees"));
         assert!(help.contains("app-server"));
         assert!(help.contains("lane"));
@@ -2459,7 +2689,19 @@ mod tests {
         assert!(help.contains("context"));
         assert!(help.contains("workspace"));
         assert!(help.contains("tui"));
-        assert!(help.contains("supervisor"));
+        assert!(help.contains("todo"));
+        assert!(help.contains("develop"));
+        assert!(help.contains("test"));
+        assert!(help.contains("integrate"));
+        assert!(help.contains("chat"));
+        assert!(help.contains("learn"));
+        assert!(help.contains("handoff"));
+        assert!(help.contains("diff"));
+        assert!(help.contains("split"));
+        assert!(help.contains("close"));
+        assert!(help.contains("park"));
+        assert!(!help.contains("roles"));
+        assert!(!help.contains("supervisor"));
         assert!(!help.contains("tracked-threads"));
         assert!(!help.contains("planning-sessions"));
         assert!(!help.contains("legacy-workstreams"));
@@ -2715,6 +2957,90 @@ mod tests {
             } => {
                 assert_eq!(args.scope.workspace, "default");
                 assert_eq!(args.snapshot_id.as_deref(), Some("snapshot-1"));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_todo_note_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "todo",
+            "note",
+            "--new-workstream",
+            "notes-v1",
+            "--repo-root",
+            "/tmp/repo",
+        ]);
+
+        match cli.command {
+            TopCommand::Todo {
+                command: TodoCommand::Note(args),
+            } => {
+                assert_eq!(args.new_workstream.as_deref(), Some("notes-v1"));
+                assert_eq!(args.repo_root, Some(PathBuf::from("/tmp/repo")));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_develop_command() {
+        let cli = Cli::parse_from(["tt", "develop", "--workstream", "ws-1", "--headless"]);
+
+        match cli.command {
+            TopCommand::Develop(args) => {
+                assert_eq!(args.workstream.as_deref(), Some("ws-1"));
+                assert!(args.headless);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_split_command_with_role_override() {
+        let cli = Cli::parse_from([
+            "tt",
+            "split",
+            "--role",
+            "test",
+            "--new-workstream",
+            "child",
+            "--repo-root",
+            "/tmp/repo",
+        ]);
+
+        match cli.command {
+            TopCommand::Split(args) => {
+                assert_eq!(args.role.as_deref(), Some("test"));
+                assert_eq!(args.spawn.new_workstream.as_deref(), Some("child"));
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_close_command() {
+        let cli = Cli::parse_from(["tt", "close", "workstream-1", "--force"]);
+
+        match cli.command {
+            TopCommand::Close(args) => {
+                assert_eq!(args.selector, "workstream-1");
+                assert!(args.force);
+            }
+            other => panic!("unexpected command parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_top_level_park_command() {
+        let cli = Cli::parse_from(["tt", "park", "workstream-1", "--note", "pause for review"]);
+
+        match cli.command {
+            TopCommand::Park(args) => {
+                assert_eq!(args.selector, "workstream-1");
+                assert_eq!(args.note.as_deref(), Some("pause for review"));
             }
             other => panic!("unexpected command parse: {other:?}"),
         }
