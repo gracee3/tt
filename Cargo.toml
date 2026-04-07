@@ -18,11 +18,8 @@ default-members = [
     "crates/tt-runtime",
     "crates/tt-linux-sandbox",
     "crates/ttd",
-    "crates/tt-server-client",
-    "crates/tt-operator-core",
     "crates/tt-skills",
     "crates/tt",
-    "crates/tt-server",
 ]
 resolver = "2"
 
