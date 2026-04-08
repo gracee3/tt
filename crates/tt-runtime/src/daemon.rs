@@ -68,7 +68,7 @@ impl LocalTTDaemonManager {
             config,
             cwd,
             log_path: paths.logs_dir.join("tt-app-server.log"),
-            owner_kind: "ttd".to_string(),
+            owner_kind: "tt-daemon".to_string(),
             owner_pid: std::process::id(),
             extra_env: Vec::new(),
         })

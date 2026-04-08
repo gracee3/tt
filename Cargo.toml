@@ -1,16 +1,7 @@
 [workspace]
 members = [
     "crates/tt-core",
-    "crates/tt-sandboxing",
     "crates/tt-runtime",
-    "crates/tt-linux-sandbox",
-    "crates/ttd",
-    "crates/tt-server-client",
-    "crates/tt-operator-core",
-    "crates/tt-operator-web",
-    "crates/tt-skills",
-    "crates/tt",
-    "crates/tt-server",
     "crates/tt-domain",
     "crates/tt-store",
     "crates/tt-codex",
@@ -22,12 +13,7 @@ members = [
 ]
 default-members = [
     "crates/tt-core",
-    "crates/tt-sandboxing",
     "crates/tt-runtime",
-    "crates/tt-linux-sandbox",
-    "crates/ttd",
-    "crates/tt-skills",
-    "crates/tt",
     "crates/tt-domain",
     "crates/tt-store",
     "crates/tt-codex",

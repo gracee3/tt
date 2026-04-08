@@ -23,9 +23,9 @@ impl AppPaths {
             config_file: config_dir.join("config.toml"),
             state_file: data_dir.join("state.json"),
             state_db_file: data_dir.join("state.db"),
-            socket_file: runtime_dir.join("ttd.sock"),
-            daemon_metadata_file: runtime_dir.join("ttd.json"),
-            daemon_log_file: logs_dir.join("ttd.log"),
+            socket_file: runtime_dir.join("tt-daemon.sock"),
+            daemon_metadata_file: runtime_dir.join("tt-daemon.json"),
+            daemon_log_file: logs_dir.join("tt-daemon.log"),
             config_dir,
             data_dir,
             logs_dir,
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(paths.state_db_file, PathBuf::from("/tmp/tt/data/state.db"));
         assert_eq!(
             paths.daemon_log_file,
-            PathBuf::from("/tmp/tt/data/logs/ttd.log")
+            PathBuf::from("/tmp/tt/data/logs/tt-daemon.log")
         );
     }
 
@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(paths.runtime_dir, PathBuf::from("/home/tester/.tt/runtime"));
         assert_eq!(
             paths.socket_file,
-            PathBuf::from("/home/tester/.tt/runtime/ttd.sock")
+            PathBuf::from("/home/tester/.tt/runtime/tt-daemon.sock")
         );
     }
 
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(paths.runtime_dir, PathBuf::from("/tmp/tt-home/runtime"));
         assert_eq!(
             paths.socket_file,
-            PathBuf::from("/tmp/tt-home/runtime/ttd.sock")
+            PathBuf::from("/tmp/tt-home/runtime/tt-daemon.sock")
         );
     }
 }

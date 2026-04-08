@@ -1814,8 +1814,8 @@ mod tests {
     fn state_snapshot_deserializes_when_collaboration_is_missing() {
         let snapshot = serde_json::from_value::<StateSnapshot>(json!({
             "daemon": {
-                "socket_path": "/tmp/ttd.sock",
-                "metadata_path": "/tmp/ttd.json",
+                "socket_path": "/tmp/tt-daemon.sock",
+                "metadata_path": "/tmp/tt-daemon.json",
                 "tt_endpoint": "ws://127.0.0.1:4500",
                 "tt_binary_path": "/tmp/tt",
                 "upstream": {
@@ -1830,9 +1830,9 @@ mod tests {
                     "started_at": Utc::now(),
                     "version": "0.1.0",
                     "build_fingerprint": "abc123",
-                    "binary_path": "/tmp/ttd",
-                    "socket_path": "/tmp/ttd.sock",
-                    "metadata_path": "/tmp/ttd.json",
+                    "binary_path": "/tmp/tt-daemon",
+                    "socket_path": "/tmp/tt-daemon.sock",
+                    "metadata_path": "/tmp/tt-daemon.json",
                     "git_commit": null
                 }
             },

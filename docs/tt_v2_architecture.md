@@ -197,27 +197,15 @@ Design rules:
 
 ## Migration
 
-TT v2 should be built in parallel with the legacy stack.
+TT v2 is now the active implementation line.
 
-### Legacy stack status
-
-These remain in place during migration:
-
-- `tt-core`
-- `tt-runtime`
-- `ttd`
-- `tt`
-- `tt-server`
-- `tt-operator-core`
-- `tt-operator-web`
-- `tt-skills`
+The remaining low-level helper crates exist only where v2 still depends on them directly.
 
 ### v2 migration rules
 
-- do not refactor `ttd/src/service.rs` into v2 incrementally
-- do not treat current CLI layout as the canonical v2 shape
 - do not build new features on top of legacy compatibility bridges once a v2 equivalent exists
-- keep legacy behavior stable until the v2 replacement can cover the same operator task
+- keep the v2 command surfaces and daemon APIs canonical
+- retire any remaining helper dependency only after a v2-native replacement exists
 
 ## Initial Delivery Sequence
 
@@ -226,7 +214,7 @@ These remain in place during migration:
 3. Build `tt-ui-core`.
 4. Build `tt-tui`.
 5. Build `tt-cli`.
-6. Cut over operator workflows once the v2 stack covers the core local flows.
+6. Continue cutting over operator workflows until only v2 surfaces remain.
 
 ## Explicit Non-Goals For Initial v2
 

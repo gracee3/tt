@@ -27,7 +27,7 @@ use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRep
 use chrono::Utc;
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
-pub const TT_DAEMON_SOCKET_NAME: &str = "ttd.sock";
+pub const TT_DAEMON_SOCKET_NAME: &str = "tt-daemon.sock";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {

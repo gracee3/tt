@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="TT Operator">
-  <rect width="192" height="192" rx="32" fill="#101520"/>
-  <circle cx="96" cy="96" r="58" fill="none" stroke="#7dd3fc" stroke-width="12"/>
-  <path d="M64 104c10-26 54-26 64 0" fill="none" stroke="#f9a8d4" stroke-width="12" stroke-linecap="round"/>
-  <circle cx="74" cy="84" r="6" fill="#eef2ff"/>
-  <circle cx="118" cy="84" r="6" fill="#eef2ff"/>
-</svg>

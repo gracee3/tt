@@ -72,15 +72,11 @@ End-to-end operator workflows live under `tests/e2e/`:
 
 ## More Docs
 
-- [Architecture](docs/architecture.md)
-- [CLI Reference](docs/CLI_REFERENCE.md)
-- [Collaboration](docs/collaboration.md)
-- [Installation](docs/install.md)
-- [Configuration](docs/configuration.md)
-- [Logging](docs/logging.md)
-- [Operations](docs/operations.md)
-- [Testing](docs/testing.md)
 - [TT v2 Architecture](docs/tt_v2_architecture.md)
+- [Phase 2 Plan](docs/PHASE2_EXECUTION_PLAN.md)
+- [Next Milestones](docs/NEXT_MILESTONES.md)
+- [Workstream Todo](docs/WORKSTREAM_TODO.md)
+- [Workspace Lifecycle](docs/workspace-lifecycle.md)
 
 ## License
 

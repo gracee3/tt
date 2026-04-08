@@ -177,7 +177,7 @@ Tracked backlog for the active direct skill thread.
 - Implemented a git/worktree inspection layer that discovers current checkouts, lists worktrees, and derives merge-readiness summaries for the daemon.
 - Added a runnable `tt-tui` dashboard entrypoint that renders Codex, repo, and overlay state from the new v2 services.
 - Added a local daemon request/response API and thin `tt-cli` client commands for status, repo, and entity CRUD.
-- Added a Unix-socket daemon transport under `.tt/runtime/ttd.sock` and switched the CLI/TUI to route through it when available.
+- Added a Unix-socket daemon transport under `.tt/runtime/tt-daemon.sock` and switched the CLI/TUI to route through it when available.
 - Added Codex thread lifecycle wiring through the daemon, CLI, and TUI, including thread start/resume/read/list flows with `.codex`-aware resolution.
 - Added workspace/merge reconciliation helpers that inspect git state, refresh workspace bindings, and upsert merge-run records from the same source of truth.
 - Added workspace actions and daemon-state-first lifecycle operations (`prepare`, `merge-prep`, `authorize-merge`, `execute-landing`, `prune`, `close`, `park`, `split`) plus a simplified TUI command guide and matching thin CLI surface.
