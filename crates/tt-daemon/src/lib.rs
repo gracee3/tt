@@ -17,10 +17,12 @@ use clap as _;
 use serde::{Deserialize, Serialize};
 use tt_codex::CodexHome;
 use tt_domain::{
-    MergeReadiness, MergeRun, Project, ThreadBinding, WorkUnit, WorkspaceBinding,
+    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
+    ProjectStatus, ThreadBinding, ThreadBindingStatus, WorkUnit, WorkUnitStatus, WorkspaceBinding,
+    WorkspaceStatus,
 };
 use tt_store::OverlayStore;
-use tt_ui_core::{DashboardSummary, GitRepositorySummary};
+use tt_ui_core::{CodexThreadSummary, DashboardSummary, GitRepositorySummary};
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 pub const TT_DAEMON_SOCKET_NAME: &str = "ttd.sock";
@@ -41,29 +43,96 @@ pub struct DaemonStatus {
 pub enum DaemonRequest {
     Status,
     DashboardSummary,
-    RepositorySummary { cwd: PathBuf },
+    RepositorySummary {
+        cwd: PathBuf,
+    },
     ListProjects,
-    GetProject { id_or_slug: String },
-    UpsertProject { project: Project },
-    DeleteProject { id_or_slug: String },
-    ListWorkUnits { project_id: Option<String> },
-    GetWorkUnit { id_or_slug: String },
-    UpsertWorkUnit { work_unit: WorkUnit },
-    DeleteWorkUnit { id_or_slug: String },
+    GetProject {
+        id_or_slug: String,
+    },
+    UpsertProject {
+        project: Project,
+    },
+    SetProjectStatus {
+        id_or_slug: String,
+        status: ProjectStatus,
+    },
+    DeleteProject {
+        id_or_slug: String,
+    },
+    ListWorkUnits {
+        project_id: Option<String>,
+    },
+    GetWorkUnit {
+        id_or_slug: String,
+    },
+    UpsertWorkUnit {
+        work_unit: WorkUnit,
+    },
+    SetWorkUnitStatus {
+        id_or_slug: String,
+        status: WorkUnitStatus,
+    },
+    DeleteWorkUnit {
+        id_or_slug: String,
+    },
     ListThreadBindings,
-    GetThreadBinding { codex_thread_id: String },
-    UpsertThreadBinding { binding: ThreadBinding },
-    DeleteThreadBinding { codex_thread_id: String },
-    ListThreadBindingsForWorkUnit { work_unit_id: String },
+    GetThreadBinding {
+        codex_thread_id: String,
+    },
+    UpsertThreadBinding {
+        binding: ThreadBinding,
+    },
+    SetThreadBindingStatus {
+        codex_thread_id: String,
+        status: ThreadBindingStatus,
+    },
+    DeleteThreadBinding {
+        codex_thread_id: String,
+    },
+    ListThreadBindingsForWorkUnit {
+        work_unit_id: String,
+    },
     ListWorkspaceBindings,
-    GetWorkspaceBinding { id: String },
-    UpsertWorkspaceBinding { binding: WorkspaceBinding },
-    DeleteWorkspaceBinding { id: String },
-    ListWorkspaceBindingsForThread { codex_thread_id: String },
+    GetWorkspaceBinding {
+        id: String,
+    },
+    UpsertWorkspaceBinding {
+        binding: WorkspaceBinding,
+    },
+    SetWorkspaceBindingStatus {
+        id: String,
+        status: WorkspaceStatus,
+    },
+    DeleteWorkspaceBinding {
+        id: String,
+    },
+    ListWorkspaceBindingsForThread {
+        codex_thread_id: String,
+    },
     ListMergeRuns,
-    GetMergeRun { id: String },
-    UpsertMergeRun { run: MergeRun },
-    DeleteMergeRun { id: String },
+    GetMergeRun {
+        id: String,
+    },
+    UpsertMergeRun {
+        run: MergeRun,
+    },
+    SetMergeRunStatus {
+        id: String,
+        readiness: MergeReadiness,
+        authorization: MergeAuthorizationStatus,
+        execution: MergeExecutionStatus,
+        head_commit: Option<String>,
+    },
+    DeleteMergeRun {
+        id: String,
+    },
+    ListCodexThreads {
+        limit: Option<usize>,
+    },
+    GetCodexThread {
+        selector: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +296,10 @@ impl DaemonService {
         self.store.upsert_project(project)
     }
 
+    pub fn set_project_status(&self, id_or_slug: &str, status: ProjectStatus) -> Result<usize> {
+        self.store.set_project_status(id_or_slug, status)
+    }
+
     pub fn delete_project(&self, id_or_slug: &str) -> Result<usize> {
         self.store.delete_project(id_or_slug)
     }
@@ -241,6 +314,10 @@ impl DaemonService {
 
     pub fn upsert_work_unit(&self, work_unit: &WorkUnit) -> Result<()> {
         self.store.upsert_work_unit(work_unit)
+    }
+
+    pub fn set_work_unit_status(&self, id_or_slug: &str, status: WorkUnitStatus) -> Result<usize> {
+        self.store.set_work_unit_status(id_or_slug, status)
     }
 
     pub fn delete_work_unit(&self, id_or_slug: &str) -> Result<usize> {
@@ -259,11 +336,23 @@ impl DaemonService {
         self.store.upsert_thread_binding(binding)
     }
 
+    pub fn set_thread_binding_status(
+        &self,
+        codex_thread_id: &str,
+        status: ThreadBindingStatus,
+    ) -> Result<usize> {
+        self.store
+            .set_thread_binding_status(codex_thread_id, status)
+    }
+
     pub fn delete_thread_binding(&self, codex_thread_id: &str) -> Result<usize> {
         self.store.delete_thread_binding(codex_thread_id)
     }
 
-    pub fn list_thread_bindings_for_work_unit(&self, work_unit_id: &str) -> Result<Vec<ThreadBinding>> {
+    pub fn list_thread_bindings_for_work_unit(
+        &self,
+        work_unit_id: &str,
+    ) -> Result<Vec<ThreadBinding>> {
         self.store.list_thread_bindings_for_work_unit(work_unit_id)
     }
 
@@ -279,6 +368,10 @@ impl DaemonService {
         self.store.upsert_workspace_binding(binding)
     }
 
+    pub fn set_workspace_binding_status(&self, id: &str, status: WorkspaceStatus) -> Result<usize> {
+        self.store.set_workspace_binding_status(id, status)
+    }
+
     pub fn delete_workspace_binding(&self, id: &str) -> Result<usize> {
         self.store.delete_workspace_binding(id)
     }
@@ -287,7 +380,8 @@ impl DaemonService {
         &self,
         codex_thread_id: &str,
     ) -> Result<Vec<WorkspaceBinding>> {
-        self.store.list_workspace_bindings_for_thread(codex_thread_id)
+        self.store
+            .list_workspace_bindings_for_thread(codex_thread_id)
     }
 
     pub fn list_merge_runs(&self) -> Result<Vec<MergeRun>> {
@@ -300,6 +394,18 @@ impl DaemonService {
 
     pub fn upsert_merge_run(&self, run: &MergeRun) -> Result<()> {
         self.store.upsert_merge_run(run)
+    }
+
+    pub fn set_merge_run_status(
+        &self,
+        id: &str,
+        readiness: MergeReadiness,
+        authorization: MergeAuthorizationStatus,
+        execution: MergeExecutionStatus,
+        head_commit: Option<String>,
+    ) -> Result<usize> {
+        self.store
+            .set_merge_run_status(id, readiness, authorization, execution, head_commit)
     }
 
     pub fn delete_merge_run(&self, id: &str) -> Result<usize> {
@@ -368,14 +474,17 @@ impl DaemonService {
                 DaemonResponse::RepositorySummary(self.repository_summary(cwd)?)
             }
             ListProjects => DaemonResponse::Projects(self.list_projects()?),
-            GetProject { id_or_slug } => {
-                DaemonResponse::Project(self.get_project(&id_or_slug)?)
-            }
+            GetProject { id_or_slug } => DaemonResponse::Project(self.get_project(&id_or_slug)?),
             UpsertProject { project } => {
                 self.upsert_project(&project)?;
                 DaemonResponse::Unit
             }
-            DeleteProject { id_or_slug } => DaemonResponse::Count(self.delete_project(&id_or_slug)?),
+            SetProjectStatus { id_or_slug, status } => {
+                DaemonResponse::Count(self.set_project_status(&id_or_slug, status)?)
+            }
+            DeleteProject { id_or_slug } => {
+                DaemonResponse::Count(self.delete_project(&id_or_slug)?)
+            }
             ListWorkUnits { project_id } => {
                 DaemonResponse::WorkUnits(self.list_work_units(project_id.as_deref())?)
             }
@@ -386,7 +495,12 @@ impl DaemonService {
                 self.upsert_work_unit(&work_unit)?;
                 DaemonResponse::Unit
             }
-            DeleteWorkUnit { id_or_slug } => DaemonResponse::Count(self.delete_work_unit(&id_or_slug)?),
+            SetWorkUnitStatus { id_or_slug, status } => {
+                DaemonResponse::Count(self.set_work_unit_status(&id_or_slug, status)?)
+            }
+            DeleteWorkUnit { id_or_slug } => {
+                DaemonResponse::Count(self.delete_work_unit(&id_or_slug)?)
+            }
             ListThreadBindings => DaemonResponse::ThreadBindings(self.list_thread_bindings()?),
             GetThreadBinding { codex_thread_id } => {
                 DaemonResponse::ThreadBinding(self.get_thread_binding(&codex_thread_id)?)
@@ -395,13 +509,19 @@ impl DaemonService {
                 self.upsert_thread_binding(&binding)?;
                 DaemonResponse::Unit
             }
+            SetThreadBindingStatus {
+                codex_thread_id,
+                status,
+            } => DaemonResponse::Count(self.set_thread_binding_status(&codex_thread_id, status)?),
             DeleteThreadBinding { codex_thread_id } => {
                 DaemonResponse::Count(self.delete_thread_binding(&codex_thread_id)?)
             }
             ListThreadBindingsForWorkUnit { work_unit_id } => DaemonResponse::ThreadBindings(
                 self.list_thread_bindings_for_work_unit(&work_unit_id)?,
             ),
-            ListWorkspaceBindings => DaemonResponse::WorkspaceBindings(self.list_workspace_bindings()?),
+            ListWorkspaceBindings => {
+                DaemonResponse::WorkspaceBindings(self.list_workspace_bindings()?)
+            }
             GetWorkspaceBinding { id } => {
                 DaemonResponse::WorkspaceBinding(self.get_workspace_binding(&id)?)
             }
@@ -409,19 +529,41 @@ impl DaemonService {
                 self.upsert_workspace_binding(&binding)?;
                 DaemonResponse::Unit
             }
+            SetWorkspaceBindingStatus { id, status } => {
+                DaemonResponse::Count(self.set_workspace_binding_status(&id, status)?)
+            }
             DeleteWorkspaceBinding { id } => {
                 DaemonResponse::Count(self.delete_workspace_binding(&id)?)
             }
-            ListWorkspaceBindingsForThread { codex_thread_id } => DaemonResponse::WorkspaceBindings(
-                self.list_workspace_bindings_for_thread(&codex_thread_id)?,
-            ),
+            ListWorkspaceBindingsForThread { codex_thread_id } => {
+                DaemonResponse::WorkspaceBindings(
+                    self.list_workspace_bindings_for_thread(&codex_thread_id)?,
+                )
+            }
             ListMergeRuns => DaemonResponse::MergeRuns(self.list_merge_runs()?),
             GetMergeRun { id } => DaemonResponse::MergeRun(self.get_merge_run(&id)?),
             UpsertMergeRun { run } => {
                 self.upsert_merge_run(&run)?;
                 DaemonResponse::Unit
             }
+            SetMergeRunStatus {
+                id,
+                readiness,
+                authorization,
+                execution,
+                head_commit,
+            } => DaemonResponse::Count(self.set_merge_run_status(
+                &id,
+                readiness,
+                authorization,
+                execution,
+                head_commit,
+            )?),
             DeleteMergeRun { id } => DaemonResponse::Count(self.delete_merge_run(&id)?),
+            ListCodexThreads { limit } => DaemonResponse::CodexThreads(self.codex_threads(limit)?),
+            GetCodexThread { selector } => {
+                DaemonResponse::CodexThread(self.codex_thread(&selector)?)
+            }
         })
     }
 
@@ -431,7 +573,10 @@ impl DaemonService {
 }
 
 pub fn socket_path_for(cwd: impl AsRef<Path>) -> PathBuf {
-    cwd.as_ref().join(".tt").join("runtime").join(TT_DAEMON_SOCKET_NAME)
+    cwd.as_ref()
+        .join(".tt")
+        .join("runtime")
+        .join(TT_DAEMON_SOCKET_NAME)
 }
 
 pub fn request_for_cwd(cwd: impl AsRef<Path>, request: DaemonRequest) -> Result<DaemonResponse> {
@@ -675,6 +820,45 @@ mod tests {
         assert!(matches!(deleted, DaemonResponse::Count(1)));
 
         let _ = repo;
+    }
+
+    #[test]
+    fn runtime_supports_status_mutations() {
+        let dir = tempdir().expect("tempdir");
+        let runtime = DaemonRuntime::open(dir.path()).expect("open runtime");
+        runtime
+            .request(DaemonRequest::UpsertProject {
+                project: Project {
+                    id: "p3".into(),
+                    slug: "gamma".into(),
+                    title: "Gamma".into(),
+                    objective: "Ship".into(),
+                    status: ProjectStatus::Active,
+                    created_at: ts(),
+                    updated_at: ts(),
+                },
+            })
+            .expect("upsert project");
+
+        let updated = runtime
+            .request(DaemonRequest::SetProjectStatus {
+                id_or_slug: "gamma".into(),
+                status: ProjectStatus::Blocked,
+            })
+            .expect("set project status");
+        assert!(matches!(updated, DaemonResponse::Count(1)));
+
+        match runtime
+            .request(DaemonRequest::GetProject {
+                id_or_slug: "gamma".into(),
+            })
+            .expect("get project")
+        {
+            DaemonResponse::Project(Some(project)) => {
+                assert_eq!(project.status, ProjectStatus::Blocked)
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 
     #[test]

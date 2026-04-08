@@ -81,9 +81,14 @@ impl OverlayStore {
         f(&connection)
     }
 
-    fn with_transaction<T>(&self, f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn with_transaction<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let mut connection = self.connection.lock().expect("overlay db lock poisoned");
-        let transaction = connection.transaction().context("start overlay transaction")?;
+        let transaction = connection
+            .transaction()
+            .context("start overlay transaction")?;
         let result = f(&transaction)?;
         transaction.commit().context("commit overlay transaction")?;
         Ok(result)
@@ -162,9 +167,55 @@ impl OverlayStore {
     pub fn delete_project(&self, id_or_slug: &str) -> Result<usize> {
         self.with_transaction(|tx| {
             let affected = tx
-                .execute("delete from projects where id = ?1 or slug = ?1", params![id_or_slug])
+                .execute(
+                    "delete from projects where id = ?1 or slug = ?1",
+                    params![id_or_slug],
+                )
                 .context("delete project")?;
             Ok(affected)
+        })
+    }
+
+    pub fn set_project_status(&self, id_or_slug: &str, status: ProjectStatus) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let Some(mut project) = tx
+                .query_row(
+                    "select id, slug, title, objective, status, created_at, updated_at
+                     from projects where id = ?1 or slug = ?1",
+                    params![id_or_slug],
+                    read_project_row,
+                )
+                .optional()
+                .context("get project for status update")?
+            else {
+                return Ok(0);
+            };
+            project.status = status;
+            project.updated_at = Utc::now();
+            tx.execute(
+                r#"
+                insert into projects (
+                    id, slug, title, objective, status, created_at, updated_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                on conflict(id) do update set
+                    slug = excluded.slug,
+                    title = excluded.title,
+                    objective = excluded.objective,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    project.id,
+                    project.slug,
+                    project.title,
+                    project.objective,
+                    project_status_to_str(project.status),
+                    project.created_at.to_rfc3339(),
+                    project.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("update project status")?;
+            Ok(1)
         })
     }
 
@@ -259,9 +310,57 @@ impl OverlayStore {
     pub fn delete_work_unit(&self, id_or_slug: &str) -> Result<usize> {
         self.with_transaction(|tx| {
             let affected = tx
-                .execute("delete from work_units where id = ?1 or slug = ?1", params![id_or_slug])
+                .execute(
+                    "delete from work_units where id = ?1 or slug = ?1",
+                    params![id_or_slug],
+                )
                 .context("delete work unit")?;
             Ok(affected)
+        })
+    }
+
+    pub fn set_work_unit_status(&self, id_or_slug: &str, status: WorkUnitStatus) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let Some(mut work_unit) = tx
+                .query_row(
+                    "select id, project_id, slug, title, task, status, created_at, updated_at
+                     from work_units where id = ?1 or slug = ?1",
+                    params![id_or_slug],
+                    read_work_unit_row,
+                )
+                .optional()
+                .context("get work unit for status update")?
+            else {
+                return Ok(0);
+            };
+            work_unit.status = status;
+            work_unit.updated_at = Utc::now();
+            tx.execute(
+                r#"
+                insert into work_units (
+                    id, project_id, slug, title, task, status, created_at, updated_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                on conflict(id) do update set
+                    project_id = excluded.project_id,
+                    slug = excluded.slug,
+                    title = excluded.title,
+                    task = excluded.task,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    work_unit.id,
+                    work_unit.project_id,
+                    work_unit.slug,
+                    work_unit.title,
+                    work_unit.task,
+                    work_unit_status_to_str(work_unit.status),
+                    work_unit.created_at.to_rfc3339(),
+                    work_unit.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("update work unit status")?;
+            Ok(1)
         })
     }
 
@@ -294,7 +393,10 @@ impl OverlayStore {
         })
     }
 
-    pub fn list_thread_bindings_for_work_unit(&self, work_unit_id: &str) -> Result<Vec<ThreadBinding>> {
+    pub fn list_thread_bindings_for_work_unit(
+        &self,
+        work_unit_id: &str,
+    ) -> Result<Vec<ThreadBinding>> {
         self.with_connection(|connection| {
             let mut statement = connection
                 .prepare(
@@ -353,6 +455,53 @@ impl OverlayStore {
                 )
                 .context("delete thread binding")?;
             Ok(affected)
+        })
+    }
+
+    pub fn set_thread_binding_status(
+        &self,
+        codex_thread_id: &str,
+        status: ThreadBindingStatus,
+    ) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let Some(mut binding) = tx
+                .query_row(
+                    "select codex_thread_id, work_unit_id, role, status, notes, created_at, updated_at
+                     from thread_bindings where codex_thread_id = ?1",
+                    params![codex_thread_id],
+                    read_thread_binding_row,
+                )
+                .optional()
+                .context("get thread binding for status update")?
+            else {
+                return Ok(0);
+            };
+            binding.status = status;
+            binding.updated_at = Utc::now();
+            tx.execute(
+                r#"
+                insert into thread_bindings (
+                    codex_thread_id, work_unit_id, role, status, notes, created_at, updated_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                on conflict(codex_thread_id) do update set
+                    work_unit_id = excluded.work_unit_id,
+                    role = excluded.role,
+                    status = excluded.status,
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    binding.codex_thread_id,
+                    binding.work_unit_id,
+                    thread_role_to_str(binding.role),
+                    thread_binding_status_to_str(binding.status),
+                    binding.notes,
+                    binding.created_at.to_rfc3339(),
+                    binding.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("update thread binding status")?;
+            Ok(1)
         })
     }
 
@@ -481,6 +630,66 @@ impl OverlayStore {
         })
     }
 
+    pub fn set_workspace_binding_status(&self, id: &str, status: WorkspaceStatus) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let Some(mut binding) = tx
+                .query_row(
+                    "select id, codex_thread_id, repo_root, worktree_path, branch_name, base_ref,
+                            base_commit, landing_target, strategy, sync_policy, cleanup_policy, status,
+                            created_at, updated_at
+                     from workspace_bindings where id = ?1",
+                    params![id],
+                    read_workspace_binding_row,
+                )
+                .optional()
+                .context("get workspace binding for status update")?
+            else {
+                return Ok(0);
+            };
+            binding.status = status;
+            binding.updated_at = Utc::now();
+            tx.execute(
+                r#"
+                insert into workspace_bindings (
+                    id, codex_thread_id, repo_root, worktree_path, branch_name, base_ref, base_commit,
+                    landing_target, strategy, sync_policy, cleanup_policy, status, created_at, updated_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                on conflict(id) do update set
+                    codex_thread_id = excluded.codex_thread_id,
+                    repo_root = excluded.repo_root,
+                    worktree_path = excluded.worktree_path,
+                    branch_name = excluded.branch_name,
+                    base_ref = excluded.base_ref,
+                    base_commit = excluded.base_commit,
+                    landing_target = excluded.landing_target,
+                    strategy = excluded.strategy,
+                    sync_policy = excluded.sync_policy,
+                    cleanup_policy = excluded.cleanup_policy,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    binding.id,
+                    binding.codex_thread_id,
+                    binding.repo_root,
+                    binding.worktree_path,
+                    binding.branch_name,
+                    binding.base_ref,
+                    binding.base_commit,
+                    binding.landing_target,
+                    workspace_strategy_to_str(binding.strategy),
+                    workspace_sync_policy_to_str(binding.sync_policy),
+                    workspace_cleanup_policy_to_str(binding.cleanup_policy),
+                    workspace_status_to_str(binding.status),
+                    binding.created_at.to_rfc3339(),
+                    binding.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("update workspace binding status")?;
+            Ok(1)
+        })
+    }
+
     pub fn count_ready_workspaces(&self) -> Result<usize> {
         self.with_connection(|connection| {
             let count: i64 = connection
@@ -566,6 +775,63 @@ impl OverlayStore {
                 .execute("delete from merge_runs where id = ?1", params![id])
                 .context("delete merge run")?;
             Ok(affected)
+        })
+    }
+
+    pub fn set_merge_run_status(
+        &self,
+        id: &str,
+        readiness: MergeReadiness,
+        authorization: MergeAuthorizationStatus,
+        execution: MergeExecutionStatus,
+        head_commit: Option<String>,
+    ) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let Some(mut run) = tx
+                .query_row(
+                    "select id, workspace_binding_id, readiness, authorization, execution, head_commit,
+                            created_at, updated_at
+                     from merge_runs where id = ?1",
+                    params![id],
+                    read_merge_run_row,
+                )
+                .optional()
+                .context("get merge run for status update")?
+            else {
+                return Ok(0);
+            };
+            run.readiness = readiness;
+            run.authorization = authorization;
+            run.execution = execution;
+            run.head_commit = head_commit;
+            run.updated_at = Utc::now();
+            tx.execute(
+                r#"
+                insert into merge_runs (
+                    id, workspace_binding_id, readiness, authorization, execution, head_commit,
+                    created_at, updated_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                on conflict(id) do update set
+                    workspace_binding_id = excluded.workspace_binding_id,
+                    readiness = excluded.readiness,
+                    authorization = excluded.authorization,
+                    execution = excluded.execution,
+                    head_commit = excluded.head_commit,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    run.id,
+                    run.workspace_binding_id,
+                    merge_readiness_to_str(run.readiness),
+                    merge_authorization_to_str(run.authorization),
+                    merge_execution_to_str(run.execution),
+                    run.head_commit,
+                    run.created_at.to_rfc3339(),
+                    run.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("update merge run status")?;
+            Ok(1)
         })
     }
 }
@@ -959,7 +1225,9 @@ mod tests {
             created_at: ts(),
             updated_at: ts(),
         };
-        store.upsert_work_unit(&work_unit).expect("upsert work unit");
+        store
+            .upsert_work_unit(&work_unit)
+            .expect("upsert work unit");
 
         let binding = ThreadBinding {
             codex_thread_id: "thread-1".to_string(),
@@ -1004,7 +1272,9 @@ mod tests {
             created_at: ts(),
             updated_at: ts(),
         };
-        store.upsert_merge_run(&merge_run).expect("upsert merge run");
+        store
+            .upsert_merge_run(&merge_run)
+            .expect("upsert merge run");
 
         assert_eq!(
             store.get_project("alpha").expect("get project").unwrap().id,

@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use uuid as _;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,3 +176,70 @@ pub enum MergeExecutionStatus {
     Succeeded,
     Failed,
 }
+
+macro_rules! impl_from_str_for_kebab_case {
+    ($ty:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        impl FromStr for $ty {
+            type Err = String;
+
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                match raw {
+                    $($value => Ok(Self::$variant),)+
+                    other => Err(format!("invalid {}: {other}", stringify!($ty))),
+                }
+            }
+        }
+    };
+}
+
+impl_from_str_for_kebab_case!(ProjectStatus {
+    Active => "active",
+    Blocked => "blocked",
+    Completed => "completed",
+});
+
+impl_from_str_for_kebab_case!(WorkUnitStatus {
+    Ready => "ready",
+    Blocked => "blocked",
+    Running => "running",
+    Review => "review",
+    Completed => "completed",
+});
+
+impl_from_str_for_kebab_case!(ThreadBindingStatus {
+    Proposed => "proposed",
+    Bound => "bound",
+    Detached => "detached",
+    Closed => "closed",
+});
+
+impl_from_str_for_kebab_case!(WorkspaceStatus {
+    Requested => "requested",
+    Ready => "ready",
+    Dirty => "dirty",
+    Ahead => "ahead",
+    Behind => "behind",
+    Conflicted => "conflicted",
+    Merged => "merged",
+    Abandoned => "abandoned",
+    Pruned => "pruned",
+});
+
+impl_from_str_for_kebab_case!(MergeReadiness {
+    Unknown => "unknown",
+    Ready => "ready",
+    Blocked => "blocked",
+});
+
+impl_from_str_for_kebab_case!(MergeAuthorizationStatus {
+    NotRequested => "not-requested",
+    Authorized => "authorized",
+    Rejected => "rejected",
+});
+
+impl_from_str_for_kebab_case!(MergeExecutionStatus {
+    NotStarted => "not-started",
+    Running => "running",
+    Succeeded => "succeeded",
+    Failed => "failed",
+});
