@@ -18,6 +18,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep, timeout};
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::connect_async;
@@ -32,6 +33,10 @@ pub const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 pub const CODEX_LOGS_DB_FILENAME: &str = "logs_1.sqlite";
 pub const CODEX_APP_SERVER_LISTEN_URL_ENV: &str = "CODEX_APP_SERVER_LISTEN_URL";
 pub const DEFAULT_APP_SERVER_LISTEN_URL: &str = "ws://127.0.0.1:4500";
+const APP_SERVER_CONNECT_ATTEMPTS: usize = 5;
+const APP_SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const APP_SERVER_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
+const APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexHome {
@@ -373,12 +378,38 @@ impl CodexRuntimeClient {
 struct CodexAppServerConnection {
     stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     next_request_id: i64,
+    listen_url: String,
 }
 
 impl CodexAppServerConnection {
     async fn connect(listen_url: &str) -> Result<Self> {
         let url = Url::parse(listen_url)
             .with_context(|| format!("invalid Codex app-server URL `{listen_url}`"))?;
+        let mut last_error = None;
+
+        for attempt in 1..=APP_SERVER_CONNECT_ATTEMPTS {
+            match timeout(APP_SERVER_CONNECT_TIMEOUT, Self::connect_once(&url, listen_url)).await {
+                Ok(Ok(connection)) => return Ok(connection),
+                Ok(Err(error)) => last_error = Some(error),
+                Err(_) => {
+                    last_error = Some(anyhow::anyhow!(
+                        "timed out connecting to Codex app-server `{listen_url}` after {:?}",
+                        APP_SERVER_CONNECT_TIMEOUT
+                    ));
+                }
+            }
+
+            if attempt < APP_SERVER_CONNECT_ATTEMPTS {
+                sleep(connect_backoff_delay(attempt)).await;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("failed to connect to Codex app-server `{listen_url}`")
+        }))
+    }
+
+    async fn connect_once(url: &Url, listen_url: &str) -> Result<Self> {
         let request = url
             .as_str()
             .into_client_request()
@@ -410,39 +441,50 @@ impl CodexAppServerConnection {
         )
         .await?;
 
-        loop {
-            let Some(message) = stream.next().await else {
-                anyhow::bail!("Codex app-server `{listen_url}` closed during initialize");
-            };
-            let message = message.with_context(|| {
-                format!("Codex app-server `{listen_url}` sent invalid websocket frame")
-            })?;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let jsonrpc =
-                serde_json::from_str::<protocol::JSONRPCMessage>(&text).with_context(|| {
-                    format!("Codex app-server `{listen_url}` sent invalid JSON-RPC")
+        timeout(APP_SERVER_INITIALIZE_TIMEOUT, async {
+            loop {
+                let Some(message) = stream.next().await else {
+                    anyhow::bail!("Codex app-server `{listen_url}` closed during initialize");
+                };
+                let message = message.with_context(|| {
+                    format!("Codex app-server `{listen_url}` sent invalid websocket frame")
                 })?;
-            match jsonrpc {
-                protocol::JSONRPCMessage::Response(response)
-                    if response.id == initialize_request_id =>
-                {
-                    break;
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let jsonrpc = serde_json::from_str::<protocol::JSONRPCMessage>(&text).with_context(
+                    || format!("Codex app-server `{listen_url}` sent invalid JSON-RPC"),
+                )?;
+                match jsonrpc {
+                    protocol::JSONRPCMessage::Response(response)
+                        if response.id == initialize_request_id =>
+                    {
+                        break;
+                    }
+                    protocol::JSONRPCMessage::Error(error)
+                        if error.id == initialize_request_id =>
+                    {
+                        anyhow::bail!(
+                            "Codex app-server `{listen_url}` rejected initialize: {}",
+                            error.error.message
+                        );
+                    }
+                    protocol::JSONRPCMessage::Notification(_notification) => {}
+                    protocol::JSONRPCMessage::Request(request) => {
+                        Self::reject_server_request(&mut stream, request).await?;
+                    }
+                    protocol::JSONRPCMessage::Response(_) | protocol::JSONRPCMessage::Error(_) => {}
                 }
-                protocol::JSONRPCMessage::Error(error) if error.id == initialize_request_id => {
-                    anyhow::bail!(
-                        "Codex app-server `{listen_url}` rejected initialize: {}",
-                        error.error.message
-                    );
-                }
-                protocol::JSONRPCMessage::Notification(_notification) => {}
-                protocol::JSONRPCMessage::Request(request) => {
-                    Self::reject_server_request(&mut stream, request).await?;
-                }
-                protocol::JSONRPCMessage::Response(_) | protocol::JSONRPCMessage::Error(_) => {}
             }
-        }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "timed out waiting for Codex app-server `{listen_url}` initialize response after {:?}",
+                APP_SERVER_INITIALIZE_TIMEOUT
+            )
+        })??;
 
         Self::send_jsonrpc_message(
             &mut stream,
@@ -456,6 +498,7 @@ impl CodexAppServerConnection {
         Ok(Self {
             stream,
             next_request_id: 1,
+            listen_url: listen_url.to_string(),
         })
     }
 
@@ -469,29 +512,54 @@ impl CodexAppServerConnection {
     where
         T: DeserializeOwned,
     {
+        timeout(APP_SERVER_REQUEST_TIMEOUT, self.request_typed_impl(request))
+            .await
+            .with_context(|| {
+                format!(
+                    "timed out waiting for Codex app-server `{}` after {:?}",
+                    self.listen_url, APP_SERVER_REQUEST_TIMEOUT
+                )
+            })?
+    }
+
+    async fn request_typed_impl<T>(&mut self, request: protocol::ClientRequest) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
         let request_id = request_id_from_client_request(&request);
         let request_message =
-            protocol::JSONRPCMessage::Request(jsonrpc_request_from_client_request(request.clone()));
-        let listen_url = "<codex-app-server>";
-        Self::send_jsonrpc_message(&mut self.stream, request_message, listen_url).await?;
+            protocol::JSONRPCMessage::Request(jsonrpc_request_from_client_request(request));
+        Self::send_jsonrpc_message(&mut self.stream, request_message, &self.listen_url).await?;
 
         loop {
             let Some(message) = self.stream.next().await else {
-                anyhow::bail!("Codex app-server closed while waiting for response");
+                anyhow::bail!(
+                    "Codex app-server `{}` closed while waiting for response",
+                    self.listen_url
+                );
             };
             let message = message.context("read websocket message from Codex app-server")?;
             let Message::Text(text) = message else {
                 continue;
             };
             let jsonrpc = serde_json::from_str::<protocol::JSONRPCMessage>(&text)
-                .context("parse JSON-RPC message from Codex app-server")?;
+                .with_context(|| {
+                    format!(
+                        "parse JSON-RPC message from Codex app-server `{}`",
+                        self.listen_url
+                    )
+                })?;
             match jsonrpc {
                 protocol::JSONRPCMessage::Response(response) if response.id == request_id => {
                     return serde_json::from_value(response.result)
                         .context("decode Codex app-server response");
                 }
                 protocol::JSONRPCMessage::Error(error) if error.id == request_id => {
-                    anyhow::bail!("Codex app-server request failed: {}", error.error.message);
+                    anyhow::bail!(
+                        "Codex app-server `{}` request failed: {}",
+                        self.listen_url,
+                        error.error.message
+                    );
                 }
                 protocol::JSONRPCMessage::Notification(_notification) => {}
                 protocol::JSONRPCMessage::Request(request) => {
@@ -561,6 +629,11 @@ fn resolve_app_server_listen_url() -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_APP_SERVER_LISTEN_URL.to_string())
+}
+
+fn connect_backoff_delay(attempt: usize) -> Duration {
+    let millis = 100_u64.saturating_mul(2_u64.saturating_pow((attempt.saturating_sub(1)) as u32));
+    Duration::from_millis(millis.min(2_000))
 }
 
 fn thread_to_snapshot(thread: protocol::Thread) -> CodexThreadRuntimeSnapshot {
