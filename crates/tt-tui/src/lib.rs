@@ -128,6 +128,10 @@ pub fn render_dashboard(snapshot: &TuiSnapshot) -> String {
         "Ready workspaces: {}\n",
         snapshot.dashboard.ready_workspaces
     ));
+    output.push_str("\nQuick commands\n");
+    output.push_str("--------------\n");
+    output.push_str("refresh | status | repo | codex-threads [limit]\n");
+    output.push_str("codex-thread <selector> | workspace-merge-prep <id>\n");
     output
 }
 
@@ -263,8 +267,8 @@ pub fn run_interactive(cwd: impl AsRef<Path>) -> Result<()> {
 fn command_help() -> String {
     [
         "Commands:",
-        "  Core: help, refresh, status, repo, quit",
-        "  Codex: codex-threads [limit], codex-thread <selector>, codex-thread-read <selector> [include_turns], codex-thread-start [model] [ephemeral], codex-thread-resume <selector> [model]",
+        "  Quick: help, refresh, status, repo, quit",
+        "  Codex threads: codex-threads [limit], codex-thread <selector>, codex-thread-read <selector> [include_turns], codex-thread-start [model] [ephemeral], codex-thread-resume <selector> [model]",
         "  Workspace actions: workspace-prepare <id>, workspace-refresh <id>, workspace-merge-prep <id>, workspace-authorize-merge <id>, workspace-execute-landing <id>, workspace-prune <id> [force]",
         "  Workspace lifecycle: workspace-close [selector] [force], workspace-park [selector] [note...], workspace-split <role> [model] [ephemeral]",
         "  Records: projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding <thread>, thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding <id>, workspace-binding-status <id> <status>, workspace-binding-refresh <id>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], merge-run-refresh <workspace-binding-id>",
@@ -1145,6 +1149,7 @@ mod tests {
         assert!(rendered.contains("Codex home: not configured"));
         assert!(rendered.contains("Projects: 1"));
         assert!(rendered.contains("Ready workspaces: 4"));
+        assert!(rendered.contains("Quick commands"));
     }
 
     #[test]
