@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
 tt-git = { path = "../tt-git" }
 tt-ui-core = { path = "../tt-ui-core" }
 tt-codex = { path = "../tt-codex" }
@@ -19,6 +20,7 @@ tt-store = { path = "../tt-store" }
 
 [dev-dependencies]
 chrono.workspace = true
+serde_json.workspace = true
 tempfile = "3.23.0"
 
 [lints]

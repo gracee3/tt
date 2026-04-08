@@ -11,10 +11,14 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
-tt-codex = { path = "../tt-codex" }
+clap.workspace = true
+tt-domain = { path = "../tt-domain" }
 tt-daemon = { path = "../tt-daemon" }
-tt-store = { path = "../tt-store" }
 tt-ui-core = { path = "../tt-ui-core" }
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile = "3.23.0"
 
 [lints]
 workspace = true

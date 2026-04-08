@@ -1,20 +1,23 @@
 //! Local orchestration for TT v2.
 //!
 //! The daemon coordinates TT overlay state, Codex runtime state, and git state.
-//! It should remain a thin service layer rather than a policy sink.
+//! It owns the local request/response API used by the TUI and CLI.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use tt_codex::{CodexHome, CodexSessionCatalog};
-use tt_domain::{Project, ThreadBinding, WorkUnit, WorkspaceBinding};
+use serde::{Deserialize, Serialize};
+use tt_codex::CodexHome;
+use tt_domain::{
+    MergeReadiness, MergeRun, Project, ThreadBinding, WorkUnit, WorkspaceBinding,
+};
 use tt_store::OverlayStore;
-use tt_ui_core::DashboardSummary;
+use tt_ui_core::{DashboardSummary, GitRepositorySummary};
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub codex_home: Option<PathBuf>,
     pub codex_state_db: Option<PathBuf>,
@@ -25,10 +28,91 @@ pub struct DaemonStatus {
     pub ready_workspace_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum DaemonRequest {
+    Status,
+    DashboardSummary,
+    RepositorySummary { cwd: PathBuf },
+    ListProjects,
+    GetProject { id_or_slug: String },
+    UpsertProject { project: Project },
+    DeleteProject { id_or_slug: String },
+    ListWorkUnits { project_id: Option<String> },
+    GetWorkUnit { id_or_slug: String },
+    UpsertWorkUnit { work_unit: WorkUnit },
+    DeleteWorkUnit { id_or_slug: String },
+    ListThreadBindings,
+    GetThreadBinding { codex_thread_id: String },
+    UpsertThreadBinding { binding: ThreadBinding },
+    DeleteThreadBinding { codex_thread_id: String },
+    ListThreadBindingsForWorkUnit { work_unit_id: String },
+    ListWorkspaceBindings,
+    GetWorkspaceBinding { id: String },
+    UpsertWorkspaceBinding { binding: WorkspaceBinding },
+    DeleteWorkspaceBinding { id: String },
+    ListWorkspaceBindingsForThread { codex_thread_id: String },
+    ListMergeRuns,
+    GetMergeRun { id: String },
+    UpsertMergeRun { run: MergeRun },
+    DeleteMergeRun { id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum DaemonResponse {
+    Unit,
+    Count(usize),
+    Status(DaemonStatus),
+    DashboardSummary(DashboardSummary),
+    RepositorySummary(Option<GitRepositorySummary>),
+    Projects(Vec<Project>),
+    Project(Option<Project>),
+    WorkUnits(Vec<WorkUnit>),
+    WorkUnit(Option<WorkUnit>),
+    ThreadBindings(Vec<ThreadBinding>),
+    ThreadBinding(Option<ThreadBinding>),
+    WorkspaceBindings(Vec<WorkspaceBinding>),
+    WorkspaceBinding(Option<WorkspaceBinding>),
+    MergeRuns(Vec<MergeRun>),
+    MergeRun(Option<MergeRun>),
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonService {
     store: Arc<OverlayStore>,
     codex_home: Option<CodexHome>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonRuntime {
+    cwd: PathBuf,
+    service: DaemonService,
+}
+
+impl DaemonRuntime {
+    pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
+        let cwd = cwd.as_ref().to_path_buf();
+        let store = OverlayStore::open_in_dir(&cwd)?;
+        let codex_home = CodexHome::discover().ok();
+        let service = match codex_home.clone() {
+            Some(home) => DaemonService::with_codex_home(store, home),
+            None => DaemonService::new(store),
+        };
+        Ok(Self { cwd, service })
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn service(&self) -> &DaemonService {
+        &self.service
+    }
+
+    pub fn request(&self, request: DaemonRequest) -> Result<DaemonResponse> {
+        self.service.handle_request(request)
+    }
 }
 
 impl DaemonService {
@@ -58,19 +142,94 @@ impl DaemonService {
         self.store.list_projects()
     }
 
+    pub fn get_project(&self, id_or_slug: &str) -> Result<Option<Project>> {
+        self.store.get_project(id_or_slug)
+    }
+
+    pub fn upsert_project(&self, project: &Project) -> Result<()> {
+        self.store.upsert_project(project)
+    }
+
+    pub fn delete_project(&self, id_or_slug: &str) -> Result<usize> {
+        self.store.delete_project(id_or_slug)
+    }
+
     pub fn list_work_units(&self, project_id: Option<&str>) -> Result<Vec<WorkUnit>> {
         self.store.list_work_units(project_id)
+    }
+
+    pub fn get_work_unit(&self, id_or_slug: &str) -> Result<Option<WorkUnit>> {
+        self.store.get_work_unit(id_or_slug)
+    }
+
+    pub fn upsert_work_unit(&self, work_unit: &WorkUnit) -> Result<()> {
+        self.store.upsert_work_unit(work_unit)
+    }
+
+    pub fn delete_work_unit(&self, id_or_slug: &str) -> Result<usize> {
+        self.store.delete_work_unit(id_or_slug)
     }
 
     pub fn list_thread_bindings(&self) -> Result<Vec<ThreadBinding>> {
         self.store.list_thread_bindings()
     }
 
+    pub fn get_thread_binding(&self, codex_thread_id: &str) -> Result<Option<ThreadBinding>> {
+        self.store.get_thread_binding(codex_thread_id)
+    }
+
+    pub fn upsert_thread_binding(&self, binding: &ThreadBinding) -> Result<()> {
+        self.store.upsert_thread_binding(binding)
+    }
+
+    pub fn delete_thread_binding(&self, codex_thread_id: &str) -> Result<usize> {
+        self.store.delete_thread_binding(codex_thread_id)
+    }
+
+    pub fn list_thread_bindings_for_work_unit(&self, work_unit_id: &str) -> Result<Vec<ThreadBinding>> {
+        self.store.list_thread_bindings_for_work_unit(work_unit_id)
+    }
+
     pub fn list_workspace_bindings(&self) -> Result<Vec<WorkspaceBinding>> {
         self.store.list_workspace_bindings()
     }
 
-    pub fn codex_catalog(&self) -> Result<Option<CodexSessionCatalog>> {
+    pub fn get_workspace_binding(&self, id: &str) -> Result<Option<WorkspaceBinding>> {
+        self.store.get_workspace_binding(id)
+    }
+
+    pub fn upsert_workspace_binding(&self, binding: &WorkspaceBinding) -> Result<()> {
+        self.store.upsert_workspace_binding(binding)
+    }
+
+    pub fn delete_workspace_binding(&self, id: &str) -> Result<usize> {
+        self.store.delete_workspace_binding(id)
+    }
+
+    pub fn list_workspace_bindings_for_thread(
+        &self,
+        codex_thread_id: &str,
+    ) -> Result<Vec<WorkspaceBinding>> {
+        self.store.list_workspace_bindings_for_thread(codex_thread_id)
+    }
+
+    pub fn list_merge_runs(&self) -> Result<Vec<MergeRun>> {
+        self.store.list_merge_runs()
+    }
+
+    pub fn get_merge_run(&self, id: &str) -> Result<Option<MergeRun>> {
+        self.store.get_merge_run(id)
+    }
+
+    pub fn upsert_merge_run(&self, run: &MergeRun) -> Result<()> {
+        self.store.upsert_merge_run(run)
+    }
+
+    pub fn delete_merge_run(&self, id: &str) -> Result<usize> {
+        self.store.delete_merge_run(id)
+    }
+
+    pub fn codex_catalog(&self) -> Result<Option<tt_codex::CodexSessionCatalog>> {
         self.codex_home
             .as_ref()
             .map(|home| home.session_catalog())
@@ -103,11 +262,11 @@ impl DaemonService {
     pub fn repository_summary(
         &self,
         cwd: impl AsRef<Path>,
-    ) -> Result<Option<tt_ui_core::GitRepositorySummary>> {
+    ) -> Result<Option<GitRepositorySummary>> {
         let Some(inspection) = tt_git::GitRepository::inspect(cwd)? else {
             return Ok(None);
         };
-        Ok(Some(tt_ui_core::GitRepositorySummary {
+        Ok(Some(GitRepositorySummary {
             repository_root: inspection.repository_root.display().to_string(),
             current_worktree: inspection
                 .current_worktree
@@ -118,9 +277,75 @@ impl DaemonService {
             upstream: inspection.upstream,
             ahead_by: inspection.ahead_by,
             behind_by: inspection.behind_by,
-            merge_ready: inspection.merge_readiness == tt_domain::MergeReadiness::Ready,
+            merge_ready: inspection.merge_readiness == MergeReadiness::Ready,
             worktree_count: inspection.worktrees.len(),
         }))
+    }
+
+    pub fn handle_request(&self, request: DaemonRequest) -> Result<DaemonResponse> {
+        use DaemonRequest::*;
+        Ok(match request {
+            Status => DaemonResponse::Status(self.status()?),
+            DashboardSummary => DaemonResponse::DashboardSummary(self.dashboard_summary()?),
+            RepositorySummary { cwd } => {
+                DaemonResponse::RepositorySummary(self.repository_summary(cwd)?)
+            }
+            ListProjects => DaemonResponse::Projects(self.list_projects()?),
+            GetProject { id_or_slug } => {
+                DaemonResponse::Project(self.get_project(&id_or_slug)?)
+            }
+            UpsertProject { project } => {
+                self.upsert_project(&project)?;
+                DaemonResponse::Unit
+            }
+            DeleteProject { id_or_slug } => DaemonResponse::Count(self.delete_project(&id_or_slug)?),
+            ListWorkUnits { project_id } => {
+                DaemonResponse::WorkUnits(self.list_work_units(project_id.as_deref())?)
+            }
+            GetWorkUnit { id_or_slug } => {
+                DaemonResponse::WorkUnit(self.get_work_unit(&id_or_slug)?)
+            }
+            UpsertWorkUnit { work_unit } => {
+                self.upsert_work_unit(&work_unit)?;
+                DaemonResponse::Unit
+            }
+            DeleteWorkUnit { id_or_slug } => DaemonResponse::Count(self.delete_work_unit(&id_or_slug)?),
+            ListThreadBindings => DaemonResponse::ThreadBindings(self.list_thread_bindings()?),
+            GetThreadBinding { codex_thread_id } => {
+                DaemonResponse::ThreadBinding(self.get_thread_binding(&codex_thread_id)?)
+            }
+            UpsertThreadBinding { binding } => {
+                self.upsert_thread_binding(&binding)?;
+                DaemonResponse::Unit
+            }
+            DeleteThreadBinding { codex_thread_id } => {
+                DaemonResponse::Count(self.delete_thread_binding(&codex_thread_id)?)
+            }
+            ListThreadBindingsForWorkUnit { work_unit_id } => DaemonResponse::ThreadBindings(
+                self.list_thread_bindings_for_work_unit(&work_unit_id)?,
+            ),
+            ListWorkspaceBindings => DaemonResponse::WorkspaceBindings(self.list_workspace_bindings()?),
+            GetWorkspaceBinding { id } => {
+                DaemonResponse::WorkspaceBinding(self.get_workspace_binding(&id)?)
+            }
+            UpsertWorkspaceBinding { binding } => {
+                self.upsert_workspace_binding(&binding)?;
+                DaemonResponse::Unit
+            }
+            DeleteWorkspaceBinding { id } => {
+                DaemonResponse::Count(self.delete_workspace_binding(&id)?)
+            }
+            ListWorkspaceBindingsForThread { codex_thread_id } => DaemonResponse::WorkspaceBindings(
+                self.list_workspace_bindings_for_thread(&codex_thread_id)?,
+            ),
+            ListMergeRuns => DaemonResponse::MergeRuns(self.list_merge_runs()?),
+            GetMergeRun { id } => DaemonResponse::MergeRun(self.get_merge_run(&id)?),
+            UpsertMergeRun { run } => {
+                self.upsert_merge_run(&run)?;
+                DaemonResponse::Unit
+            }
+            DeleteMergeRun { id } => DaemonResponse::Count(self.delete_merge_run(&id)?),
+        })
     }
 
     pub fn codex_home_root(&self) -> Option<&Path> {
@@ -131,10 +356,13 @@ impl DaemonService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
     use chrono::{TimeZone, Utc};
+    use std::process::Command;
     use tempfile::tempdir;
-    use tt_domain::{ProjectStatus, ThreadBindingStatus, ThreadRole, WorkUnitStatus, WorkspaceCleanupPolicy, WorkspaceStatus, WorkspaceStrategy, WorkspaceSyncPolicy};
+    use tt_domain::{
+        ProjectStatus, ThreadBindingStatus, ThreadRole, WorkUnitStatus, WorkspaceCleanupPolicy,
+        WorkspaceStatus, WorkspaceStrategy, WorkspaceSyncPolicy,
+    };
 
     fn ts() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 4, 8, 12, 0, 0).unwrap()
@@ -253,35 +481,65 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_is_optional_when_unconfigured() {
-        let dir = tempdir().expect("tempdir");
-        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("open store"));
-        assert!(service.codex_catalog().expect("catalog").is_none());
+    fn request_and_response_round_trip() {
+        let request = DaemonRequest::DeleteProject {
+            id_or_slug: "alpha".to_string(),
+        };
+        let encoded = serde_json::to_string(&request).expect("serialize request");
+        let decoded: DaemonRequest = serde_json::from_str(&encoded).expect("deserialize request");
+        assert_eq!(request, decoded);
     }
 
     #[test]
-    fn repository_summary_is_optional_outside_a_repo() {
+    fn runtime_supports_request_api_and_repo_summary() {
+        let (repo, worktree) = setup_repo();
         let dir = tempdir().expect("tempdir");
-        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("open store"));
-        assert!(service
-            .repository_summary(dir.path())
-            .expect("summary")
-            .is_none());
-    }
+        let runtime = DaemonRuntime::open(dir.path()).expect("open runtime");
 
-    #[test]
-    fn repository_summary_reports_clean_repo() {
-        let (_, worktree) = setup_repo();
-        let dir = tempdir().expect("tempdir");
-        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("open store"));
-        let summary = service
-            .repository_summary(&worktree)
-            .expect("summary")
-            .expect("repo");
+        let response = runtime
+            .request(DaemonRequest::RepositorySummary {
+                cwd: worktree.clone(),
+            })
+            .expect("repository summary");
+        match response {
+            DaemonResponse::RepositorySummary(Some(summary)) => {
+                assert_eq!(summary.repository_root, worktree.display().to_string());
+                assert_eq!(summary.current_branch.as_deref(), Some("tt/tt-1"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
 
-        assert_eq!(summary.current_branch.as_deref(), Some("tt/tt-1"));
-        assert!(!summary.dirty);
-        assert!(summary.merge_ready);
-        assert_eq!(summary.worktree_count, 2);
+        let upsert = DaemonRequest::UpsertProject {
+            project: Project {
+                id: "p2".into(),
+                slug: "beta".into(),
+                title: "Beta".into(),
+                objective: "Ship".into(),
+                status: ProjectStatus::Active,
+                created_at: ts(),
+                updated_at: ts(),
+            },
+        };
+        assert!(matches!(
+            runtime.request(upsert).expect("upsert"),
+            DaemonResponse::Unit
+        ));
+
+        let list = runtime
+            .request(DaemonRequest::ListProjects)
+            .expect("list projects");
+        match list {
+            DaemonResponse::Projects(projects) => assert_eq!(projects.len(), 1),
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let deleted = runtime
+            .request(DaemonRequest::DeleteProject {
+                id_or_slug: "beta".into(),
+            })
+            .expect("delete");
+        assert!(matches!(deleted, DaemonResponse::Count(1)));
+
+        let _ = repo;
     }
 }

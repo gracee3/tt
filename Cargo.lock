@@ -4187,7 +4187,12 @@ name = "tt-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
  "tt-daemon",
+ "tt-domain",
 ]
 
 [[package]]
@@ -4226,6 +4231,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "serde",
+ "serde_json",
  "tempfile",
  "tt-codex",
  "tt-domain",
@@ -4393,9 +4400,11 @@ name = "tt-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "tt-codex",
+ "chrono",
+ "clap",
+ "tempfile",
  "tt-daemon",
- "tt-store",
+ "tt-domain",
  "tt-ui-core",
 ]
 

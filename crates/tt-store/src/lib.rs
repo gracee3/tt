@@ -159,6 +159,15 @@ impl OverlayStore {
         })
     }
 
+    pub fn delete_project(&self, id_or_slug: &str) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let affected = tx
+                .execute("delete from projects where id = ?1 or slug = ?1", params![id_or_slug])
+                .context("delete project")?;
+            Ok(affected)
+        })
+    }
+
     pub fn upsert_work_unit(&self, work_unit: &WorkUnit) -> Result<()> {
         self.with_transaction(|tx| {
             tx.execute(
@@ -247,6 +256,15 @@ impl OverlayStore {
         })
     }
 
+    pub fn delete_work_unit(&self, id_or_slug: &str) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let affected = tx
+                .execute("delete from work_units where id = ?1 or slug = ?1", params![id_or_slug])
+                .context("delete work unit")?;
+            Ok(affected)
+        })
+    }
+
     pub fn upsert_thread_binding(&self, binding: &ThreadBinding) -> Result<()> {
         self.with_transaction(|tx| {
             tx.execute(
@@ -308,6 +326,33 @@ impl OverlayStore {
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(anyhow::Error::from)
                 .context("collect thread bindings")
+        })
+    }
+
+    pub fn get_thread_binding(&self, codex_thread_id: &str) -> Result<Option<ThreadBinding>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "select codex_thread_id, work_unit_id, role, status, notes, created_at, updated_at
+                     from thread_bindings where codex_thread_id = ?1",
+                )
+                .context("prepare get thread binding")?;
+            statement
+                .query_row(params![codex_thread_id], read_thread_binding_row)
+                .optional()
+                .context("get thread binding")
+        })
+    }
+
+    pub fn delete_thread_binding(&self, codex_thread_id: &str) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let affected = tx
+                .execute(
+                    "delete from thread_bindings where codex_thread_id = ?1",
+                    params![codex_thread_id],
+                )
+                .context("delete thread binding")?;
+            Ok(affected)
         })
     }
 
@@ -410,6 +455,32 @@ impl OverlayStore {
         })
     }
 
+    pub fn get_workspace_binding(&self, id: &str) -> Result<Option<WorkspaceBinding>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "select id, codex_thread_id, repo_root, worktree_path, branch_name, base_ref,
+                            base_commit, landing_target, strategy, sync_policy, cleanup_policy, status,
+                            created_at, updated_at
+                     from workspace_bindings where id = ?1",
+                )
+                .context("prepare get workspace binding")?;
+            statement
+                .query_row(params![id], read_workspace_binding_row)
+                .optional()
+                .context("get workspace binding")
+        })
+    }
+
+    pub fn delete_workspace_binding(&self, id: &str) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let affected = tx
+                .execute("delete from workspace_bindings where id = ?1", params![id])
+                .context("delete workspace binding")?;
+            Ok(affected)
+        })
+    }
+
     pub fn count_ready_workspaces(&self) -> Result<usize> {
         self.with_connection(|connection| {
             let count: i64 = connection
@@ -452,6 +523,49 @@ impl OverlayStore {
             )
             .context("upsert merge run")?;
             Ok(())
+        })
+    }
+
+    pub fn list_merge_runs(&self) -> Result<Vec<MergeRun>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "select id, workspace_binding_id, readiness, authorization, execution, head_commit,
+                            created_at, updated_at
+                     from merge_runs order by updated_at desc, id desc",
+                )
+                .context("prepare list merge runs")?;
+            let rows = statement
+                .query_map([], read_merge_run_row)
+                .context("query merge runs")?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(anyhow::Error::from)
+                .context("collect merge runs")
+        })
+    }
+
+    pub fn get_merge_run(&self, id: &str) -> Result<Option<MergeRun>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "select id, workspace_binding_id, readiness, authorization, execution, head_commit,
+                            created_at, updated_at
+                     from merge_runs where id = ?1",
+                )
+                .context("prepare get merge run")?;
+            statement
+                .query_row(params![id], read_merge_run_row)
+                .optional()
+                .context("get merge run")
+        })
+    }
+
+    pub fn delete_merge_run(&self, id: &str) -> Result<usize> {
+        self.with_transaction(|tx| {
+            let affected = tx
+                .execute("delete from merge_runs where id = ?1", params![id])
+                .context("delete merge run")?;
+            Ok(affected)
         })
     }
 }
@@ -509,6 +623,19 @@ fn read_workspace_binding_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Works
         status: workspace_status_from_str(row.get::<_, String>(11)?.as_str())?,
         created_at: parse_ts(row.get::<_, String>(12)?, 12)?,
         updated_at: parse_ts(row.get::<_, String>(13)?, 13)?,
+    })
+}
+
+fn read_merge_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MergeRun> {
+    Ok(MergeRun {
+        id: row.get(0)?,
+        workspace_binding_id: row.get(1)?,
+        readiness: merge_readiness_from_str(row.get::<_, String>(2)?.as_str())?,
+        authorization: merge_authorization_from_str(row.get::<_, String>(3)?.as_str())?,
+        execution: merge_execution_from_str(row.get::<_, String>(4)?.as_str())?,
+        head_commit: row.get(5)?,
+        created_at: parse_ts(row.get::<_, String>(6)?, 6)?,
+        updated_at: parse_ts(row.get::<_, String>(7)?, 7)?,
     })
 }
 
@@ -730,11 +857,37 @@ fn merge_readiness_to_str(readiness: MergeReadiness) -> &'static str {
     }
 }
 
+fn merge_readiness_from_str(raw: &str) -> rusqlite::Result<MergeReadiness> {
+    match raw {
+        "unknown" => Ok(MergeReadiness::Unknown),
+        "ready" => Ok(MergeReadiness::Ready),
+        "blocked" => Ok(MergeReadiness::Blocked),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            2,
+            other.to_string(),
+            rusqlite::types::Type::Text,
+        )),
+    }
+}
+
 fn merge_authorization_to_str(status: MergeAuthorizationStatus) -> &'static str {
     match status {
         MergeAuthorizationStatus::NotRequested => "not-requested",
         MergeAuthorizationStatus::Authorized => "authorized",
         MergeAuthorizationStatus::Rejected => "rejected",
+    }
+}
+
+fn merge_authorization_from_str(raw: &str) -> rusqlite::Result<MergeAuthorizationStatus> {
+    match raw {
+        "not-requested" => Ok(MergeAuthorizationStatus::NotRequested),
+        "authorized" => Ok(MergeAuthorizationStatus::Authorized),
+        "rejected" => Ok(MergeAuthorizationStatus::Rejected),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            3,
+            other.to_string(),
+            rusqlite::types::Type::Text,
+        )),
     }
 }
 
@@ -744,6 +897,20 @@ fn merge_execution_to_str(status: MergeExecutionStatus) -> &'static str {
         MergeExecutionStatus::Running => "running",
         MergeExecutionStatus::Succeeded => "succeeded",
         MergeExecutionStatus::Failed => "failed",
+    }
+}
+
+fn merge_execution_from_str(raw: &str) -> rusqlite::Result<MergeExecutionStatus> {
+    match raw {
+        "not-started" => Ok(MergeExecutionStatus::NotStarted),
+        "running" => Ok(MergeExecutionStatus::Running),
+        "succeeded" => Ok(MergeExecutionStatus::Succeeded),
+        "failed" => Ok(MergeExecutionStatus::Failed),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            4,
+            other.to_string(),
+            rusqlite::types::Type::Text,
+        )),
     }
 }
 
