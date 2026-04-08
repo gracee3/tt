@@ -5,12 +5,17 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::de::DeserializeOwned;
-use tt_daemon::{request_for_cwd, DaemonRequest, DaemonResponse};
+use tt_daemon::{DaemonRequest, DaemonResponse, request_for_cwd};
 use tt_domain as _;
+use tt_domain::{
+    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus,
+    ThreadBindingStatus, WorkUnitStatus, WorkspaceStatus,
+};
 
 pub const TT_CLI_GENERATION: &str = "v2";
 
@@ -29,6 +34,10 @@ pub struct Cli {
 pub enum Command {
     Status,
     Repo,
+    Codex {
+        #[command(subcommand)]
+        command: CodexCommand,
+    },
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -52,10 +61,25 @@ pub enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum CodexCommand {
+    Threads {
+        #[command(subcommand)]
+        command: CodexThreadsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CodexThreadsCommand {
+    List { limit: Option<usize> },
+    Get { selector: String },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
     List,
     Get { id_or_slug: String },
     Upsert { file: PathBuf },
+    SetStatus { id_or_slug: String, status: String },
     Delete { id_or_slug: String },
 }
 
@@ -64,15 +88,26 @@ pub enum WorkUnitCommand {
     List { project_id: Option<String> },
     Get { id_or_slug: String },
     Upsert { file: PathBuf },
+    SetStatus { id_or_slug: String, status: String },
     Delete { id_or_slug: String },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ThreadBindingCommand {
     List,
-    Get { codex_thread_id: String },
-    Upsert { file: PathBuf },
-    Delete { codex_thread_id: String },
+    Get {
+        codex_thread_id: String,
+    },
+    Upsert {
+        file: PathBuf,
+    },
+    SetStatus {
+        codex_thread_id: String,
+        status: String,
+    },
+    Delete {
+        codex_thread_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -80,15 +115,29 @@ pub enum WorkspaceBindingCommand {
     List,
     Get { id: String },
     Upsert { file: PathBuf },
+    SetStatus { id: String, status: String },
     Delete { id: String },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum MergeRunCommand {
     List,
-    Get { id: String },
-    Upsert { file: PathBuf },
-    Delete { id: String },
+    Get {
+        id: String,
+    },
+    Upsert {
+        file: PathBuf,
+    },
+    SetStatus {
+        id: String,
+        readiness: String,
+        authorization: String,
+        execution: String,
+        head_commit: Option<String>,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -105,11 +154,21 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         Command::Repo => DaemonRequest::RepositorySummary {
             cwd: cwd.to_path_buf(),
         },
+        Command::Codex { command } => match command {
+            CodexCommand::Threads { command } => match command {
+                CodexThreadsCommand::List { limit } => DaemonRequest::ListCodexThreads { limit },
+                CodexThreadsCommand::Get { selector } => DaemonRequest::GetCodexThread { selector },
+            },
+        },
         Command::Project { command } => match command {
             ProjectCommand::List => DaemonRequest::ListProjects,
             ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
             ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
                 project: read_json(file)?,
+            },
+            ProjectCommand::SetStatus { id_or_slug, status } => DaemonRequest::SetProjectStatus {
+                id_or_slug,
+                status: parse_status::<ProjectStatus>(&status)?,
             },
             ProjectCommand::Delete { id_or_slug } => DaemonRequest::DeleteProject { id_or_slug },
         },
@@ -118,6 +177,10 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             WorkUnitCommand::Get { id_or_slug } => DaemonRequest::GetWorkUnit { id_or_slug },
             WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
                 work_unit: read_json(file)?,
+            },
+            WorkUnitCommand::SetStatus { id_or_slug, status } => DaemonRequest::SetWorkUnitStatus {
+                id_or_slug,
+                status: parse_status::<WorkUnitStatus>(&status)?,
             },
             WorkUnitCommand::Delete { id_or_slug } => DaemonRequest::DeleteWorkUnit { id_or_slug },
         },
@@ -129,6 +192,13 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             ThreadBindingCommand::Upsert { file } => DaemonRequest::UpsertThreadBinding {
                 binding: read_json(file)?,
             },
+            ThreadBindingCommand::SetStatus {
+                codex_thread_id,
+                status,
+            } => DaemonRequest::SetThreadBindingStatus {
+                codex_thread_id,
+                status: parse_status::<ThreadBindingStatus>(&status)?,
+            },
             ThreadBindingCommand::Delete { codex_thread_id } => {
                 DaemonRequest::DeleteThreadBinding { codex_thread_id }
             }
@@ -139,6 +209,12 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             WorkspaceBindingCommand::Upsert { file } => DaemonRequest::UpsertWorkspaceBinding {
                 binding: read_json(file)?,
             },
+            WorkspaceBindingCommand::SetStatus { id, status } => {
+                DaemonRequest::SetWorkspaceBindingStatus {
+                    id,
+                    status: parse_status::<WorkspaceStatus>(&status)?,
+                }
+            }
             WorkspaceBindingCommand::Delete { id } => DaemonRequest::DeleteWorkspaceBinding { id },
         },
         Command::MergeRun { command } => match command {
@@ -147,9 +223,29 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             MergeRunCommand::Upsert { file } => DaemonRequest::UpsertMergeRun {
                 run: read_json(file)?,
             },
+            MergeRunCommand::SetStatus {
+                id,
+                readiness,
+                authorization,
+                execution,
+                head_commit,
+            } => DaemonRequest::SetMergeRunStatus {
+                id,
+                readiness: parse_status::<MergeReadiness>(&readiness)?,
+                authorization: parse_status::<MergeAuthorizationStatus>(&authorization)?,
+                execution: parse_status::<MergeExecutionStatus>(&execution)?,
+                head_commit,
+            },
             MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
         },
     })
+}
+
+fn parse_status<T>(raw: &str) -> Result<T>
+where
+    T: FromStr<Err = String>,
+{
+    T::from_str(raw).map_err(|error| anyhow::anyhow!(error))
 }
 
 fn read_json<T>(path: PathBuf) -> Result<T>
@@ -180,7 +276,12 @@ mod tests {
     #[test]
     fn parses_project_list_command() {
         let cli = Cli::parse_from(["tt", "project", "list"]);
-        assert!(matches!(cli.command, Command::Project { command: ProjectCommand::List }));
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectCommand::List
+            }
+        ));
     }
 
     #[test]
@@ -188,6 +289,19 @@ mod tests {
         let cli = Cli::parse_from(["tt", "--cwd", "/tmp", "status"]);
         assert!(matches!(cli.command, Command::Status));
         assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    }
+
+    #[test]
+    fn parses_codex_thread_list_command() {
+        let cli = Cli::parse_from(["tt", "codex", "threads", "list"]);
+        assert!(matches!(
+            cli.command,
+            Command::Codex {
+                command: CodexCommand::Threads {
+                    command: CodexThreadsCommand::List { limit: None }
+                }
+            }
+        ));
     }
 
     #[test]
