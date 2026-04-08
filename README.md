@@ -2,80 +2,59 @@
 
 # TT
 
-_Open Reasoning Context & Agent Supervisor_  
+_Open Reasoning Context & Agent Supervisor_
 
-TT is a local Rust supervisor layer built around [`tt`](https://github.com/openai/tt) [`app-server`](https://developers.openai.com/tt/app-server/).
+TT is a local Rust supervisor layer built around Codex app-server.
 
-TT is for the point where one agent thread is no longer enough. It keeps the control plane close: local, durable, inspectable, and calm. `ttd` owns workflow state, lifecycle, local IPC, snapshots, and event streams. The CLI (`tt`) is a client of that daemon.
+## What This Repo Is
 
-TT remains the execution substrate. TT keeps the shape of the work around that execution: workstreams, work units, assignments, threads, turns, reports, and supervisor decisions. That separation matters. It means the state that matters does not vanish into terminal scrollback, and it means review stays human. Supervisor proposals are artifacts for inspection, not hidden authority.
+This repository is the TT v2 workbench.
 
-## Why TT
+The current direction is:
 
-TT is useful when the work branches. Maybe one repository becomes three. Maybe one task opens into an implementation lane, a review lane, and a cleanup lane. Maybe you want several agents moving at once across separate Git worktrees or entirely separate codebases, but you still want one readable picture of what is active, what is waiting, and what needs a decision.
+- `tt-daemon` as the local API boundary
+- `tt-tui` as the primary operator surface
+- `tt-cli` as a thin client over the daemon
+- `.tt` as the TT-owned overlay for orchestration metadata
+- `tt-git` as the repo/worktree authority for merge readiness and checkout inspection
 
-The model stays simple once it becomes familiar. A workstream holds the larger objective. Inside it, work units describe concrete pieces of work. Assignments connect that work to an execution session. Threads and turns give you the TT-side view. The supervisor layer sits above that flow and gives you a place to review, steer, interrupt, continue, or close the loop without treating the worker transcript itself as the source of truth.
+The design stays local first. State lives on the machine, operators inspect it directly, and merge/cleanup decisions stay visible instead of hidden behind a remote service.
 
-What TT offers is not more automation for its own sake. It offers calmer automation: a way to let multiple agent threads move quickly without losing the sense of where the work is, why it exists, and what should happen next.
+## Core Shape
 
-## Usage
+TT is built for the point where one agent thread is no longer enough.
 
-A common pattern is to open a new workstream for an objective, create one or more threads beneath it, and let those threads map cleanly to separate worktrees or separate repositories. From there, the supervisor can inspect the live state from the CLI. That is where TT feels especially strong: several active threads, several possible next actions, and a local view that stays coherent as the system moves.
+The system keeps the control plane close:
 
-The CLI remains close at hand for scripted flows, quick checks, and direct operator actions, including authored steer creation, replacement, review, approve/send, reject, record-no-action, manual-refresh, and a cross-thread TT decision queue/history surface for supervised threads.
+- durable local workflow state
+- explicit workstreams, work units, assignments, threads, turns, reports, and supervisor decisions
+- daemon-backed snapshots and event streams
+- workspace and merge semantics that stay tied to the local checkout
 
-## Current Operator Surface
+That separation matters because it keeps the operator view coherent even when the work branches across multiple threads or worktrees.
 
-The strongest checked-in operator surfaces today are the CLI and the daemon IPC contract.
+## Current Focus
 
-- `ttd` is the durable local control plane
-- `tt` is the primary checked-in operator client
-- the repo does not currently contain a primary UI surface to "resume"
+The v2 line is centered on these responsibilities:
 
-That matters for planning work. TT is currently best understood and operated through CLI flows, daemon-backed state inspection, and the checked-in integration/E2E harnesses rather than through a separate frontend.
+- Codex remains the runtime/source of truth for threads, turns, rollouts, sandboxing, and app-server transport
+- TT owns the overlay/orchestration layer around `.tt`, workspace bindings, and operator workflows
+- `tt-daemon` exposes the local boundary and keeps runtime state in one place
+- `tt-tui` is the main place to inspect and operate the system
+- `tt-cli` stays narrow and delegates behavior to the daemon
 
-## TT v2 direction
+The intent is not to build a remote platform first. The intent is to make the local supervisor stack simpler, clearer, and easier to operate.
 
-The repo now also carries an explicit TT v2 direction in [TT v2 Architecture](docs/tt_v2_architecture.md).
-
-That direction changes the intended shape of the system:
-
-- Codex becomes the canonical runtime for threads, turns, rollout/state, sandboxing, and app-server bindings
-- `.tt` becomes an overlay for TT-owned orchestration metadata
-- the initial v2 operator surface is TUI-first
-- `operator-web` and full remote/operator-server parity are not part of the initial v2 scope
-
-The current stack remains the active implementation until the parallel v2 crates reach usable parity.
-
-## Quick start
-
-On Linux, the easiest install path is a `.deb` package. If you are working from a release archive, the tarball layout is equally simple.
+## Build And Test
 
 ```bash
-sudo dpkg -i ./tt_0.1.0_amd64.deb
-systemctl --user enable --now tt-daemon.service
-tt doctor
+cargo fmt
+cargo check
+cargo test
+make test
 ```
 
-Or, from a tarball release:
-
-```bash
-tar -xzf tt-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd tt-v0.1.0-x86_64-unknown-linux-gnu
-./bin/tt doctor
-./bin/ttd
-```
-
-Once the daemon is running, `tt doctor` is the quickest way to confirm that TT can see its configuration, runtime paths, socket, and TT endpoint. From there, you can stay in the CLI.
-
-## Testing
-
-The fast developer path stays the same:
-
-- `make test` runs the normal Rust test suite
-- `cargo test` continues to behave like standard Rust testing
-
-End-to-end operator workflows are available as an opt-in lane under `tests/e2e/`:
+End-to-end operator workflows live under `tests/e2e/`:
 
 - `make test-e2e`
 - `make test-e2e-live`
@@ -83,110 +62,25 @@ End-to-end operator workflows are available as an opt-in lane under `tests/e2e/`
 - `make test-e2e SCENARIO=<name>`
 - `make clean-e2e`
 
-Generated E2E output is kept under `target/e2e/` so it is easy to inspect and easy to remove.
+## Working Notes
 
-Current harness contract:
+- `make test` runs the standard Rust test suite.
+- `make test-e2e` is the normal deterministic E2E lane.
+- `TT_HOME` can point TT at an isolated config/state/log root.
+- `state/get` is the merged daemon snapshot.
+- `authority/hierarchy/get` is the canonical authority query for planning hierarchy and tracked-thread metadata.
 
-- `make test-e2e` is the daily deterministic confidence lane and should work from a normal dirty checkout
-- scenarios that require a clean git tree are opt-in and must not be default-enabled
-- the default deterministic lane remains model-free
-- proposal-bearing live supervisor scenarios may use an explicit local OpenAI-compatible endpoint, but that support is test scaffolding only and not a default product dependency
+## More Docs
 
-Recent progress that is now on `main`:
-
-- recover malformed live worker report envelopes to supervisor-reviewable `Ambiguous` state instead of hard-failing every damaged envelope
-- preserve assignment communication context across turn ingestion so redirected or successor assignments keep the intended execution `cwd`
-- restore a trustworthy dirty-checkout deterministic E2E lane
-
-## Implementation
-
-TT is written in Rust and designed to be fast and portable. The runtime is built on [Tokio](https://tokio.rs/), which keeps the daemon responsive under concurrent work. The daemon talks to local clients over a Unix domain socket, keeps snapshots and event streams close to the machine, and avoids turning the control plane into a heavyweight web service when it does not need to be one.
-
-Inside the workspace, the responsibilities are separated cleanly. `tt-core` holds shared types, errors, paths, and IPC structures. `tt-runtime` handles the TT connection and typed `app-server` surface. `ttd` builds `ttd`, the long-lived daemon. `tt` builds the `tt` CLI.
-
-Linux sandbox support now follows the same split:
-
-- `tt-sandboxing` owns TT-specific sandbox policy shaping and Linux execution planning
-- `tt-linux-sandbox` is the standalone Linux helper that reads a sandbox request and launches the command
-
-The daemon uses the shared policy helper when it derives workspace-write sandbox roots for tracked threads, so the workspace/worktree rules live in one place instead of being duplicated across the daemon and helper binary.
-
-## Building from source
-
-If you are building from source, install a stable Rust toolchain and build from the repository root.
-
-```bash
-cargo fmt
-cargo check
-cargo test
-make build
-```
-
-TT expects a local TT binary. The development default may point at a source-tree build, but in normal use you should set the installed path in configuration or with `TT_RUNTIME_BIN`. A typical local build of TT looks like this:
-
-```bash
-cd /path/to/tt
-cargo build -p tt --bin tt
-```
-
-## Paths and configuration
-
-By default, TT keeps its user-scoped config, state, and logs under a single home root at `~/.tt`. Set `TT_HOME` to point TT at a different root when you want an isolated lab, test, or operator session.
-
-```text
-config:  ~/.tt/config.toml
-state:   ~/.tt/state.json
-db:      ~/.tt/state.db
-logs:    ~/.tt/logs/
-socket:  ${TT_HOME:-~/.tt}/runtime/ttd.sock
-meta:    ${TT_HOME:-~/.tt}/runtime/ttd.json
-```
-
-`state.json` remains the live collaboration and thread/turn mirror store. `state.db` is the live authority store for authority workstreams, authority work units, and tracked threads.
-
-The packaged `tt-daemon.service` unit is a user service, not a root-owned global daemon. It is intended to run under `systemctl --user` so the daemon and CLI resolve the same user-scoped config, data, log, and socket paths.
-
-For source installs, `make install-systemd` writes that user unit into your user manager directory and rewrites `ExecStart` to the current install prefix so it follows the binary path you actually chose.
-
-The current read model is split:
-
-- `state/get` is a merged daemon snapshot that includes collaboration state plus any explicit authority compatibility bridge summaries needed for assignment execution
-- `authority/hierarchy/get` is the canonical authority-only hierarchy query for planning hierarchy, tracked threads, revisions, and other authority metadata; other clients should prefer authority reads when they need canonical planning state
-
-Recovery is snapshot-first rather than replay-based:
-
-- if a daemon connection drops or the daemon restarts, clients reconnect, reload current reads, and then resubscribe for new events
-- old event subscriptions are tied to the old socket lifetime and are not a missed-history replay channel
-- clients reload both `state/get` and `authority/hierarchy/get` after reconnect, then refetch focused authority detail when the selected row still exists
-
-The current operator mutation surface is also split, but no longer ambiguous:
-
-- `tt workstreams ...`, `tt workunits ...`, and `tt tracked-threads ...` are the canonical authority-backed planning hierarchy CRUD commands
-- `workunit/get` remains a daemon runtime-detail exception for collaboration execution detail; it is not a canonical planning API
-- there is no longer an operator-facing legacy planning command namespace; retained collaboration planning state is now an internal compatibility concern rather than a peer CLI surface
-- assignment, report, decision, proposal, thread, and turn flows remain collaboration- or runtime-oriented daemon surfaces rather than authority planning CRUD
-
-`RUST_LOG` controls tracing verbosity. TT-specific overrides use `TT_*` environment variables, including the TT binary path and upstream listen URL.
-
-Two runtime-mode overrides are worth calling out explicitly:
-
-- `TT_CONNECTION_MODE=connect_only` forces connect-only mode
-- `TT_CONNECTION_MODE=spawn_always` forces spawn mode
-
-If `TT_CONNECTION_MODE` is unset, TT keeps the configured or default `spawn_if_needed` behavior. The CLI and daemon flags `--connect-only` and `--force-spawn` are mutually exclusive one-shot overrides for the same setting.
-
-## Branch And Worktree Hygiene
-
-Use bounded integration branches when merging validated repair stacks back toward `main`.
-
-- keep active dirty lanes intentionally, not accidentally
-- remove temporary integration worktrees after the validated merge lands
-- delete local branches only when they are fully merged or otherwise clearly superseded
-- preserve unmerged or dirty debug branches until their state is intentionally archived or discarded
-
-## Read more
-
-For a fuller technical picture, see [Architecture](docs/architecture.md), [CLI Reference](docs/CLI_REFERENCE.md), [Collaboration](docs/collaboration.md), [Local-Authority MVP Backend Design](docs/design/local-authority-mvp-backend.md), [Installation](docs/install.md), [Configuration](docs/configuration.md), [Logging](docs/logging.md), [Operations](docs/operations.md), and [Testing](docs/testing.md).
+- [Architecture](docs/architecture.md)
+- [CLI Reference](docs/CLI_REFERENCE.md)
+- [Collaboration](docs/collaboration.md)
+- [Installation](docs/install.md)
+- [Configuration](docs/configuration.md)
+- [Logging](docs/logging.md)
+- [Operations](docs/operations.md)
+- [Testing](docs/testing.md)
+- [TT v2 Architecture](docs/tt_v2_architecture.md)
 
 ## License
 
