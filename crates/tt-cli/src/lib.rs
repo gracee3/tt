@@ -72,6 +72,22 @@ pub enum CodexCommand {
 pub enum CodexThreadsCommand {
     List { limit: Option<usize> },
     Get { selector: String },
+    Read {
+        selector: String,
+        #[arg(long, default_value_t = true)]
+        include_turns: bool,
+    },
+    Start {
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = false)]
+        ephemeral: bool,
+    },
+    Resume {
+        selector: String,
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -156,8 +172,36 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         },
         Command::Codex { command } => match command {
             CodexCommand::Threads { command } => match command {
-                CodexThreadsCommand::List { limit } => DaemonRequest::ListCodexThreads { limit },
-                CodexThreadsCommand::Get { selector } => DaemonRequest::GetCodexThread { selector },
+                CodexThreadsCommand::List { limit } => DaemonRequest::ListCodexThreads {
+                    cwd: cwd.to_path_buf(),
+                    limit,
+                },
+                CodexThreadsCommand::Get { selector } => DaemonRequest::GetCodexThread {
+                    cwd: cwd.to_path_buf(),
+                    selector,
+                },
+                CodexThreadsCommand::Read {
+                    selector,
+                    include_turns,
+                } => DaemonRequest::ReadCodexThread {
+                    cwd: cwd.to_path_buf(),
+                    selector,
+                    include_turns,
+                },
+                CodexThreadsCommand::Start { model, ephemeral } => {
+                    DaemonRequest::StartCodexThread {
+                        cwd: cwd.to_path_buf(),
+                        model,
+                        ephemeral,
+                    }
+                }
+                CodexThreadsCommand::Resume { selector, model } => {
+                    DaemonRequest::ResumeCodexThread {
+                        cwd: cwd.to_path_buf(),
+                        selector,
+                        model,
+                    }
+                }
             },
         },
         Command::Project { command } => match command {

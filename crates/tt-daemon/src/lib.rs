@@ -15,14 +15,14 @@ use std::{
 use anyhow::Result;
 use clap as _;
 use serde::{Deserialize, Serialize};
-use tt_codex::CodexHome;
+use tt_codex::{CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot};
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
     ProjectStatus, ThreadBinding, ThreadBindingStatus, WorkUnit, WorkUnitStatus, WorkspaceBinding,
     WorkspaceStatus,
 };
 use tt_store::OverlayStore;
-use tt_ui_core::{CodexThreadSummary, DashboardSummary, GitRepositorySummary};
+use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRepositorySummary};
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 pub const TT_DAEMON_SOCKET_NAME: &str = "ttd.sock";
@@ -128,10 +128,27 @@ pub enum DaemonRequest {
         id: String,
     },
     ListCodexThreads {
+        cwd: PathBuf,
         limit: Option<usize>,
     },
     GetCodexThread {
+        cwd: PathBuf,
         selector: String,
+    },
+    ReadCodexThread {
+        cwd: PathBuf,
+        selector: String,
+        include_turns: bool,
+    },
+    StartCodexThread {
+        cwd: PathBuf,
+        model: Option<String>,
+        ephemeral: bool,
+    },
+    ResumeCodexThread {
+        cwd: PathBuf,
+        selector: String,
+        model: Option<String>,
     },
 }
 
@@ -155,6 +172,8 @@ pub enum DaemonResponse {
     MergeRun(Option<MergeRun>),
     CodexThreads(Vec<CodexThreadSummary>),
     CodexThread(Option<CodexThreadSummary>),
+    CodexThreadDetails(Vec<CodexThreadDetail>),
+    CodexThreadDetail(Option<CodexThreadDetail>),
 }
 
 #[derive(Debug, Clone)]
@@ -421,8 +440,13 @@ impl DaemonService {
             .transpose()
     }
 
-    pub fn codex_threads(&self, limit: Option<usize>) -> Result<Vec<CodexThreadSummary>> {
-        let Some(catalog) = self.codex_catalog()? else {
+    pub fn codex_threads(
+        &self,
+        cwd: impl AsRef<Path>,
+        limit: Option<usize>,
+    ) -> Result<Vec<CodexThreadSummary>> {
+        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok()
+        else {
             return Ok(Vec::new());
         };
         let limit = limit.unwrap_or(catalog.all_threads().len());
@@ -450,8 +474,13 @@ impl DaemonService {
             .collect())
     }
 
-    pub fn codex_thread(&self, selector: &str) -> Result<Option<CodexThreadSummary>> {
-        let Some(catalog) = self.codex_catalog()? else {
+    pub fn codex_thread(
+        &self,
+        cwd: impl AsRef<Path>,
+        selector: &str,
+    ) -> Result<Option<CodexThreadSummary>> {
+        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok()
+        else {
             return Ok(None);
         };
         let Some(thread) = catalog.resolve_thread(selector) else {
@@ -470,6 +499,43 @@ impl DaemonService {
             bound_work_unit_id,
             workspace_binding_count,
         }))
+    }
+
+    pub fn read_codex_thread(
+        &self,
+        cwd: impl AsRef<Path>,
+        selector: &str,
+        include_turns: bool,
+    ) -> Result<Option<CodexThreadDetail>> {
+        let client = self.codex_runtime_client(cwd.as_ref())?;
+        let Some(snapshot) = client.read_thread(selector, include_turns)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.enrich_codex_snapshot(snapshot)?))
+    }
+
+    pub fn start_codex_thread(
+        &self,
+        cwd: impl AsRef<Path>,
+        model: Option<String>,
+        ephemeral: bool,
+    ) -> Result<CodexThreadDetail> {
+        let client = self.codex_runtime_client(cwd.as_ref())?;
+        let snapshot = client.start_thread(cwd.as_ref(), model, ephemeral)?;
+        self.enrich_codex_snapshot(snapshot)
+    }
+
+    pub fn resume_codex_thread(
+        &self,
+        cwd: impl AsRef<Path>,
+        selector: &str,
+        model: Option<String>,
+    ) -> Result<Option<CodexThreadDetail>> {
+        let client = self.codex_runtime_client(cwd.as_ref())?;
+        let Some(snapshot) = client.resume_thread(selector, Some(cwd.as_ref()), model)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.enrich_codex_snapshot(snapshot)?))
     }
 
     pub fn status(&self) -> Result<DaemonStatus> {
@@ -613,15 +679,74 @@ impl DaemonService {
                 head_commit,
             )?),
             DeleteMergeRun { id } => DaemonResponse::Count(self.delete_merge_run(&id)?),
-            ListCodexThreads { limit } => DaemonResponse::CodexThreads(self.codex_threads(limit)?),
-            GetCodexThread { selector } => {
-                DaemonResponse::CodexThread(self.codex_thread(&selector)?)
+            ListCodexThreads { cwd, limit } => {
+                DaemonResponse::CodexThreads(self.codex_threads(cwd, limit)?)
             }
+            GetCodexThread { cwd, selector } => {
+                DaemonResponse::CodexThread(self.codex_thread(cwd, &selector)?)
+            }
+            ReadCodexThread {
+                cwd,
+                selector,
+                include_turns,
+            } => DaemonResponse::CodexThreadDetail(self.read_codex_thread(
+                cwd,
+                &selector,
+                include_turns,
+            )?),
+            StartCodexThread {
+                cwd,
+                model,
+                ephemeral,
+            } => DaemonResponse::CodexThreadDetail(Some(self.start_codex_thread(
+                cwd,
+                model,
+                ephemeral,
+            )?)),
+            ResumeCodexThread {
+                cwd,
+                selector,
+                model,
+            } => DaemonResponse::CodexThreadDetail(self.resume_codex_thread(
+                cwd,
+                &selector,
+                model,
+            )?),
         })
     }
 
     pub fn codex_home_root(&self) -> Option<&Path> {
         self.codex_home.as_ref().map(|home| home.root())
+    }
+
+    fn codex_runtime_client(&self, cwd: &Path) -> Result<CodexRuntimeClient> {
+        CodexRuntimeClient::open(cwd)
+    }
+
+    fn enrich_codex_snapshot(
+        &self,
+        snapshot: CodexThreadRuntimeSnapshot,
+    ) -> Result<CodexThreadDetail> {
+        let bound_work_unit_id = self
+            .get_thread_binding(&snapshot.thread_id)?
+            .and_then(|binding| binding.work_unit_id);
+        let workspace_binding_count = self
+            .list_workspace_bindings_for_thread(&snapshot.thread_id)?
+            .len();
+        Ok(CodexThreadDetail {
+            thread_id: snapshot.thread_id,
+            thread_name: snapshot.thread_name,
+            preview: snapshot.preview,
+            status: snapshot.status,
+            cwd: snapshot.cwd,
+            model_provider: snapshot.model_provider,
+            ephemeral: snapshot.ephemeral,
+            updated_at: snapshot.updated_at,
+            turn_count: snapshot.turn_count,
+            latest_turn_id: snapshot.latest_turn_id,
+            bound_work_unit_id,
+            workspace_binding_count,
+        })
     }
 }
 

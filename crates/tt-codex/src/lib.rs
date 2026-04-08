@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Runtime;
+use tt_core::{AppConfig, AppPaths, ReconnectPolicy, TT_APP_SERVER_LISTEN_URL_ENV};
+use tt_runtime::{TTClient, types};
 use tt_domain as _;
 
 pub const CODEX_HOME_ENV: &str = "CODEX_HOME";
@@ -173,6 +176,195 @@ impl CodexSessionCatalog {
 
     pub fn all_threads(&self) -> &[CodexThreadRecord] {
         &self.threads
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexThreadRuntimeSnapshot {
+    pub thread_id: String,
+    pub thread_name: Option<String>,
+    pub preview: String,
+    pub status: String,
+    pub cwd: String,
+    pub model_provider: String,
+    pub ephemeral: bool,
+    pub updated_at: i64,
+    pub turn_count: usize,
+    pub latest_turn_id: Option<String>,
+    pub path: Option<String>,
+}
+
+pub struct CodexRuntimeClient {
+    runtime: Runtime,
+    client: std::sync::Arc<TTClient>,
+    codex_home: CodexHome,
+    listen_url: String,
+}
+
+impl CodexRuntimeClient {
+    pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
+        let codex_home = CodexHome::discover_in(cwd.as_ref())?;
+        let runtime = Runtime::new().context("create tokio runtime for Codex client")?;
+        let (listen_url, reconnect) = runtime.block_on(async {
+            let paths = AppPaths::discover().ok();
+            let mut listen_url = std::env::var(TT_APP_SERVER_LISTEN_URL_ENV).ok();
+            let mut reconnect = ReconnectPolicy::default();
+            if let Some(paths) = paths {
+                if let Ok(config) = AppConfig::load_or_default(&paths).await {
+                    listen_url = Some(config.tt.effective_listen_url().to_string());
+                    reconnect = config.tt.reconnect;
+                }
+            }
+            Ok::<_, anyhow::Error>((listen_url, reconnect))
+        })?;
+        let listen_url = listen_url.unwrap_or_else(|| "ws://127.0.0.1:4500".to_string());
+        let client = TTClient::websocket(listen_url.clone(), reconnect);
+        runtime.block_on(async {
+            client.connect().await?;
+            client.initialize(default_initialize_params()).await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(Self {
+            runtime,
+            client,
+            codex_home,
+            listen_url,
+        })
+    }
+
+    pub fn codex_home(&self) -> &CodexHome {
+        &self.codex_home
+    }
+
+    pub fn listen_url(&self) -> &str {
+        &self.listen_url
+    }
+
+    pub fn catalog(&self) -> Result<CodexSessionCatalog> {
+        self.codex_home.session_catalog()
+    }
+
+    pub fn list_threads(&self, cwd: &Path, limit: Option<usize>) -> Result<Vec<CodexThreadRuntimeSnapshot>> {
+        let cwd = cwd.to_path_buf();
+        self.runtime.block_on(async {
+            let mut params = types::ThreadListParams::default();
+            params.cwd = Some(cwd.display().to_string());
+            params.limit = limit.map(|value| value as u32);
+            let response = self.client.thread_list(params).await?;
+            Ok(response.data.into_iter().map(thread_to_snapshot).collect())
+        })
+    }
+
+    pub fn read_thread(
+        &self,
+        selector: &str,
+        include_turns: bool,
+    ) -> Result<Option<CodexThreadRuntimeSnapshot>> {
+        let Some(thread_id) = self.resolve_selector(selector)? else {
+            return Ok(None);
+        };
+        let thread_id = thread_id.to_string();
+        self.runtime.block_on(async {
+            let response = self
+                .client
+                .thread_read(types::ThreadReadParams {
+                    thread_id,
+                    include_turns,
+                })
+                .await?;
+            Ok(Some(thread_to_snapshot(response.thread)))
+        })
+    }
+
+    pub fn start_thread(
+        &self,
+        cwd: &Path,
+        model: Option<String>,
+        ephemeral: bool,
+    ) -> Result<CodexThreadRuntimeSnapshot> {
+        let cwd = cwd.display().to_string();
+        self.runtime.block_on(async {
+            let response = self
+                .client
+                .thread_start(types::ThreadStartParams {
+                    cwd: Some(cwd),
+                    model,
+                    sandbox: Some(types::SandboxMode::WorkspaceWrite),
+                    service_name: Some("tt".to_string()),
+                    ephemeral: Some(ephemeral),
+                    ..types::ThreadStartParams::default()
+                })
+                .await?;
+            Ok(thread_to_snapshot(response.thread))
+        })
+    }
+
+    pub fn resume_thread(
+        &self,
+        selector: &str,
+        cwd: Option<&Path>,
+        model: Option<String>,
+    ) -> Result<Option<CodexThreadRuntimeSnapshot>> {
+        let Some(thread_id) = self.resolve_selector(selector)? else {
+            return Ok(None);
+        };
+        let thread_id = thread_id.to_string();
+        let cwd = cwd.map(|path| path.display().to_string());
+        self.runtime.block_on(async {
+            let response = self
+                .client
+                .thread_resume(types::ThreadResumeParams {
+                    thread_id,
+                    cwd,
+                    model,
+                    approval_policy: Some(types::AskForApproval::default()),
+                    approvals_reviewer: None,
+                    sandbox: Some(types::SandboxMode::WorkspaceWrite),
+                    config: None,
+                    base_instructions: None,
+                    developer_instructions: None,
+                    persist_extended_history: true,
+                })
+                .await?;
+            Ok(Some(thread_to_snapshot(response.thread)))
+        })
+    }
+
+    fn resolve_selector(&self, selector: &str) -> Result<Option<String>> {
+        let catalog = self.catalog()?;
+        Ok(catalog
+            .resolve_thread(selector)
+            .map(|thread| thread.thread_id.clone()))
+    }
+}
+
+fn default_initialize_params() -> types::InitializeParams {
+    types::InitializeParams {
+        client_info: types::ClientInfo {
+            name: "tt-codex".to_string(),
+            title: Some("TT Codex Adapter".to_string()),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+        capabilities: Some(types::InitializeCapabilities {
+            experimental_api: true,
+            opt_out_notification_methods: None,
+        }),
+    }
+}
+
+fn thread_to_snapshot(thread: types::Thread) -> CodexThreadRuntimeSnapshot {
+    CodexThreadRuntimeSnapshot {
+        thread_id: thread.id,
+        thread_name: thread.name,
+        preview: thread.preview,
+        status: thread.status.label().to_string(),
+        cwd: thread.cwd,
+        model_provider: thread.model_provider,
+        ephemeral: thread.ephemeral,
+        updated_at: thread.updated_at,
+        turn_count: thread.turns.len(),
+        latest_turn_id: thread.turns.last().map(|turn| turn.id.clone()),
+        path: thread.path,
     }
 }
 

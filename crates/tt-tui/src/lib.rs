@@ -16,7 +16,7 @@ use tt_domain::{
     ProjectStatus, ThreadBinding, ThreadBindingStatus, WorkUnit, WorkUnitStatus, WorkspaceBinding,
     WorkspaceStatus,
 };
-use tt_ui_core::{CodexThreadSummary, DashboardSummary, GitRepositorySummary};
+use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRepositorySummary};
 
 pub const TT_TUI_PRODUCT: &str = "tt-tui";
 
@@ -143,7 +143,7 @@ pub fn run_interactive(cwd: impl AsRef<Path>) -> Result<()> {
     )?;
     writeln!(
         stdout,
-        "\nCommands: help, refresh, projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding-status <id> <status>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], codex-threads [limit], codex-thread <selector>, quit"
+        "\nCommands: help, refresh, projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding-status <id> <status>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], codex-threads [limit], codex-thread <selector>, codex-thread-read <selector> [include_turns], codex-thread-start [model] [ephemeral], codex-thread-resume <selector> [model], quit"
     )?;
     stdout.flush()?;
 
@@ -170,7 +170,7 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
 
     match command {
         "help" => Ok(Some(
-            "Commands: help, refresh, projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding-status <id> <status>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], codex-threads [limit], codex-thread <selector>, quit".to_string(),
+            "Commands: help, refresh, projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding-status <id> <status>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], codex-threads [limit], codex-thread <selector>, codex-thread-read <selector> [include_turns], codex-thread-start [model] [ephemeral], codex-thread-resume <selector> [model], quit".to_string(),
         )),
         "quit" | "exit" => Ok(None),
         "refresh" => Ok(Some(render_dashboard(&load_snapshot_from_cwd(cwd)?))),
@@ -356,7 +356,13 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
         }
         "codex-threads" => {
             let limit = parts.next().and_then(|value| value.parse::<usize>().ok());
-            let response = request_for_cwd(cwd, DaemonRequest::ListCodexThreads { limit })?;
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::ListCodexThreads {
+                    cwd: cwd.to_path_buf(),
+                    limit,
+                },
+            )?;
             match response {
                 DaemonResponse::CodexThreads(threads) => Ok(Some(render_codex_threads(&threads))),
                 other => bail!("unexpected daemon response for codex threads: {other:?}"),
@@ -369,6 +375,7 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             let response = request_for_cwd(
                 cwd,
                 DaemonRequest::GetCodexThread {
+                    cwd: cwd.to_path_buf(),
                     selector: selector.to_string(),
                 },
             )?;
@@ -380,6 +387,76 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                     Ok(Some(format!("codex thread not found: {selector}")))
                 }
                 other => bail!("unexpected daemon response for codex thread: {other:?}"),
+            }
+        }
+        "codex-thread-read" => {
+            let Some(selector) = parts.next() else {
+                bail!("codex-thread-read requires a selector");
+            };
+            let include_turns = parts
+                .next()
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(true);
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::ReadCodexThread {
+                    cwd: cwd.to_path_buf(),
+                    selector: selector.to_string(),
+                    include_turns,
+                },
+            )?;
+            match response {
+                DaemonResponse::CodexThreadDetail(Some(thread)) => {
+                    Ok(Some(render_codex_thread_detail(&thread)))
+                }
+                DaemonResponse::CodexThreadDetail(None) => {
+                    Ok(Some(format!("codex thread not found: {selector}")))
+                }
+                other => bail!("unexpected daemon response for codex-thread-read: {other:?}"),
+            }
+        }
+        "codex-thread-start" => {
+            let model = parts.next().map(ToString::to_string);
+            let ephemeral = parts
+                .next()
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(false);
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::StartCodexThread {
+                    cwd: cwd.to_path_buf(),
+                    model,
+                    ephemeral,
+                },
+            )?;
+            match response {
+                DaemonResponse::CodexThreadDetail(Some(thread)) => {
+                    Ok(Some(render_codex_thread_detail(&thread)))
+                }
+                other => bail!("unexpected daemon response for codex-thread-start: {other:?}"),
+            }
+        }
+        "codex-thread-resume" => {
+            let Some(selector) = parts.next() else {
+                bail!("codex-thread-resume requires a selector");
+            };
+            let model = parts.next().map(ToString::to_string);
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::ResumeCodexThread {
+                    cwd: cwd.to_path_buf(),
+                    selector: selector.to_string(),
+                    model,
+                },
+            )?;
+            match response {
+                DaemonResponse::CodexThreadDetail(Some(thread)) => {
+                    Ok(Some(render_codex_thread_detail(&thread)))
+                }
+                DaemonResponse::CodexThreadDetail(None) => {
+                    Ok(Some(format!("codex thread not found: {selector}")))
+                }
+                other => bail!("unexpected daemon response for codex-thread-resume: {other:?}"),
             }
         }
         "merge-run-status" => {
@@ -525,6 +602,24 @@ fn render_codex_thread(thread: &CodexThreadSummary) -> String {
         thread.thread_id,
         thread.thread_name.as_deref().unwrap_or("<unnamed>"),
         thread.updated_at,
+        thread.bound_work_unit_id.as_deref().unwrap_or("<unbound>"),
+        thread.workspace_binding_count
+    )
+}
+
+fn render_codex_thread_detail(thread: &CodexThreadDetail) -> String {
+    format!(
+        "{}\n{}\nstatus={}\ncwd={}\npreview={}\nmodel_provider={}\nephemeral={}\nupdated_at={}\nturn_count={}\nlatest_turn_id={}\nbound_work_unit_id={}\nworkspace_binding_count={}\n",
+        thread.thread_id,
+        thread.thread_name.as_deref().unwrap_or("<unnamed>"),
+        thread.status,
+        thread.cwd,
+        thread.preview,
+        thread.model_provider,
+        thread.ephemeral,
+        thread.updated_at,
+        thread.turn_count,
+        thread.latest_turn_id.as_deref().unwrap_or("-"),
         thread.bound_work_unit_id.as_deref().unwrap_or("<unbound>"),
         thread.workspace_binding_count
     )

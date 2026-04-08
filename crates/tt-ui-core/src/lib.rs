@@ -36,3 +36,19 @@ pub struct CodexThreadSummary {
     pub bound_work_unit_id: Option<String>,
     pub workspace_binding_count: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexThreadDetail {
+    pub thread_id: String,
+    pub thread_name: Option<String>,
+    pub preview: String,
+    pub status: String,
+    pub cwd: String,
+    pub model_provider: String,
+    pub ephemeral: bool,
+    pub updated_at: i64,
+    pub turn_count: usize,
+    pub latest_turn_id: Option<String>,
+    pub bound_work_unit_id: Option<String>,
+    pub workspace_binding_count: usize,
+}
