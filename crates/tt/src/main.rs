@@ -244,40 +244,59 @@ enum DocsCommand {
 #[derive(Debug, Subcommand)]
 #[command(about = "Manage the shared tt app-server lifecycle")]
 enum AppServerCommand {
+    /// Register a named app-server instance.
     Add(AppServerNameArgs),
+    /// Forget a named app-server instance.
     Remove(AppServerNameArgs),
+    /// Start a named app-server instance.
     Start(AppServerNameArgs),
+    /// Stop a named app-server instance.
     Stop(AppServerNameArgs),
+    /// Restart a named app-server instance.
     Restart(AppServerNameArgs),
+    /// Show the status of a named app-server instance.
     Status(AppServerNameArgs),
+    /// Show the configuration of a named app-server instance.
     Info(AppServerNameArgs),
 }
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Inspect tt role definitions")]
 enum RolesCommand {
+    /// List available role definitions.
     List,
+    /// Show a specific role definition.
     Info(RoleRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
+#[command(about = "Inspect available TT models")]
 enum ModelsCommand {
+    /// List models for a workstream.
     List(ModelsListArgs),
 }
 
 #[derive(Debug, Subcommand)]
+#[command(about = "Inspect TT thread records")]
 enum TTThreadsCommand {
+    /// List threads for a workstream.
     List(ThreadListArgs),
+    /// List loaded threads for a workstream.
     ListLoaded(ThreadListArgs),
+    /// Read a thread by id.
     Read(ThreadRefArgs),
+    /// Start a new thread.
     Start(ThreadStartArgs),
+    /// Resume an existing thread.
     Resume(ThreadResumeArgs),
 }
 
 #[derive(Debug, Subcommand)]
 #[command(about = "TT lane worktree lifecycle helpers")]
 enum TTWorktreeCommand {
+    /// Create a new TT-managed worktree.
     Add(TTWorktreeAddArgs),
+    /// Prune a TT-managed worktree.
     Prune(TTWorktreePruneArgs),
 }
 
@@ -300,38 +319,54 @@ enum LaneCommand {
 
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
+    /// Show the currently active session.
     Active,
 }
 
 #[derive(Debug, Subcommand)]
 enum EventsCommand {
+    /// Show recent events.
     Recent(EventsRecentArgs),
+    /// Watch events in real time.
     Watch(EventsWatchArgs),
 }
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Manage durable tt project records")]
 enum WorkstreamCommand {
+    /// Add a project record to a repository.
     Add(WorkstreamAddArgs),
+    /// Create a durable project record.
     Create(WorkstreamCreateArgs),
+    /// Edit a durable project record.
     Edit(WorkstreamEditArgs),
+    /// Delete a durable project record.
     Delete(WorkstreamDeleteArgs),
+    /// List durable project records.
     List,
+    /// Get a durable project record.
     Get(WorkstreamRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Canonical authority-backed CRUD for planning work units")]
 enum WorkunitCommand {
+    /// Create a planning work unit.
     Create(WorkunitCreateArgs),
+    /// Edit a planning work unit.
     Edit(WorkunitEditArgs),
+    /// Delete a planning work unit.
     Delete(WorkunitRefArgs),
+    /// List planning work units.
     List(WorkunitListArgs),
+    /// Get a planning work unit.
     Get(WorkunitRefArgs),
+    /// Work with tracked-thread planning records.
     Thread {
         #[command(subcommand)]
         command: WorkunitThreadCommand,
     },
+    /// Work with tracked-thread planning record workspaces.
     Workspace {
         #[command(subcommand)]
         command: WorkunitWorkspaceCommand,
@@ -341,21 +376,32 @@ enum WorkunitCommand {
 #[derive(Debug, Subcommand)]
 #[command(about = "Canonical authority-backed CRUD for tracked-thread planning records")]
 enum WorkunitThreadCommand {
+    /// Add a tracked thread to a work unit.
     Add(TrackedThreadCreateArgs),
+    /// Update a tracked thread.
     Set(TrackedThreadEditArgs),
+    /// Remove a tracked thread from a work unit.
     Remove(TrackedThreadRefArgs),
+    /// List tracked threads for a work unit.
     List(TrackedThreadListArgs),
+    /// Get a tracked thread record.
     Get(TrackedThreadRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
 #[command(about = "Workspace operations for tracked-thread planning records")]
 enum WorkunitWorkspaceCommand {
+    /// Prepare the tracked-thread workspace.
     PrepareWorkspace(TrackedThreadRefArgs),
+    /// Refresh the tracked-thread workspace.
     RefreshWorkspace(TrackedThreadRefArgs),
+    /// Assess merge readiness for the workspace.
     MergePrep(TrackedThreadRefArgs),
+    /// Authorize merging the workspace.
     AuthorizeMerge(TrackedThreadRefArgs),
+    /// Execute landing for the workspace.
     ExecuteLanding(TrackedThreadRefArgs),
+    /// Prune the tracked-thread workspace.
     PruneWorkspace(TrackedThreadRefArgs),
 }
 
@@ -390,50 +436,70 @@ enum PlanCommand {
 
 #[derive(Debug, Subcommand)]
 enum AssignmentsCommand {
+    /// Start a worker assignment.
     Start(AssignmentStartArgs),
+    /// Get a worker assignment.
     Get(AssignmentRefArgs),
+    /// Inspect assignment communication.
     Communication(AssignmentRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum ReportsCommand {
+    /// Get a report.
     Get(ReportRefArgs),
+    /// List reports for a work unit.
     ListForWorkunit(WorkunitRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum DecisionsCommand {
+    /// Apply a supervisor decision.
     Apply(DecisionApplyArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum ProposalsCommand {
+    /// Create a proposal.
     Create(ProposalCreateArgs),
+    /// Get a proposal.
     Get(ProposalRefArgs),
+    /// Show the proposal artifact summary.
     ArtifactSummary(ProposalRefArgs),
+    /// Show the proposal artifact detail.
     ArtifactDetail(ProposalRefArgs),
+    /// Export a proposal artifact.
     ArtifactExport(ProposalArtifactExportArgs),
+    /// List proposals for a work unit.
     ListForWorkunit(WorkunitRefArgs),
+    /// Approve a proposal.
     Approve(ProposalApproveArgs),
+    /// Reject a proposal.
     Reject(ProposalRejectArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum TTCommand {
+    /// Inspect available TT models.
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
     },
+    /// Spawn a role-backed TT thread.
     Spawn(TTSpawnArgs),
+    /// Resume a TT thread.
     Resume(TTResumeArgs),
+    /// Manage TT worktrees.
     Worktree {
         #[command(subcommand)]
         command: TTWorktreeCommand,
     },
+    /// Manage TT thread records.
     Threads {
         #[command(subcommand)]
         command: TTThreadsCommand,
     },
+    /// Inspect TT turns.
     Turns {
         #[command(subcommand)]
         command: TurnsCommand,
@@ -442,6 +508,7 @@ enum TTCommand {
 
 #[derive(Debug, Subcommand)]
 enum AppCommand {
+    /// Invoke the embedded TT command surface.
     TT {
         #[command(subcommand)]
         command: TTCommand,
@@ -450,8 +517,11 @@ enum AppCommand {
 
 #[derive(Debug, Subcommand)]
 enum I3Command {
+    /// Report desktop/window-manager status.
     Status,
+    /// Start desktop/window-manager integration.
     Start,
+    /// Attach to the current desktop/window-manager session.
     Attach,
 }
 
@@ -497,151 +567,180 @@ enum SupervisorWorkCommand {
 
 #[derive(Debug, Subcommand)]
 enum TurnsCommand {
+    /// List the active turns.
     ListActive,
+    /// Show recent turns for a thread.
     Recent(TurnsRecentArgs),
+    /// Get a specific turn by thread and turn id.
     Get(TurnRefArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum ReviewCommand {
+    /// List review decisions.
     List(TTDecisionListArgs),
+    /// Show the pending review queue.
     Queue(TTDecisionQueueArgs),
+    /// Show review decision history.
     History(TTDecisionHistoryArgs),
+    /// Get a specific review decision.
     Get(TTDecisionRefArgs),
+    /// Propose a steer decision.
     ProposeSteer(TTDecisionProposeSteerArgs),
+    /// Replace a pending steer decision.
     ReplacePendingSteer(TTDecisionReplacePendingSteerArgs),
+    /// Record a no-action review outcome.
     RecordNoAction(TTDecisionRecordNoActionArgs),
+    /// Manually refresh review state.
     ManualRefresh(TTDecisionManualRefreshArgs),
+    /// Approve a review decision.
     Approve(TTDecisionApproveArgs),
+    /// Reject a review decision.
     Reject(TTDecisionRejectArgs),
 }
 
 #[derive(Debug, Clone, Args)]
 struct ModelsListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workstream to inspect models for")]
     workstream: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ThreadListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workstream to list threads for")]
     workstream: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ThreadRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to inspect")]
     thread: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ThreadStartArgs {
-    #[arg(long)]
+    #[arg(long, help = "Working directory to start the thread in")]
     cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Model to use for the spawned thread")]
     model: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Start the thread without a visible UI")]
     ephemeral: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ThreadResumeArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to resume")]
     thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Working directory to resume the thread in")]
     cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Model to use while resuming the thread")]
     model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTResumeArgs {
+    /// Thread id to resume.
     thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Working directory to resume the thread in")]
     cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Model to use while resuming the thread")]
     model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTSpawnArgs {
+    /// Role to use for the spawned thread.
     role: String,
-    #[arg(long)]
+    #[arg(long, help = "Existing workstream to attach the spawned thread to")]
     workstream: Option<String>,
-    #[arg(long = "new-workstream")]
+    #[arg(
+        long = "new-workstream",
+        help = "Create a new workstream for the spawned thread"
+    )]
     new_workstream: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Repository root to bind the spawned thread to")]
     repo_root: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Spawn the thread without a visible UI")]
     headless: bool,
-    #[arg(long)]
+    #[arg(long, help = "Model to use for the spawned thread")]
     model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ModeSpawnArgs {
-    #[arg(long)]
+    #[arg(long, help = "Existing workstream to attach the mode thread to")]
     workstream: Option<String>,
-    #[arg(long = "new-workstream")]
+    #[arg(
+        long = "new-workstream",
+        help = "Create a new workstream for the mode thread"
+    )]
     new_workstream: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Repository root to bind the mode thread to")]
     repo_root: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Spawn the thread without a visible UI")]
     headless: bool,
-    #[arg(long)]
+    #[arg(long, help = "Model to use for the spawned thread")]
     model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct SplitArgs {
-    #[arg(long)]
+    #[arg(long, help = "Override the role for the child thread")]
     role: Option<String>,
     #[command(flatten)]
     spawn: ModeSpawnArgs,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Mark the split thread as ephemeral")]
     ephemeral: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct CloseArgs {
+    /// Selector describing the thread, branch, or workspace to close.
     selector: String,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Force close even when safety checks fail")]
     force: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ParkArgs {
+    /// Selector describing the thread, branch, or workspace to park.
     selector: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional note to carry with the parked state")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct DiffArgs {
-    #[arg(long)]
+    #[arg(long, help = "Optional selector for the branch or worktree to inspect")]
     selector: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional repository root to inspect")]
     repo_root: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worktree path to inspect")]
     worktree_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 enum TodoCommand {
+    /// Ingest notes into the active TODO ledger.
     Note(ModeSpawnArgs),
+    /// Ask clarifying questions about the active TODO section.
     Review(ModeSpawnArgs),
+    /// Turn the active TODO section into a plan.
     Plan(ModeSpawnArgs),
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTWorktreeAddArgs {
+    /// Repository root to add the worktree under.
     repo_root: PathBuf,
+    /// Worktree name to create.
     name: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTWorktreePruneArgs {
+    /// Worktree selector to prune.
     selector: String,
 }
 
@@ -735,175 +834,183 @@ enum LaneCleanupScopeArg {
 
 #[derive(Debug, Clone, Args)]
 struct TurnRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to read from")]
     thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Turn id to inspect")]
     turn: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TurnsRecentArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to inspect recent turns for")]
     thread: String,
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, help = "Maximum number of turns to return")]
     limit: usize,
 }
 
 #[derive(Debug, Clone, Args)]
 struct EventsRecentArgs {
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 20, help = "Maximum number of events to return")]
     limit: usize,
 }
 
 #[derive(Debug, Clone, Args)]
 struct EventsWatchArgs {
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Include full snapshot data in the event stream"
+    )]
     snapshot: bool,
-    #[arg(long)]
+    #[arg(long, help = "Maximum number of events to watch before stopping")]
     count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct AppServerNameArgs {
-    #[arg(default_value = "default")]
+    #[arg(default_value = "default", help = "Named app-server instance to target")]
     name: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct RoleRefArgs {
+    /// Role id or name to inspect.
     role: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkstreamCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Title for the durable project record")]
     title: String,
-    #[arg(long)]
+    #[arg(long, help = "Objective for the durable project record")]
     objective: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional priority label")]
     priority: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional TT home directory override")]
     tt_home: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional SQLite home directory override")]
     sqlite_home: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional listen URL override")]
     listen_url: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Transport used to connect the workstream")]
     transport_kind: Option<WorkstreamTransportKindArg>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "How app-server instances are managed")]
     app_server_policy: Option<WorkstreamAppServerPolicyArg>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "How execution connects to the workstream")]
     connection_mode: Option<WorkstreamExecutionConnectionModeArg>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkstreamAddArgs {
+    /// Repository root to add the project record under.
     repo_root: PathBuf,
+    /// Project name to add.
     name: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkstreamRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Project record id or slug to inspect")]
     workstream: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkstreamDeleteArgs {
+    /// Project record id or slug to delete.
     workstream: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkstreamEditArgs {
-    #[arg(long)]
+    #[arg(long, help = "Project record id or slug to edit")]
     workstream: String,
-    #[arg(long)]
+    #[arg(long, help = "Updated title")]
     title: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated objective")]
     objective: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated workstream status")]
     status: Option<WorkstreamStatusArg>,
-    #[arg(long)]
+    #[arg(long, help = "Updated priority label")]
     priority: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated TT home directory override")]
     tt_home: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated SQLite home directory override")]
     sqlite_home: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated listen URL override")]
     listen_url: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated transport kind")]
     transport_kind: Option<WorkstreamTransportKindArg>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated app-server policy")]
     app_server_policy: Option<WorkstreamAppServerPolicyArg>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated execution connection mode")]
     connection_mode: Option<WorkstreamExecutionConnectionModeArg>,
-    #[arg(long)]
+    #[arg(long, help = "Clear any execution-scope override")]
     clear_execution_scope: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkunitCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Parent workstream id or slug")]
     workstream: String,
-    #[arg(long)]
+    #[arg(long, help = "Work unit title")]
     title: String,
-    #[arg(long)]
+    #[arg(long, help = "Work unit task description")]
     task: String,
-    #[arg(long = "dependency")]
+    #[arg(long = "dependency", help = "Dependent work unit ids")]
     dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 struct WorkunitListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Optional workstream filter")]
     workstream: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkunitRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id or slug to inspect")]
     workunit: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct WorkunitEditArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id or slug to edit")]
     workunit: String,
-    #[arg(long)]
+    #[arg(long, help = "Updated title")]
     title: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated task description")]
     task: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated work unit status")]
     status: Option<WorkUnitStatusArg>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 struct TrackedThreadListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id to list tracked threads for")]
     workunit: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TrackedThreadRefArgs {
-    #[arg(long = "tracked-thread")]
+    #[arg(long = "tracked-thread", help = "Tracked-thread id to inspect")]
     tracked_thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional request note for the operation")]
     request_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TrackedThreadCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Parent work unit id")]
     workunit: String,
-    #[arg(long)]
+    #[arg(long, help = "Tracked-thread title")]
     title: String,
-    #[arg(long = "root-dir")]
+    #[arg(long = "root-dir", help = "Root directory for the tracked thread")]
     root_dir: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional thread notes")]
     notes: Option<String>,
-    #[arg(long = "upstream-thread")]
+    #[arg(long = "upstream-thread", help = "Optional upstream thread id")]
     upstream_thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model override")]
     model: Option<String>,
     #[command(flatten)]
     workspace: TrackedThreadWorkspaceArgs,
@@ -911,19 +1018,19 @@ struct TrackedThreadCreateArgs {
 
 #[derive(Debug, Clone, Args)]
 struct TrackedThreadEditArgs {
-    #[arg(long = "tracked-thread")]
+    #[arg(long = "tracked-thread", help = "Tracked-thread id to edit")]
     tracked_thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Updated title")]
     title: Option<String>,
-    #[arg(long = "root-dir")]
+    #[arg(long = "root-dir", help = "Updated root directory")]
     root_dir: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Updated thread notes")]
     notes: Option<String>,
-    #[arg(long = "upstream-thread")]
+    #[arg(long = "upstream-thread", help = "Updated upstream thread id")]
     upstream_thread: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Updated binding state")]
     binding_state: Option<TrackedThreadBindingStateArg>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model override")]
     model: Option<String>,
     #[command(flatten)]
     workspace: TrackedThreadWorkspaceArgs,
@@ -931,61 +1038,69 @@ struct TrackedThreadEditArgs {
 
 #[derive(Debug, Clone, Args, Default)]
 struct TrackedThreadWorkspaceArgs {
-    #[arg(long = "workspace-repository-root")]
+    #[arg(long = "workspace-repository-root", help = "Workspace repository root")]
     repository_root: Option<String>,
-    #[arg(long = "workspace-worktree-path")]
+    #[arg(long = "workspace-worktree-path", help = "Workspace worktree path")]
     worktree_path: Option<String>,
-    #[arg(long = "workspace-branch-name")]
+    #[arg(long = "workspace-branch-name", help = "Workspace branch name")]
     branch_name: Option<String>,
-    #[arg(long = "workspace-base-ref")]
+    #[arg(long = "workspace-base-ref", help = "Workspace base ref")]
     base_ref: Option<String>,
-    #[arg(long = "workspace-base-commit")]
+    #[arg(long = "workspace-base-commit", help = "Workspace base commit")]
     base_commit: Option<String>,
-    #[arg(long = "workspace-landing-target")]
+    #[arg(long = "workspace-landing-target", help = "Workspace landing target")]
     landing_target: Option<String>,
-    #[arg(long = "workspace-strategy", value_enum)]
+    #[arg(long = "workspace-strategy", value_enum, help = "Workspace strategy")]
     strategy: Option<TrackedThreadWorkspaceStrategyArg>,
-    #[arg(long = "workspace-landing-policy", value_enum)]
+    #[arg(long = "workspace-landing-policy", value_enum, help = "Workspace landing policy")]
     landing_policy: Option<TrackedThreadWorkspaceLandingPolicyArg>,
-    #[arg(long = "workspace-sync-policy", value_enum)]
+    #[arg(long = "workspace-sync-policy", value_enum, help = "Workspace sync policy")]
     sync_policy: Option<TrackedThreadWorkspaceSyncPolicyArg>,
-    #[arg(long = "workspace-cleanup-policy", value_enum)]
+    #[arg(long = "workspace-cleanup-policy", value_enum, help = "Workspace cleanup policy")]
     cleanup_policy: Option<TrackedThreadWorkspaceCleanupPolicyArg>,
-    #[arg(long = "workspace-status", value_enum)]
+    #[arg(long = "workspace-status", value_enum, help = "Workspace status")]
     status: Option<TrackedThreadWorkspaceStatusArg>,
-    #[arg(long = "workspace-last-reported-head-commit")]
+    #[arg(
+        long = "workspace-last-reported-head-commit",
+        help = "Last head commit reported for the workspace"
+    )]
     last_reported_head_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionRefArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to inspect")]
     session: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Optional workstream filter")]
     workstream: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Include closed planning sessions")]
     include_closed: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionSummaryArgs {
-    #[arg(long)]
+    #[arg(long, help = "Objective for the planning session")]
     objective: String,
-    #[arg(long = "requirement")]
+    #[arg(long = "requirement", help = "Planning session requirements")]
     requirements: Vec<String>,
-    #[arg(long = "constraint")]
+    #[arg(long = "constraint", help = "Planning session constraints")]
     constraints: Vec<String>,
-    #[arg(long = "non-goal")]
+    #[arg(long = "non-goal", help = "Planning session non-goals")]
     non_goals: Vec<String>,
-    #[arg(long = "open-question")]
+    #[arg(long = "open-question", help = "Open questions that still need answers")]
     open_questions: Vec<String>,
-    #[arg(long, value_enum, default_value_t = PlanningSessionResearchStatusArg::NotRequested)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = PlanningSessionResearchStatusArg::NotRequested,
+        help = "Research status for the planning session"
+    )]
     research_status: PlanningSessionResearchStatusArg,
-    #[arg(long)]
+    #[arg(long, help = "Draft plan summary")]
     draft_plan_summary: Option<String>,
     #[arg(
         long,
@@ -997,229 +1112,240 @@ struct PlanningSessionSummaryArgs {
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workstream id to create the session under")]
     workstream: String,
-    #[arg(long = "planning-thread")]
+    #[arg(long = "planning-thread", help = "Optional planning thread id")]
     planning_thread_id: Option<String>,
     #[command(flatten)]
     summary: PlanningSessionSummaryArgs,
-    #[arg(long)]
+    #[arg(long, help = "Who created the session")]
     created_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional request note")]
     request_note: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model override")]
     model: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional working directory")]
     cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionUpdateSummaryArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to update")]
     session: String,
     #[command(flatten)]
     summary: PlanningSessionSummaryArgs,
-    #[arg(long)]
+    #[arg(long, help = "Who updated the session")]
     updated_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional update note")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionRequestSupervisorContextArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to request context for")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the context")]
     requested_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional request note")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionRequestResearchArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to request research for")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Worker to assign research to")]
     worker: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional worker kind")]
     worker_kind: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model override")]
     model: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional working directory")]
     cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the research")]
     requested_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional research request note")]
     request_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionMarkReadyForReviewArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to mark ready")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Who marked the session ready")]
     updated_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional readiness note")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionAbortArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to abort")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Who aborted the session")]
     updated_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional abort note")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionApproveArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to approve")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Who approved the session")]
     approved_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionRejectArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to reject")]
     session: String,
-    #[arg(long)]
+    #[arg(long, help = "Who rejected the session")]
     rejected_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct PlanningSessionSupersedeArgs {
-    #[arg(long = "session")]
+    #[arg(long = "session", help = "Planning session id to supersede")]
     session: String,
-    #[arg(long = "superseded-by-session")]
+    #[arg(
+        long = "superseded-by-session",
+        help = "Replacement planning session id"
+    )]
     superseded_by_session: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who superseded the session")]
     updated_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional supersede note")]
     note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct AssignmentStartArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id to start the assignment for")]
     workunit: String,
-    #[arg(long)]
+    #[arg(long, help = "Worker to assign")]
     worker: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional assignment instructions")]
     instructions: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worker kind")]
     worker_kind: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional working directory")]
     cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model override")]
     model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct AssignmentRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Assignment id to inspect")]
     assignment: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ReportRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Report id to inspect")]
     report: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ProposalRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Proposal id to inspect")]
     proposal: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ProposalArtifactExportArgs {
-    #[arg(long)]
+    #[arg(long, help = "Proposal id to export")]
     proposal: String,
-    #[arg(long, value_enum, default_value_t = ProposalArtifactExportFormatArg::Json)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ProposalArtifactExportFormatArg::Json,
+        help = "Export format for the proposal artifact"
+    )]
     format: ProposalArtifactExportFormatArg,
-    #[arg(long)]
+    #[arg(long, help = "Optional output path")]
     output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ProposalCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id to create a proposal for")]
     workunit: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional linked report id")]
     report: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional creation note")]
     note: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the proposal")]
     requested_by: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Supersede open proposals for the same work unit")]
     supersede_open: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ProposalApproveArgs {
-    #[arg(long)]
+    #[arg(long, help = "Proposal id to approve")]
     proposal: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who reviewed the proposal")]
     reviewed_by: Option<String>,
-    #[arg(long = "type", value_enum)]
+    #[arg(long = "type", value_enum, help = "Decision type to apply")]
     decision_type: Option<DecisionTypeArg>,
-    #[arg(long)]
+    #[arg(long, help = "Optional rationale")]
     rationale: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Worker to assign")]
     worker: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worker kind")]
     worker_kind: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional objective override")]
     objective: Option<String>,
-    #[arg(long = "instruction")]
+    #[arg(long = "instruction", help = "Worker instruction to include")]
     instructions: Vec<String>,
-    #[arg(long = "acceptance")]
+    #[arg(long = "acceptance", help = "Acceptance criteria to include")]
     acceptance_criteria: Vec<String>,
-    #[arg(long = "stop-condition")]
+    #[arg(long = "stop-condition", help = "Stop conditions to include")]
     stop_conditions: Vec<String>,
-    #[arg(long = "expected-report-field")]
+    #[arg(
+        long = "expected-report-field",
+        help = "Expected report fields to validate"
+    )]
     expected_report_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct ProposalRejectArgs {
-    #[arg(long)]
+    #[arg(long, help = "Proposal id to reject")]
     proposal: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who reviewed the proposal")]
     reviewed_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 struct TTDecisionFilterArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to filter by")]
     thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Assignment id to filter by")]
     assignment: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Workstream id to filter by")]
     workstream: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Work unit id to filter by")]
     workunit: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Supervisor id to filter by")]
     supervisor: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Decision status to filter by")]
     status: Option<TTDecisionStatusArg>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Decision kind to filter by")]
     kind: Option<TTDecisionKindArg>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Include superseded decisions")]
     include_superseded: bool,
-    #[arg(long)]
+    #[arg(long, help = "Maximum number of decisions to return")]
     limit: Option<usize>,
 }
 
@@ -1227,7 +1353,7 @@ struct TTDecisionFilterArgs {
 struct TTDecisionListArgs {
     #[command(flatten)]
     filters: TTDecisionFilterArgs,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Include closed decisions")]
     include_closed: bool,
 }
 
@@ -1239,85 +1365,85 @@ struct TTDecisionQueueArgs {
 
 #[derive(Debug, Clone, Args, Default)]
 struct TTDecisionHistoryArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to inspect")]
     thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Assignment id to inspect")]
     assignment: Option<String>,
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, help = "Include superseded decisions")]
     include_superseded: bool,
-    #[arg(long)]
+    #[arg(long, help = "Maximum number of decisions to return")]
     limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionRefArgs {
-    #[arg(long)]
+    #[arg(long, help = "Decision id to inspect")]
     decision: String,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionProposeSteerArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to attach the steer proposal to")]
     thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Steer proposal text")]
     text: String,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the steer proposal")]
     requested_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional rationale note")]
     rationale_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionReplacePendingSteerArgs {
-    #[arg(long)]
+    #[arg(long, help = "Decision id to replace")]
     decision: String,
-    #[arg(long)]
+    #[arg(long, help = "Replacement steer proposal text")]
     text: String,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the replacement")]
     requested_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional rationale note")]
     rationale_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionRecordNoActionArgs {
-    #[arg(long)]
+    #[arg(long, help = "Decision id to record as no action")]
     decision: String,
-    #[arg(long)]
+    #[arg(long, help = "Who reviewed the decision")]
     reviewed_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionManualRefreshArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to refresh")]
     thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Assignment id to refresh")]
     assignment: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who requested the refresh")]
     requested_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional rationale note")]
     rationale_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionApproveArgs {
-    #[arg(long)]
+    #[arg(long, help = "Decision id to approve")]
     decision: String,
-    #[arg(long)]
+    #[arg(long, help = "Who reviewed the decision")]
     reviewed_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 struct TTDecisionRejectArgs {
-    #[arg(long)]
+    #[arg(long, help = "Decision id to reject")]
     decision: String,
-    #[arg(long)]
+    #[arg(long, help = "Who reviewed the decision")]
     reviewed_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review note")]
     review_note: Option<String>,
 }
 
@@ -1702,19 +1828,19 @@ impl From<TTDecisionKindArg> for tt_core::SupervisorTurnDecisionKind {
 
 #[derive(Debug, Clone, Args)]
 struct DecisionApplyArgs {
-    #[arg(long)]
+    #[arg(long, help = "Work unit id to apply the decision to")]
     workunit: String,
-    #[arg(long)]
+    #[arg(long, help = "Rationale for the decision")]
     rationale: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional linked report id")]
     report: Option<String>,
-    #[arg(long = "type", value_enum)]
+    #[arg(long = "type", value_enum, help = "Decision type to apply")]
     decision_type: DecisionTypeArg,
-    #[arg(long)]
+    #[arg(long, help = "Optional instructions for the decision")]
     instructions: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worker to route to")]
     worker: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worker kind")]
     worker_kind: Option<String>,
 }
 

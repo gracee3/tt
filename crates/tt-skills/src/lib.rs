@@ -41,65 +41,86 @@ impl SkillOutcome {
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum SkillCommand {
+    /// Run an agent lifecycle command.
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Run an i3/window-manager command.
     I3 {
         #[command(subcommand)]
         command: I3Command,
     },
+    /// Run a TT lifecycle command.
     TT {
         #[command(subcommand)]
         command: TTCommand,
     },
+    /// Run a process management command.
     Process {
         #[command(subcommand)]
         command: ProcessCommand,
     },
+    /// Run a managed-service command.
     Services {
         #[command(subcommand)]
         command: ServicesCommand,
     },
+    /// Run a git command.
     Git {
         #[command(subcommand)]
         command: GitCommand,
     },
+    /// Apply a snapshot-scoped skill patch.
     Apply(SkillApplyArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum AgentCommand {
+    /// Spawn an agent thread.
     Spawn(AgentSpawnArgs),
+    /// Inspect agent state.
     Inspect(AgentInspectArgs),
+    /// Resume an agent thread.
     Resume(ResumeArgs),
+    /// Retire an agent thread.
     Retire(AgentRetireArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum I3Command {
+    /// Report i3/sway status.
     Status(I3StatusArgs),
+    /// Attach to the current i3/sway session.
     Attach(I3AttachArgs),
+    /// Focus a workspace.
     Focus(I3FocusArgs),
+    /// Inspect i3/sway workspaces.
     Workspace {
         #[command(subcommand)]
         command: I3WorkspaceCommand,
     },
+    /// Inspect i3/sway windows.
     Window {
         #[command(subcommand)]
         command: I3WindowCommand,
     },
+    /// Send a window-manager message.
     Message(I3MessageArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum TTCommand {
+    /// Show TT status.
     Status(TTStatusArgs),
+    /// Spawn a TT thread.
     Spawn(TTSpawnArgs),
+    /// Resume a TT thread.
     Resume(ResumeArgs),
+    /// Manage a TT app-server instance.
     AppServer {
         #[command(subcommand)]
         command: AppServerCommand,
@@ -109,43 +130,63 @@ pub enum TTCommand {
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum AppServerCommand {
+    /// Show app-server status.
     Status(AppServerNameArgs),
+    /// Start an app-server instance.
     Start(AppServerNameArgs),
+    /// Stop an app-server instance.
     Stop(AppServerNameArgs),
+    /// Restart an app-server instance.
     Restart(AppServerNameArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum ProcessCommand {
+    /// Show process status.
     Status(ProcessTargetArgs),
+    /// Inspect a process.
     Inspect(ProcessTargetArgs),
+    /// Start a process.
     Start(ProcessStartArgs),
+    /// Stop a process.
     Stop(ProcessTargetArgs),
+    /// Restart a process.
     Restart(ProcessStartArgs),
+    /// Send a signal to a process.
     Signal(ProcessSignalArgs),
+    /// Show the process tree.
     Tree(ProcessTargetArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum ServicesCommand {
+    /// Show managed-service status.
     Status(ManagedServiceArgs),
+    /// Inspect a managed service.
     Inspect(ManagedServiceArgs),
+    /// Start a managed service.
     Start(ManagedServiceArgs),
+    /// Stop a managed service.
     Stop(ManagedServiceArgs),
+    /// Restart a managed service.
     Restart(ManagedServiceArgs),
+    /// Reload a managed service.
     Reload(ManagedServiceArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum GitCommand {
+    /// Show repository status.
     Status(GitRepoArgs),
+    /// Inspect git branches.
     Branch {
         #[command(subcommand)]
         command: GitBranchCommand,
     },
+    /// Inspect git worktrees.
     Worktree {
         #[command(subcommand)]
         command: GitWorktreeCommand,
@@ -155,31 +196,42 @@ pub enum GitCommand {
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum I3WorkspaceCommand {
+    /// Focus a workspace.
     Focus(I3WorkspaceArgs),
+    /// Move a workspace.
     Move(I3WorkspaceArgs),
+    /// List workspaces.
     List(I3ListArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum I3WindowCommand {
+    /// Focus a window.
     Focus(I3WindowArgs),
+    /// Move a window.
     Move(I3WindowMoveArgs),
+    /// Close a window.
     Close(I3WindowArgs),
+    /// Inspect a window.
     Info(I3WindowArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum GitBranchCommand {
+    /// Show the current branch.
     Current(GitRepoArgs),
+    /// List branches.
     List(GitRepoArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum GitWorktreeCommand {
+    /// Show the current worktree.
     Current(GitRepoArgs),
+    /// List worktrees.
     List(GitRepoArgs),
 }
 
@@ -192,66 +244,75 @@ pub enum ManagedServiceKind {
 
 #[derive(Debug, Clone, Args)]
 pub struct AgentSpawnArgs {
-    #[arg(default_value = "agent")]
+    #[arg(default_value = "agent", help = "Role name for the spawned agent")]
     pub role: String,
-    #[arg(long)]
+    #[arg(long, help = "Existing workstream to attach the agent to")]
     pub workstream: Option<String>,
-    #[arg(long = "new-workstream")]
+    #[arg(
+        long = "new-workstream",
+        help = "Create a new workstream for the agent"
+    )]
     pub new_workstream: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Repository root to bind the agent to")]
     pub repo_root: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Spawn the agent without a visible UI")]
     pub headless: bool,
-    #[arg(long)]
+    #[arg(long, help = "Model to use for the agent")]
     pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct TTSpawnArgs {
+    /// Role name for the spawned TT thread.
     pub role: String,
-    #[arg(long)]
+    #[arg(long, help = "Existing workstream to attach the TT thread to")]
     pub workstream: Option<String>,
-    #[arg(long = "new-workstream")]
+    #[arg(
+        long = "new-workstream",
+        help = "Create a new workstream for the TT thread"
+    )]
     pub new_workstream: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Repository root to bind the TT thread to")]
     pub repo_root: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Spawn the TT thread without a visible UI")]
     pub headless: bool,
-    #[arg(long)]
+    #[arg(long, help = "Model to use for the TT thread")]
     pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SkillApplyArgs {
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot id to apply the skill against")]
     pub snapshot_id: String,
-    #[arg(long = "skill")]
+    #[arg(long = "skill", help = "Skill id to apply")]
     pub skills: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional output path for generated artifacts")]
     pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ResumeArgs {
+    /// Thread id to resume.
     pub thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Working directory to resume in")]
     pub cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Model to use while resuming")]
     pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 pub struct AgentInspectArgs {
-    #[arg(long)]
+    #[arg(long, help = "Thread id to inspect")]
     pub thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Workstream id to inspect")]
     pub workstream: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct AgentRetireArgs {
+    /// Thread id to retire.
     pub thread: String,
-    #[arg(long)]
+    #[arg(long, help = "Optional retirement note")]
     pub note: Option<String>,
 }
 
@@ -263,33 +324,33 @@ pub struct I3AttachArgs {}
 
 #[derive(Debug, Clone, Args, Default)]
 pub struct I3FocusArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workspace to focus")]
     pub workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 pub struct I3WorkspaceArgs {
-    #[arg(long)]
+    #[arg(long, help = "Workspace to operate on")]
     pub workspace: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct I3WindowArgs {
-    #[arg(long)]
+    #[arg(long, help = "Window criteria used to select the target")]
     pub criteria: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct I3WindowMoveArgs {
-    #[arg(long)]
+    #[arg(long, help = "Window criteria used to select the target")]
     pub criteria: String,
-    #[arg(long)]
+    #[arg(long, help = "Workspace to move the window to")]
     pub workspace: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct I3MessageArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, help = "Message payload to send to i3/sway")]
     pub message: Vec<String>,
 }
 
@@ -298,51 +359,55 @@ pub struct TTStatusArgs {}
 
 #[derive(Debug, Clone, Args)]
 pub struct AppServerNameArgs {
-    #[arg(default_value = "default")]
+    #[arg(default_value = "default", help = "Named app-server instance")]
     pub name: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ProcessTargetArgs {
-    #[arg(long)]
+    #[arg(long, help = "Process id to target")]
     pub pid: Option<u32>,
-    #[arg(long)]
+    #[arg(long, help = "Process name to target")]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ProcessStartArgs {
-    #[arg(long)]
+    #[arg(long, help = "Process id to start or restart")]
     pub pid: Option<u32>,
-    #[arg(long)]
+    #[arg(long, help = "Process name to start or restart")]
     pub name: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Working directory for the process")]
     pub cwd: Option<PathBuf>,
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        help = "Command to execute"
+    )]
     pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ProcessSignalArgs {
-    #[arg(long)]
+    #[arg(long, help = "Process id to signal")]
     pub pid: Option<u32>,
-    #[arg(long)]
+    #[arg(long, help = "Process name to signal")]
     pub name: Option<String>,
-    #[arg(long, default_value = "TERM")]
+    #[arg(long, default_value = "TERM", help = "Signal name to send")]
     pub signal: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ManagedServiceArgs {
-    #[arg(value_enum)]
+    #[arg(value_enum, help = "Managed service to operate on")]
     pub service: ManagedServiceKind,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct GitRepoArgs {
-    #[arg(long)]
+    #[arg(long, help = "Repository root to inspect")]
     pub repo_root: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Worktree path to inspect")]
     pub worktree_path: Option<PathBuf>,
 }
 

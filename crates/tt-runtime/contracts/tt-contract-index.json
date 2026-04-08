@@ -1,7 +1,7 @@
 {
   "source": {
     "tt_repo_root": "/home/emmy/openai/tt",
-    "tt_commit": "437b5edb84830413bdaf2c00d3be602031c88337"
+    "tt_commit": "94f2fc371b1c224ac625868f2cbbf9e54d1aecda"
   },
   "config_paths": [
     "agents",

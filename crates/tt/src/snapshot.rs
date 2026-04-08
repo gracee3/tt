@@ -20,27 +20,27 @@ use ttd::TTIpcClient;
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotScopeArgs {
-    #[arg(long)]
+    #[arg(long, help = "Lane label to scope the snapshot operation")]
     pub lane: String,
-    #[arg(long)]
+    #[arg(long, help = "Repository to scope the snapshot operation")]
     pub repo: String,
-    #[arg(long)]
+    #[arg(long, help = "Workspace to scope the snapshot operation")]
     pub workspace: String,
 }
 
 #[derive(Debug, Clone, Args, Default)]
 pub struct SnapshotSelectionArgs {
-    #[arg(long = "include-turn-range")]
+    #[arg(long = "include-turn-range", help = "Turn range to include")]
     pub include_turn_range: Vec<String>,
-    #[arg(long = "exclude-turn-range")]
+    #[arg(long = "exclude-turn-range", help = "Turn range to exclude")]
     pub exclude_turn_range: Vec<String>,
-    #[arg(long = "include-turn")]
+    #[arg(long = "include-turn", help = "Turn id to include")]
     pub include_turn: Vec<String>,
-    #[arg(long = "exclude-turn")]
+    #[arg(long = "exclude-turn", help = "Turn id to exclude")]
     pub exclude_turn: Vec<String>,
-    #[arg(long = "pin-turn")]
+    #[arg(long = "pin-turn", help = "Turn id to pin")]
     pub pin_turn: Vec<String>,
-    #[arg(long = "pin-fact")]
+    #[arg(long = "pin-fact", help = "Fact to pin into the snapshot")]
     pub pin_fact: Vec<String>,
 }
 
@@ -48,139 +48,139 @@ pub struct SnapshotSelectionArgs {
 pub struct SnapshotCreateArgs {
     #[command(flatten)]
     pub scope: SnapshotScopeArgs,
-    #[arg(long)]
+    #[arg(long, help = "Thread id to capture")]
     pub thread: String,
     #[command(flatten)]
     pub selection: SnapshotSelectionArgs,
-    #[arg(long)]
+    #[arg(long, help = "Snapshot summary")]
     pub summary: Option<String>,
-    #[arg(long = "skill")]
+    #[arg(long = "skill", help = "Skill id to include")]
     pub skills: Vec<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the snapshot")]
     pub tags: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = "Who created the snapshot")]
     pub created_by: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional note for the snapshot")]
     pub note: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional cwd used to capture the snapshot")]
     pub cwd: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Optional worktree path used for capture")]
     pub worktree: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Optional commit id used for capture")]
     pub commit: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional branch name used for capture")]
     pub branch: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional model used for capture")]
     pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotForkArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Snapshot id to fork from")]
     pub from_snapshot: String,
-    #[arg(long = "created-by")]
+    #[arg(long = "created-by", help = "Who created the fork")]
     pub created_by: Option<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the fork")]
     pub tags: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional fork note")]
     pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotRestoreArgs {
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot id to restore")]
     pub snapshot_id: String,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Bind the restored snapshot to the workspace")]
     pub bind: bool,
-    #[arg(long)]
+    #[arg(long, help = "Optional output path for the restored artifact")]
     pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotDiffArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Snapshot id to diff from")]
     pub from_snapshot: String,
-    #[arg(long = "to")]
+    #[arg(long = "to", help = "Snapshot id to diff to")]
     pub to_snapshot: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotPruneArgs {
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot ids to prune")]
     pub snapshots: Vec<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Force prune even when references remain")]
     pub force: bool,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotListArgs {
-    #[arg(long)]
+    #[arg(long, help = "Optional lane filter")]
     pub lane: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional repository filter")]
     pub repo: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional workspace filter")]
     pub workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SnapshotGetArgs {
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot id to inspect")]
     pub snapshot_id: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ContextIncludeArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Source snapshot id")]
     pub from_snapshot: String,
     #[command(flatten)]
     pub selection: SnapshotSelectionArgs,
-    #[arg(long = "summary")]
+    #[arg(long = "summary", help = "Summary text to attach to the new snapshot")]
     pub summary: Option<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the new snapshot")]
     pub tags: Vec<String>,
-    #[arg(long = "created-by")]
+    #[arg(long = "created-by", help = "Who created the derived snapshot")]
     pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ContextExcludeArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Source snapshot id")]
     pub from_snapshot: String,
     #[command(flatten)]
     pub selection: SnapshotSelectionArgs,
-    #[arg(long = "summary")]
+    #[arg(long = "summary", help = "Summary text to attach to the new snapshot")]
     pub summary: Option<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the new snapshot")]
     pub tags: Vec<String>,
-    #[arg(long = "created-by")]
+    #[arg(long = "created-by", help = "Who created the derived snapshot")]
     pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ContextPinArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Source snapshot id")]
     pub from_snapshot: String,
-    #[arg(long = "pin-turn")]
+    #[arg(long = "pin-turn", help = "Turn id to pin")]
     pub pin_turn: Vec<String>,
-    #[arg(long = "pin-fact")]
+    #[arg(long = "pin-fact", help = "Fact to pin")]
     pub pin_fact: Vec<String>,
-    #[arg(long = "created-by")]
+    #[arg(long = "created-by", help = "Who created the derived snapshot")]
     pub created_by: Option<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the new snapshot")]
     pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ContextSummarizeArgs {
-    #[arg(long = "from")]
+    #[arg(long = "from", help = "Source snapshot id")]
     pub from_snapshot: String,
-    #[arg(long)]
+    #[arg(long, help = "Summary text to record")]
     pub summary: String,
-    #[arg(long = "source-turn")]
+    #[arg(long = "source-turn", help = "Turn id used as summary source")]
     pub source_turn: Vec<String>,
-    #[arg(long = "created-by")]
+    #[arg(long = "created-by", help = "Who created the derived snapshot")]
     pub created_by: Option<String>,
-    #[arg(long = "tag")]
+    #[arg(long = "tag", help = "Tag to attach to the new snapshot")]
     pub tags: Vec<String>,
 }
 
@@ -188,17 +188,17 @@ pub struct ContextSummarizeArgs {
 pub struct WorkspaceBindArgs {
     #[command(flatten)]
     pub scope: SnapshotScopeArgs,
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot id to bind")]
     pub snapshot_id: Option<String>,
-    #[arg(long = "commit")]
+    #[arg(long = "commit", help = "Commit id to bind")]
     pub commit: Option<String>,
-    #[arg(long = "worktree")]
+    #[arg(long = "worktree", help = "Worktree path to bind")]
     pub worktree: Option<PathBuf>,
-    #[arg(long = "branch")]
+    #[arg(long = "branch", help = "Branch name to bind")]
     pub branch: Option<String>,
-    #[arg(long = "thread")]
+    #[arg(long = "thread", help = "Thread id to bind")]
     pub thread: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Mark the binding as canonical")]
     pub canonical: bool,
 }
 
@@ -206,40 +206,54 @@ pub struct WorkspaceBindArgs {
 pub struct WorkspacePromoteArgs {
     #[command(flatten)]
     pub scope: SnapshotScopeArgs,
-    #[arg(long = "snapshot")]
+    #[arg(long = "snapshot", help = "Snapshot id to promote")]
     pub snapshot_id: String,
-    #[arg(long = "commit")]
+    #[arg(long = "commit", help = "Commit id to promote")]
     pub commit: Option<String>,
-    #[arg(long = "worktree")]
+    #[arg(long = "worktree", help = "Worktree path to promote")]
     pub worktree: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum SnapshotCommand {
+    /// Create a snapshot.
     Create(SnapshotCreateArgs),
+    /// Fork a snapshot.
     Fork(SnapshotForkArgs),
+    /// Restore a snapshot.
     Restore(SnapshotRestoreArgs),
+    /// Diff two snapshots.
     Diff(SnapshotDiffArgs),
+    /// Prune snapshots.
     Prune(SnapshotPruneArgs),
+    /// Compact a noisy span into a summary snapshot.
     Compact(ContextSummarizeArgs),
+    /// List snapshots.
     List(SnapshotListArgs),
+    /// Get a snapshot.
     Get(SnapshotGetArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum ContextCommand {
+    /// Include turns or ranges into the next snapshot.
     Include(ContextIncludeArgs),
+    /// Exclude turns or ranges from the next snapshot.
     Exclude(ContextExcludeArgs),
+    /// Pin facts and turns into the next snapshot.
     Pin(ContextPinArgs),
+    /// Summarize a span into a derived snapshot.
     Summarize(ContextSummarizeArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum WorkspaceCommand {
+    /// Bind snapshot state to a workspace.
     Bind(WorkspaceBindArgs),
+    /// Promote a workspace binding to canonical state.
     Promote(WorkspacePromoteArgs),
 }
 
