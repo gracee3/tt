@@ -10,7 +10,9 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::de::DeserializeOwned;
-use tt_daemon::{DaemonRequest, DaemonResponse, request_for_cwd};
+use tt_daemon::{
+    request_for_cwd, DaemonRequest, DaemonResponse, ManagedProjectThreadAttachment,
+};
 use tt_domain as _;
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus,
@@ -106,6 +108,14 @@ pub enum ProjectFlowCommand {
         test_model: Option<String>,
         #[arg(long)]
         integration_model: Option<String>,
+    },
+    Spawn {
+        #[arg(long)]
+        role: Vec<String>,
+    },
+    Attach {
+        #[arg(long)]
+        binding: Vec<String>,
     },
 }
 
@@ -295,6 +305,18 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                 dev_model,
                 test_model,
                 integration_model,
+            },
+            ProjectFlowCommand::Spawn { role } => DaemonRequest::SpawnManagedProject {
+                cwd: cwd.to_path_buf(),
+                roles: if role.is_empty() {
+                    None
+                } else {
+                    Some(parse_thread_roles(&role)?)
+                },
+            },
+            ProjectFlowCommand::Attach { binding } => DaemonRequest::AttachManagedProject {
+                cwd: cwd.to_path_buf(),
+                bindings: parse_thread_bindings(&binding)?,
             },
         },
         Command::Codex { command } => match command {
@@ -702,9 +724,26 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
     ));
     output.push_str("\nRoles\n");
     output.push_str("-----\n");
+    let attached_roles = bootstrap
+        .roles
+        .iter()
+        .filter(|role| role.thread_id.is_some())
+        .count();
+    output.push_str(&format!(
+        "state: {} ({}/{})\n\n",
+        if attached_roles == 0 {
+            "scaffolded"
+        } else if attached_roles == bootstrap.roles.len() {
+            "attached"
+        } else {
+            "partial"
+        },
+        attached_roles,
+        bootstrap.roles.len()
+    ));
     for role in &bootstrap.roles {
         output.push_str(&format!(
-            "{} | work-unit={} | branch={} | worktree={} | agent={}\n",
+            "{} | work-unit={} | branch={} | worktree={} | agent={} | thread={} | workspace={}\n",
             role_name(role.role),
             role.work_unit.id,
             role.branch_name.as_deref().unwrap_or("<none>"),
@@ -712,7 +751,9 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string()),
-            role.agent_path.display()
+            role.agent_path.display(),
+            role.thread_id.as_deref().unwrap_or("<none>"),
+            role.workspace_binding_id.as_deref().unwrap_or("<none>"),
         ));
     }
     output
@@ -739,6 +780,29 @@ where
 {
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+}
+
+fn parse_thread_roles(values: &[String]) -> Result<Vec<ThreadRole>> {
+    values
+        .iter()
+        .map(|value| ThreadRole::from_str(value).map_err(|error| anyhow::anyhow!(error)))
+        .collect()
+}
+
+fn parse_thread_bindings(values: &[String]) -> Result<Vec<ManagedProjectThreadAttachment>> {
+    values
+        .iter()
+        .map(|value| {
+            let Some((role_name, thread_id)) = value.split_once('=') else {
+                anyhow::bail!("binding `{value}` must be formatted as role=thread_id");
+            };
+            Ok(ManagedProjectThreadAttachment {
+                role: ThreadRole::from_str(role_name)
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                thread_id: thread_id.to_string(),
+            })
+        })
+        .collect()
 }
 
 pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
@@ -804,6 +868,39 @@ mod tests {
                     command: ProjectCommand::List
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn parses_project_spawn_command() {
+        let cli = Cli::parse_from(["tt", "project", "spawn", "--role", "dev", "--role", "test"]);
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectFlowCommand::Spawn { ref role }
+            } if role == &vec!["dev".to_string(), "test".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_project_attach_command() {
+        let cli = Cli::parse_from([
+            "tt",
+            "project",
+            "attach",
+            "--binding",
+            "dev=thread-123",
+            "--binding",
+            "test=thread-456",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectFlowCommand::Attach { ref binding }
+            } if binding == &vec![
+                "dev=thread-123".to_string(),
+                "test=thread-456".to_string()
+            ]
         ));
     }
 

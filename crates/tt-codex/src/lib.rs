@@ -303,23 +303,26 @@ impl CodexRuntimeClient {
         model: Option<String>,
         ephemeral: bool,
     ) -> Result<CodexThreadRuntimeSnapshot> {
-        let cwd = cwd.display().to_string();
+        self.start_thread_with_params(protocol::ThreadStartParams {
+            cwd: Some(cwd.display().to_string()),
+            model,
+            sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
+            service_name: Some("tt".to_string()),
+            ephemeral: Some(ephemeral),
+            ..protocol::ThreadStartParams::default()
+        })
+    }
+
+    pub fn start_thread_with_params(
+        &self,
+        params: protocol::ThreadStartParams,
+    ) -> Result<CodexThreadRuntimeSnapshot> {
         let connection = Arc::clone(&self.connection);
         self.runtime.block_on(async {
             let mut connection = connection.lock().await;
             let request_id = connection.next_request_id();
             let response: protocol::ThreadStartResponse = connection
-                .request_typed(protocol::ClientRequest::ThreadStart {
-                    request_id,
-                    params: protocol::ThreadStartParams {
-                        cwd: Some(cwd),
-                        model,
-                        sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
-                        service_name: Some("tt".to_string()),
-                        ephemeral: Some(ephemeral),
-                        ..protocol::ThreadStartParams::default()
-                    },
-                })
+                .request_typed(protocol::ClientRequest::ThreadStart { request_id, params })
                 .await
                 .map_err(anyhow::Error::from)?;
             Ok(thread_to_snapshot(response.thread))

@@ -5,16 +5,19 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
     thread,
 };
+use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use clap as _;
+use codex_app_server_protocol as protocol;
 use serde::{Deserialize, Serialize};
 use tt_codex::{CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot};
 use tt_domain::{
@@ -204,6 +207,14 @@ pub enum DaemonRequest {
         test_model: Option<String>,
         integration_model: Option<String>,
     },
+    SpawnManagedProject {
+        cwd: PathBuf,
+        roles: Option<Vec<ThreadRole>>,
+    },
+    AttachManagedProject {
+        cwd: PathBuf,
+        bindings: Vec<ManagedProjectThreadAttachment>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +250,9 @@ pub struct ManagedProjectRoleBootstrap {
     pub model: Option<String>,
     pub branch_name: Option<String>,
     pub worktree_path: Option<PathBuf>,
+    pub thread_id: Option<String>,
+    pub thread_name: Option<String>,
+    pub workspace_binding_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +265,48 @@ pub struct ManagedProjectBootstrap {
     pub contract_path: PathBuf,
     pub codex_config_path: PathBuf,
     pub roles: Vec<ManagedProjectRoleBootstrap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectThreadAttachment {
+    pub role: ThreadRole,
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ManagedProjectManifest {
+    schema: String,
+    project_id: String,
+    slug: String,
+    title: String,
+    objective: String,
+    repo_root: String,
+    base_branch: String,
+    worktree_root: String,
+    contract_path: String,
+    codex_config_path: String,
+    roles: BTreeMap<String, ManagedProjectManifestRole>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ManagedProjectManifestRole {
+    work_unit_id: String,
+    agent_path: String,
+    model: Option<String>,
+    branch_name: Option<String>,
+    worktree_path: Option<String>,
+    thread_id: Option<String>,
+    thread_name: Option<String>,
+    workspace_binding_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ManagedAgentFile {
+    name: String,
+    description: String,
+    model: Option<String>,
+    sandbox_mode: String,
+    developer_instructions: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1118,18 +1174,16 @@ impl DaemonService {
         )?;
 
         let manifest_path = repo_root.join(".tt").join("managed-project.toml");
-        write_managed_file(
-            &manifest_path,
-            &render_project_manifest(
-                &project,
-                &repo_root,
-                &base_branch,
-                &worktree_root,
-                &contract_path,
-                &codex_config_path,
-                &[&director_role, &dev_role, &test_role, &integration_role],
-            ),
-        )?;
+        let manifest = build_managed_project_manifest(
+            &project,
+            &repo_root,
+            &base_branch,
+            &worktree_root,
+            &contract_path,
+            &codex_config_path,
+            &[&director_role, &dev_role, &test_role, &integration_role],
+        );
+        save_managed_project_manifest(&manifest_path, &manifest)?;
 
         Ok(ManagedProjectBootstrap {
             project,
@@ -1193,6 +1247,9 @@ impl DaemonService {
             model,
             branch_name,
             worktree_path,
+            thread_id: None,
+            thread_name: None,
+            workspace_binding_id: None,
         })
     }
 
@@ -1388,6 +1445,12 @@ impl DaemonService {
                 test_model,
                 integration_model,
             )?),
+            SpawnManagedProject { cwd, roles } => {
+                DaemonResponse::ManagedProject(self.spawn_managed_project(cwd, roles)?)
+            }
+            AttachManagedProject { cwd, bindings } => {
+                DaemonResponse::ManagedProject(self.attach_managed_project(cwd, bindings)?)
+            }
         })
     }
 
@@ -1593,7 +1656,7 @@ Base branch: `{base_branch}`\n\n\
     )
 }
 
-fn render_project_manifest(
+fn build_managed_project_manifest(
     project: &Project,
     repo_root: &Path,
     base_branch: &str,
@@ -1601,53 +1664,465 @@ fn render_project_manifest(
     contract_path: &Path,
     codex_config_path: &Path,
     roles: &[&ManagedProjectRoleBootstrap],
-) -> String {
-    let mut output = String::new();
-    output.push_str("schema = \"tt-managed-project-v1\"\n");
-    output.push_str(&format!("project_id = {:?}\n", project.id));
-    output.push_str(&format!("slug = {:?}\n", project.slug));
-    output.push_str(&format!("title = {:?}\n", project.title));
-    output.push_str(&format!("objective = {:?}\n", project.objective));
-    output.push_str(&format!(
-        "repo_root = {:?}\n",
-        repo_root.display().to_string()
-    ));
-    output.push_str(&format!("base_branch = {:?}\n", base_branch));
-    output.push_str(&format!(
-        "worktree_root = {:?}\n",
-        worktree_root.display().to_string()
-    ));
-    output.push_str(&format!(
-        "contract_path = {:?}\n",
-        contract_path.display().to_string()
-    ));
-    output.push_str(&format!(
-        "codex_config_path = {:?}\n\n",
-        codex_config_path.display().to_string()
-    ));
-    output.push_str("[roles]\n");
+) -> ManagedProjectManifest {
+    let mut role_map = BTreeMap::new();
     for role in roles {
-        output.push_str(&format!("[roles.{}]\n", role_slug(role.role)));
-        output.push_str(&format!("work_unit_id = {:?}\n", role.work_unit.id));
-        output.push_str(&format!(
-            "agent_path = {:?}\n",
-            role.agent_path.display().to_string()
-        ));
-        if let Some(model) = role.model.as_ref() {
-            output.push_str(&format!("model = {:?}\n", model));
-        }
-        if let Some(branch_name) = role.branch_name.as_ref() {
-            output.push_str(&format!("branch_name = {:?}\n", branch_name));
-        }
-        if let Some(worktree_path) = role.worktree_path.as_ref() {
-            output.push_str(&format!(
-                "worktree_path = {:?}\n",
-                worktree_path.display().to_string()
-            ));
-        }
-        output.push('\n');
+        role_map.insert(
+            role_slug(role.role).to_string(),
+            ManagedProjectManifestRole {
+                work_unit_id: role.work_unit.id.clone(),
+                agent_path: role.agent_path.display().to_string(),
+                model: role.model.clone(),
+                branch_name: role.branch_name.clone(),
+                worktree_path: role
+                    .worktree_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                thread_id: role.thread_id.clone(),
+                thread_name: role.thread_name.clone(),
+                workspace_binding_id: role.workspace_binding_id.clone(),
+            },
+        );
     }
-    output
+
+    ManagedProjectManifest {
+        schema: "tt-managed-project-v1".to_string(),
+        project_id: project.id.clone(),
+        slug: project.slug.clone(),
+        title: project.title.clone(),
+        objective: project.objective.clone(),
+        repo_root: repo_root.display().to_string(),
+        base_branch: base_branch.to_string(),
+        worktree_root: worktree_root.display().to_string(),
+        contract_path: contract_path.display().to_string(),
+        codex_config_path: codex_config_path.display().to_string(),
+        roles: role_map,
+    }
+}
+
+fn save_managed_project_manifest(path: &Path, manifest: &ManagedProjectManifest) -> Result<()> {
+    let contents = toml::to_string_pretty(manifest)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::read_to_string(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        _ => {
+            fs::write(path, contents)?;
+            Ok(())
+        }
+    }
+}
+
+fn load_managed_project_manifest(path: &Path) -> Result<ManagedProjectManifest> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    toml::from_str(&contents).with_context(|| format!("parse {}", path.display()))
+}
+
+fn managed_project_roles_in_order(
+    mut roles: Vec<ManagedProjectRoleBootstrap>,
+) -> Vec<ManagedProjectRoleBootstrap> {
+    roles.sort_by_key(|role| role_order_index(role.role));
+    roles
+}
+
+fn role_order_index(role: ThreadRole) -> usize {
+    match role {
+        ThreadRole::Director => 0,
+        ThreadRole::Develop => 1,
+        ThreadRole::Test => 2,
+        ThreadRole::Integrate => 3,
+        ThreadRole::Review => 4,
+        ThreadRole::Todo => 5,
+        ThreadRole::Chat => 6,
+        ThreadRole::Learn => 7,
+        ThreadRole::Handoff => 8,
+        ThreadRole::Custom => 9,
+    }
+}
+
+fn default_managed_project_roles() -> Vec<ThreadRole> {
+    vec![
+        ThreadRole::Director,
+        ThreadRole::Develop,
+        ThreadRole::Test,
+        ThreadRole::Integrate,
+    ]
+}
+
+fn managed_project_thread_binding_id(project_slug: &str, role: ThreadRole) -> String {
+    format!("{project_slug}:{}", role_slug(role))
+}
+
+fn managed_project_workspace_strategy(role: ThreadRole) -> WorkspaceStrategy {
+    match role {
+        ThreadRole::Director | ThreadRole::Review | ThreadRole::Todo | ThreadRole::Chat | ThreadRole::Learn | ThreadRole::Handoff | ThreadRole::Custom => WorkspaceStrategy::Shared,
+        ThreadRole::Develop | ThreadRole::Test | ThreadRole::Integrate => {
+            WorkspaceStrategy::DedicatedWorktree
+        }
+    }
+}
+
+fn managed_project_workspace_sync_policy(role: ThreadRole) -> WorkspaceSyncPolicy {
+    match role {
+        ThreadRole::Director | ThreadRole::Review | ThreadRole::Todo | ThreadRole::Chat | ThreadRole::Learn | ThreadRole::Handoff | ThreadRole::Custom => WorkspaceSyncPolicy::Manual,
+        ThreadRole::Develop => WorkspaceSyncPolicy::RebaseBeforeReview,
+        ThreadRole::Test | ThreadRole::Integrate => WorkspaceSyncPolicy::RebaseBeforeLanding,
+    }
+}
+
+fn managed_project_workspace_cleanup_policy(role: ThreadRole) -> WorkspaceCleanupPolicy {
+    match role {
+        ThreadRole::Director | ThreadRole::Review | ThreadRole::Todo | ThreadRole::Chat | ThreadRole::Learn | ThreadRole::Handoff | ThreadRole::Custom => WorkspaceCleanupPolicy::KeepForAudit,
+        ThreadRole::Develop | ThreadRole::Test | ThreadRole::Integrate => {
+            WorkspaceCleanupPolicy::PruneAfterLanding
+        }
+    }
+}
+
+fn parse_managed_project_sandbox_mode(raw: &str) -> Result<protocol::SandboxMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "read-only" | "readonly" => Ok(protocol::SandboxMode::ReadOnly),
+        "workspace-write" | "workspace_write" | "workspacewrite" => {
+            Ok(protocol::SandboxMode::WorkspaceWrite)
+        }
+        "danger-full-access" | "danger_full_access" | "dangerfullaccess" => {
+            Ok(protocol::SandboxMode::DangerFullAccess)
+        }
+        other => anyhow::bail!("unknown sandbox mode `{other}`"),
+    }
+}
+
+fn load_managed_agent_file(path: &Path) -> Result<ManagedAgentFile> {
+    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    toml::from_str(&contents).with_context(|| format!("parse {}", path.display()))
+}
+
+fn ordered_managed_project_roles(
+    roles: impl IntoIterator<Item = ManagedProjectRoleBootstrap>,
+) -> Vec<ManagedProjectRoleBootstrap> {
+    managed_project_roles_in_order(roles.into_iter().collect())
+}
+
+impl DaemonService {
+    fn managed_project_bootstrap_from_manifest(
+        &self,
+        manifest_path: &Path,
+        manifest: &ManagedProjectManifest,
+    ) -> Result<ManagedProjectBootstrap> {
+        let project = self
+            .get_project(&manifest.project_id)?
+            .ok_or_else(|| anyhow::anyhow!("managed project {} not found", manifest.project_id))?;
+        let mut roles = Vec::with_capacity(manifest.roles.len());
+        for (role_name, role_manifest) in &manifest.roles {
+            let role = ThreadRole::from_str(role_name)
+                .map_err(|error| anyhow::anyhow!(error))
+                .with_context(|| format!("parse managed project role `{role_name}`"))?;
+            roles.push(ManagedProjectRoleBootstrap {
+                role,
+                work_unit: self
+                    .get_work_unit(&role_manifest.work_unit_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "managed project work unit {} not found",
+                            role_manifest.work_unit_id
+                        )
+                    })?,
+                agent_path: PathBuf::from(&role_manifest.agent_path),
+                model: role_manifest.model.clone(),
+                branch_name: role_manifest.branch_name.clone(),
+                worktree_path: role_manifest.worktree_path.as_ref().map(PathBuf::from),
+                thread_id: role_manifest.thread_id.clone(),
+                thread_name: role_manifest.thread_name.clone(),
+                workspace_binding_id: role_manifest.workspace_binding_id.clone(),
+            });
+        }
+
+        Ok(ManagedProjectBootstrap {
+            project,
+            repo_root: PathBuf::from(&manifest.repo_root),
+            base_branch: manifest.base_branch.clone(),
+            worktree_root: PathBuf::from(&manifest.worktree_root),
+            manifest_path: manifest_path.to_path_buf(),
+            contract_path: PathBuf::from(&manifest.contract_path),
+            codex_config_path: PathBuf::from(&manifest.codex_config_path),
+            roles: ordered_managed_project_roles(roles),
+        })
+    }
+
+    fn spawn_managed_project(
+        &self,
+        cwd: impl AsRef<Path>,
+        roles: Option<Vec<ThreadRole>>,
+    ) -> Result<ManagedProjectBootstrap> {
+        let cwd = cwd.as_ref();
+        let Some(repository) = GitRepository::discover(cwd)? else {
+            anyhow::bail!("managed project spawn requires a git repository");
+        };
+        let repo_root = repository.repository_root.clone();
+        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest = load_managed_project_manifest(&manifest_path)?;
+        let mut bootstrap = self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
+        let selected_roles = roles.unwrap_or_else(default_managed_project_roles);
+
+        for role in selected_roles {
+            self.spawn_managed_project_role(&repository, &mut bootstrap, role)?;
+        }
+
+        let role_refs: Vec<_> = bootstrap.roles.iter().collect();
+        let manifest = build_managed_project_manifest(
+            &bootstrap.project,
+            &bootstrap.repo_root,
+            &bootstrap.base_branch,
+            &bootstrap.worktree_root,
+            &bootstrap.contract_path,
+            &bootstrap.codex_config_path,
+            &role_refs,
+        );
+        save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
+        Ok(bootstrap)
+    }
+
+    fn attach_managed_project(
+        &self,
+        cwd: impl AsRef<Path>,
+        bindings: Vec<ManagedProjectThreadAttachment>,
+    ) -> Result<ManagedProjectBootstrap> {
+        let cwd = cwd.as_ref();
+        let Some(repository) = GitRepository::discover(cwd)? else {
+            anyhow::bail!("managed project attach requires a git repository");
+        };
+        let repo_root = repository.repository_root.clone();
+        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest = load_managed_project_manifest(&manifest_path)?;
+        let mut bootstrap = self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
+
+        for attachment in bindings {
+            self.attach_managed_project_role(&repository, &mut bootstrap, attachment)?;
+        }
+
+        let role_refs: Vec<_> = bootstrap.roles.iter().collect();
+        let manifest = build_managed_project_manifest(
+            &bootstrap.project,
+            &bootstrap.repo_root,
+            &bootstrap.base_branch,
+            &bootstrap.worktree_root,
+            &bootstrap.contract_path,
+            &bootstrap.codex_config_path,
+            &role_refs,
+        );
+        save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
+        Ok(bootstrap)
+    }
+
+    fn spawn_managed_project_role(
+        &self,
+        repository: &GitRepository,
+        bootstrap: &mut ManagedProjectBootstrap,
+        role: ThreadRole,
+    ) -> Result<()> {
+        let role_index = bootstrap
+            .roles
+            .iter()
+            .position(|candidate| candidate.role == role)
+            .ok_or_else(|| anyhow::anyhow!("managed project role `{}` not found", role_slug(role)))?;
+        if bootstrap.roles[role_index].thread_id.is_some() {
+            anyhow::bail!(
+                "managed project role `{}` is already attached",
+                role_slug(role)
+            );
+        }
+
+        let role_bootstrap = bootstrap.roles[role_index].clone();
+        let agent_file = load_managed_agent_file(&role_bootstrap.agent_path)?;
+        let cwd = role_bootstrap
+            .worktree_path
+            .as_deref()
+            .unwrap_or(bootstrap.repo_root.as_path());
+        let thread = self.start_managed_project_thread(
+            cwd,
+            &bootstrap.project,
+            role,
+            &agent_file,
+        )?;
+        self.verify_thread_workspace(&role_bootstrap, &bootstrap.repo_root, &thread)?;
+        let updated = self.bind_managed_project_role(
+            repository,
+            bootstrap,
+            &role_bootstrap,
+            &thread,
+        )?;
+        bootstrap.roles[role_index] = updated;
+        Ok(())
+    }
+
+    fn attach_managed_project_role(
+        &self,
+        repository: &GitRepository,
+        bootstrap: &mut ManagedProjectBootstrap,
+        attachment: ManagedProjectThreadAttachment,
+    ) -> Result<()> {
+        let role = attachment.role;
+        let role_index = bootstrap
+            .roles
+            .iter()
+            .position(|candidate| candidate.role == role)
+            .ok_or_else(|| anyhow::anyhow!("managed project role `{}` not found", role_slug(role)))?;
+        let role_bootstrap = bootstrap.roles[role_index].clone();
+        if let Some(existing_thread_id) = role_bootstrap.thread_id.as_ref()
+            && existing_thread_id != &attachment.thread_id
+        {
+            anyhow::bail!(
+                "managed project role `{}` is already bound to thread `{}`",
+                role_slug(role),
+                existing_thread_id
+            );
+        }
+        let client = self.codex_runtime_client(bootstrap.repo_root.as_path())?;
+        let snapshot = client
+            .read_thread(&attachment.thread_id, false)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "codex thread `{}` not found for managed project role `{}`",
+                    attachment.thread_id,
+                    role_slug(role)
+                )
+            })?;
+        self.verify_thread_workspace(&role_bootstrap, &bootstrap.repo_root, &snapshot)?;
+        let updated = self.bind_managed_project_role(
+            repository,
+            bootstrap,
+            &role_bootstrap,
+            &snapshot,
+        )?;
+        bootstrap.roles[role_index] = updated;
+        Ok(())
+    }
+
+    fn start_managed_project_thread(
+        &self,
+        cwd: &Path,
+        project: &Project,
+        role: ThreadRole,
+        agent_file: &ManagedAgentFile,
+    ) -> Result<CodexThreadRuntimeSnapshot> {
+        let sandbox = parse_managed_project_sandbox_mode(&agent_file.sandbox_mode)?;
+        let client = self.codex_runtime_client(cwd)?;
+        client.start_thread_with_params(protocol::ThreadStartParams {
+            cwd: Some(cwd.display().to_string()),
+            model: agent_file.model.clone(),
+            sandbox: Some(sandbox),
+            service_name: Some("tt-managed-project".to_string()),
+            base_instructions: Some(format!(
+                "Managed TT project `{}` role `{}`. Follow `.tt/contracts/worker-contract.md` and stay inside the assigned scope.",
+                project.slug,
+                role_slug(role)
+            )),
+            developer_instructions: Some(agent_file.developer_instructions.clone()),
+            ephemeral: Some(false),
+            ..protocol::ThreadStartParams::default()
+        })
+    }
+
+    fn verify_thread_workspace(
+        &self,
+        role_bootstrap: &ManagedProjectRoleBootstrap,
+        repo_root: &Path,
+        snapshot: &CodexThreadRuntimeSnapshot,
+    ) -> Result<()> {
+        let observed = Path::new(&snapshot.cwd);
+        let expected = role_bootstrap
+            .worktree_path
+            .as_deref()
+            .unwrap_or(repo_root);
+        if observed != expected {
+            anyhow::bail!(
+                "thread `{}` is running in `{}` but role `{}` expects `{}`",
+                snapshot.thread_id,
+                observed.display(),
+                role_slug(role_bootstrap.role),
+                expected.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn bind_managed_project_role(
+        &self,
+        repository: &GitRepository,
+        bootstrap: &ManagedProjectBootstrap,
+        role_bootstrap: &ManagedProjectRoleBootstrap,
+        snapshot: &CodexThreadRuntimeSnapshot,
+    ) -> Result<ManagedProjectRoleBootstrap> {
+        let now = Utc::now();
+        let thread_binding = ThreadBinding {
+            codex_thread_id: snapshot.thread_id.clone(),
+            work_unit_id: Some(role_bootstrap.work_unit.id.clone()),
+            role: role_bootstrap.role,
+            status: ThreadBindingStatus::Bound,
+            notes: Some("managed-project attachment".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_thread_binding(&thread_binding)?;
+
+        let workspace_binding_id =
+            managed_project_thread_binding_id(&bootstrap.project.slug, role_bootstrap.role);
+        let workspace_binding = self.build_managed_project_workspace_binding(
+            repository,
+            bootstrap,
+            role_bootstrap,
+            snapshot,
+            &workspace_binding_id,
+        )?;
+        self.upsert_workspace_binding(&workspace_binding)?;
+
+        Ok(ManagedProjectRoleBootstrap {
+            thread_id: Some(snapshot.thread_id.clone()),
+            thread_name: snapshot.thread_name.clone(),
+            workspace_binding_id: Some(workspace_binding_id),
+            ..role_bootstrap.clone()
+        })
+    }
+
+    fn build_managed_project_workspace_binding(
+        &self,
+        repository: &GitRepository,
+        bootstrap: &ManagedProjectBootstrap,
+        role_bootstrap: &ManagedProjectRoleBootstrap,
+        snapshot: &CodexThreadRuntimeSnapshot,
+        id: &str,
+    ) -> Result<WorkspaceBinding> {
+        let inspect_repository = if let Some(worktree_path) = role_bootstrap.worktree_path.as_ref() {
+            GitRepository::discover(worktree_path)?
+                .ok_or_else(|| anyhow::anyhow!("managed project role worktree {} is not a git repository", worktree_path.display()))?
+                .inspect_repository()?
+        } else {
+            repository.inspect_repository()?
+        };
+        let base_commit = inspect_repository.current_head_commit.clone();
+        let status = workspace_status_from_git(&inspect_repository);
+        Ok(WorkspaceBinding {
+            id: id.to_string(),
+            codex_thread_id: snapshot.thread_id.clone(),
+            repo_root: bootstrap.repo_root.display().to_string(),
+            worktree_path: role_bootstrap
+                .worktree_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            branch_name: role_bootstrap.branch_name.clone(),
+            base_ref: Some(bootstrap.base_branch.clone()),
+            base_commit,
+            landing_target: Some(bootstrap.base_branch.clone()),
+            strategy: managed_project_workspace_strategy(role_bootstrap.role),
+            sync_policy: managed_project_workspace_sync_policy(role_bootstrap.role),
+            cleanup_policy: managed_project_workspace_cleanup_policy(role_bootstrap.role),
+            status,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+    }
 }
 
 fn ensure_role_worktree(
@@ -2090,6 +2565,56 @@ mod tests {
             .inspect_repository()
             .expect("inspect repo");
         assert!(inspection.worktrees.len() >= 4);
+    }
+
+    #[test]
+    fn managed_project_manifest_round_trips_thread_bindings() {
+        let dir = tempdir().expect("tempdir");
+        let project = Project {
+            id: "p-manifest".into(),
+            slug: "alpha".into(),
+            title: "Alpha".into(),
+            objective: "Ship".into(),
+            status: ProjectStatus::Active,
+            created_at: ts(),
+            updated_at: ts(),
+        };
+        let role = ManagedProjectRoleBootstrap {
+            role: ThreadRole::Develop,
+            work_unit: WorkUnit {
+                id: "wu-manifest".into(),
+                project_id: project.id.clone(),
+                slug: Some("dev".into()),
+                title: "Developer".into(),
+                task: "Implement".into(),
+                status: WorkUnitStatus::Ready,
+                created_at: ts(),
+                updated_at: ts(),
+            },
+            agent_path: dir.path().join(".codex/agents/dev.toml"),
+            model: Some("gpt-5.4".into()),
+            branch_name: Some("tt/alpha/dev".into()),
+            worktree_path: Some(dir.path().join("worktree")),
+            thread_id: Some("thread-1".into()),
+            thread_name: Some("alpha-dev".into()),
+            workspace_binding_id: Some("alpha:dev".into()),
+        };
+        let manifest = build_managed_project_manifest(
+            &project,
+            dir.path(),
+            "main",
+            &dir.path().join(".tt-worktrees/alpha"),
+            &dir.path().join(".tt/contracts/worker-contract.md"),
+            &dir.path().join(".codex/config.toml"),
+            &[&role],
+        );
+        let path = dir.path().join("managed-project.toml");
+        save_managed_project_manifest(&path, &manifest).expect("save manifest");
+        let loaded = load_managed_project_manifest(&path).expect("load manifest");
+        let loaded_role = loaded.roles.get("dev").expect("dev role");
+        assert_eq!(loaded_role.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(loaded_role.thread_name.as_deref(), Some("alpha-dev"));
+        assert_eq!(loaded_role.workspace_binding_id.as_deref(), Some("alpha:dev"));
     }
 
     #[test]

@@ -214,18 +214,25 @@ impl_from_str_for_kebab_case!(ThreadBindingStatus {
     Closed => "closed",
 });
 
-impl_from_str_for_kebab_case!(ThreadRole {
-    Director => "director",
-    Develop => "develop",
-    Review => "review",
-    Test => "test",
-    Integrate => "integrate",
-    Todo => "todo",
-    Chat => "chat",
-    Learn => "learn",
-    Handoff => "handoff",
-    Custom => "custom",
-});
+impl FromStr for ThreadRole {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "director" => Ok(Self::Director),
+            "develop" | "dev" => Ok(Self::Develop),
+            "review" => Ok(Self::Review),
+            "test" => Ok(Self::Test),
+            "integrate" | "integration" => Ok(Self::Integrate),
+            "todo" => Ok(Self::Todo),
+            "chat" => Ok(Self::Chat),
+            "learn" | "research" => Ok(Self::Learn),
+            "handoff" => Ok(Self::Handoff),
+            "custom" => Ok(Self::Custom),
+            other => Err(format!("invalid ThreadRole: {other}")),
+        }
+    }
+}
 
 impl_from_str_for_kebab_case!(WorkspaceStatus {
     Requested => "requested",

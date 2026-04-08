@@ -15,12 +15,14 @@ chrono.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 uuid.workspace = true
 tt-git = { path = "../tt-git" }
 tt-ui-core = { path = "../tt-ui-core" }
 tt-codex = { path = "../tt-codex" }
 tt-domain = { path = "../tt-domain" }
 tt-store = { path = "../tt-store" }
+codex-app-server-protocol = { path = "../../../codex/codex-rs/app-server-protocol" }
 
 [dev-dependencies]
 chrono.workspace = true
