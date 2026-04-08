@@ -11,6 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+tt-codex = { path = "../tt-codex" }
+tt-daemon = { path = "../tt-daemon" }
+tt-store = { path = "../tt-store" }
 tt-ui-core = { path = "../tt-ui-core" }
 
 [lints]

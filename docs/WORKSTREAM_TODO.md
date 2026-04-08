@@ -175,6 +175,7 @@ Tracked backlog for the active direct skill thread.
 - Implemented a Codex home/session-index adapter that discovers `~/.codex`, derives Codex state paths, and loads a lightweight thread catalog.
 - Implemented a TT daemon status/dashboard service that summarizes overlay counts and optional Codex catalog state.
 - Implemented a git/worktree inspection layer that discovers current checkouts, lists worktrees, and derives merge-readiness summaries for the daemon.
+- Added a runnable `tt-tui` dashboard entrypoint that renders Codex, repo, and overlay state from the new v2 services.
 - Implemented the lane filesystem layout scaffold and the `tt lane init|inspect|cleanup` CLI surface.
 - Added explicit lane/workspace manifest fields and surfaced discovered lane roots in `tt doctor`.
 - Added lane attachment mirroring so `tt lane attach|detach` updates tracked-thread binding state and records the attachment list in the workspace manifest.

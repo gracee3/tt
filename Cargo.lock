@@ -4393,6 +4393,9 @@ name = "tt-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tt-codex",
+ "tt-daemon",
+ "tt-store",
  "tt-ui-core",
 ]
 
