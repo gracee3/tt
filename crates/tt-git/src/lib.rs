@@ -171,6 +171,43 @@ impl GitRepository {
         }
         Ok(worktrees)
     }
+
+    pub fn create_worktree(
+        &self,
+        worktree_path: impl AsRef<Path>,
+        branch_name: &str,
+        start_point: Option<&str>,
+    ) -> Result<bool> {
+        let worktree_path = worktree_path.as_ref();
+        let start_point = start_point.unwrap_or("HEAD");
+        git_status(
+            &self.repository_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                worktree_path.to_str().context("worktree path utf-8")?,
+                start_point,
+            ],
+        )
+    }
+
+    pub fn prune_worktree(&self, worktree_path: impl AsRef<Path>) -> Result<bool> {
+        git_status(
+            &self.repository_root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree_path.as_ref().to_str().context("worktree path utf-8")?,
+            ],
+        )
+    }
+
+    pub fn delete_branch(&self, branch_name: &str) -> Result<bool> {
+        git_status(&self.repository_root, &["branch", "-D", branch_name])
+    }
 }
 
 #[derive(Debug, Default)]
@@ -227,6 +264,16 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
     let stdout = String::from_utf8(output.stdout).context("git output was not valid utf-8")?;
     let stdout = stdout.trim().to_string();
     Ok((!stdout.is_empty()).then_some(stdout))
+}
+
+fn git_status(cwd: &Path, args: &[&str]) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to invoke git in {}", cwd.display()))?;
+    Ok(status.success())
 }
 
 fn normalize_non_empty(value: String) -> Option<String> {

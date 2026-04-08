@@ -13,6 +13,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 chrono.workspace = true
 rusqlite = { version = "0.32.1", features = ["bundled"] }
+uuid.workspace = true
 tt-domain = { path = "../tt-domain" }
 
 [dev-dependencies]

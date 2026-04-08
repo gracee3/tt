@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use tt_daemon::{DaemonRequest, DaemonResponse, request_for_cwd};
 use tt_domain as _;
 use tt_domain::{
-    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus,
-    ThreadBindingStatus, WorkUnitStatus, WorkspaceStatus,
+    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus, ThreadBindingStatus,
+    ThreadRole, WorkUnitStatus, WorkspaceStatus,
 };
 
 pub const TT_CLI_GENERATION: &str = "v2";
@@ -133,6 +133,50 @@ pub enum WorkspaceCommand {
     MergeRun {
         #[command(subcommand)]
         command: MergeRunCommand,
+    },
+    Action {
+        #[command(subcommand)]
+        command: WorkspaceActionCommand,
+    },
+    Lifecycle {
+        #[command(subcommand)]
+        command: WorkspaceLifecycleCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceActionCommand {
+    Prepare { id: String },
+    Refresh { id: String },
+    MergePrep { id: String },
+    AuthorizeMerge { id: String },
+    ExecuteLanding { id: String },
+    Prune {
+        id: String,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceLifecycleCommand {
+    Close {
+        selector: Option<String>,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    Park {
+        selector: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    Split {
+        #[arg(long, default_value = "develop")]
+        role: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = false)]
+        ephemeral: bool,
     },
 }
 
@@ -273,6 +317,52 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                     workspace_binding_id,
                 },
                 MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
+            },
+            WorkspaceCommand::Action { command } => match command {
+                WorkspaceActionCommand::Prepare { id } => {
+                    DaemonRequest::PrepareWorkspaceBinding { id }
+                }
+                WorkspaceActionCommand::Refresh { id } => {
+                    DaemonRequest::RefreshWorkspaceBinding { id }
+                }
+                WorkspaceActionCommand::MergePrep { id } => {
+                    DaemonRequest::MergePrepWorkspaceBinding { id }
+                }
+                WorkspaceActionCommand::AuthorizeMerge { id } => {
+                    DaemonRequest::AuthorizeMergeWorkspaceBinding { id }
+                }
+                WorkspaceActionCommand::ExecuteLanding { id } => {
+                    DaemonRequest::ExecuteLandingWorkspaceBinding { id }
+                }
+                WorkspaceActionCommand::Prune { id, force } => {
+                    DaemonRequest::PruneWorkspaceBinding { id, force }
+                }
+            },
+            WorkspaceCommand::Lifecycle { command } => match command {
+                WorkspaceLifecycleCommand::Close { selector, force } => {
+                    DaemonRequest::CloseWorkspace {
+                        cwd: cwd.to_path_buf(),
+                        selector,
+                        force,
+                    }
+                }
+                WorkspaceLifecycleCommand::Park { selector, note } => {
+                    DaemonRequest::ParkWorkspace {
+                        cwd: cwd.to_path_buf(),
+                        selector,
+                        note,
+                    }
+                }
+                WorkspaceLifecycleCommand::Split {
+                    role,
+                    model,
+                    ephemeral,
+                } => DaemonRequest::SplitWorkspace {
+                    cwd: cwd.to_path_buf(),
+                    role: parse_status::<ThreadRole>(&role)?,
+                    model,
+                    ephemeral,
+                },
             },
         },
         Command::Legacy { command } => match command {

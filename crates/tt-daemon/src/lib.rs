@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use tt_codex::{CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot};
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
-    ProjectStatus, ThreadBinding, ThreadBindingStatus, WorkUnit, WorkUnitStatus, WorkspaceBinding,
-    WorkspaceStatus,
+    ProjectStatus, ThreadBinding, ThreadBindingStatus, ThreadRole, WorkUnit, WorkUnitStatus,
+    WorkspaceBinding, WorkspaceCleanupPolicy, WorkspaceStatus, WorkspaceStrategy,
+    WorkspaceSyncPolicy,
 };
 use tt_store::OverlayStore;
 use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRepositorySummary};
@@ -113,6 +114,38 @@ pub enum DaemonRequest {
     },
     RefreshWorkspaceBinding {
         id: String,
+    },
+    PrepareWorkspaceBinding {
+        id: String,
+    },
+    MergePrepWorkspaceBinding {
+        id: String,
+    },
+    AuthorizeMergeWorkspaceBinding {
+        id: String,
+    },
+    ExecuteLandingWorkspaceBinding {
+        id: String,
+    },
+    PruneWorkspaceBinding {
+        id: String,
+        force: bool,
+    },
+    CloseWorkspace {
+        cwd: PathBuf,
+        selector: Option<String>,
+        force: bool,
+    },
+    ParkWorkspace {
+        cwd: PathBuf,
+        selector: Option<String>,
+        note: Option<String>,
+    },
+    SplitWorkspace {
+        cwd: PathBuf,
+        role: ThreadRole,
+        model: Option<String>,
+        ephemeral: bool,
     },
     ListMergeRuns,
     GetMergeRun {
@@ -436,6 +469,291 @@ impl DaemonService {
         Ok(Some(binding))
     }
 
+    pub fn prepare_workspace_binding(&self, id: &str) -> Result<Option<WorkspaceBinding>> {
+        let Some(binding) = self.refresh_workspace_binding(id)? else {
+            return Ok(None);
+        };
+        self.store
+            .record_workspace_lifecycle_event(&binding.id, None, "prepare", None)?;
+        Ok(Some(binding))
+    }
+
+    pub fn merge_prep_workspace_binding(&self, id: &str) -> Result<Option<MergeRun>> {
+        let Some(binding) = self.refresh_workspace_binding(id)? else {
+            return Ok(None);
+        };
+        self.store
+            .record_workspace_lifecycle_event(&binding.id, None, "merge-prep", None)?;
+        self.refresh_merge_run(&binding.id)
+    }
+
+    pub fn authorize_merge_workspace_binding(&self, id: &str) -> Result<Option<MergeRun>> {
+        let Some(binding) = self.refresh_workspace_binding(id)? else {
+            return Ok(None);
+        };
+        let Some(mut run) = self.refresh_merge_run(&binding.id)? else {
+            return Ok(None);
+        };
+        if run.readiness != MergeReadiness::Ready {
+            anyhow::bail!(
+                "workspace binding `{}` is not ready for merge authorization",
+                binding.id
+            );
+        }
+        run.authorization = MergeAuthorizationStatus::Authorized;
+        run.updated_at = Utc::now();
+        self.upsert_merge_run(&run)?;
+        self.store.record_workspace_lifecycle_event(
+            &binding.id,
+            None,
+            "authorize-merge",
+            None,
+        )?;
+        Ok(Some(run))
+    }
+
+    pub fn execute_landing_workspace_binding(&self, id: &str) -> Result<Option<MergeRun>> {
+        let Some(binding) = self.refresh_workspace_binding(id)? else {
+            return Ok(None);
+        };
+        let Some(mut run) = self.refresh_merge_run(&binding.id)? else {
+            return Ok(None);
+        };
+        if run.readiness != MergeReadiness::Ready
+            || run.authorization != MergeAuthorizationStatus::Authorized
+        {
+            anyhow::bail!(
+                "workspace binding `{}` is not authorized for landing",
+                binding.id
+            );
+        }
+        run.execution = MergeExecutionStatus::Succeeded;
+        run.head_commit = binding.base_commit.clone();
+        run.updated_at = Utc::now();
+        self.upsert_merge_run(&run)?;
+        let mut updated_binding = binding.clone();
+        updated_binding.status = WorkspaceStatus::Merged;
+        updated_binding.updated_at = Utc::now();
+        self.upsert_workspace_binding(&updated_binding)?;
+        self.store.record_workspace_lifecycle_event(
+            &updated_binding.id,
+            None,
+            "execute-landing",
+            None,
+        )?;
+        Ok(Some(run))
+    }
+
+    pub fn prune_workspace_binding(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> Result<Option<WorkspaceBinding>> {
+        let Some(mut binding) = self.get_workspace_binding(id)? else {
+            return Ok(None);
+        };
+        let inspection_cwd = binding
+            .worktree_path
+            .as_deref()
+            .map(Path::new)
+            .unwrap_or_else(|| Path::new(&binding.repo_root));
+        let Some(inspection) = tt_git::GitRepository::inspect(inspection_cwd)? else {
+            if !force {
+                anyhow::bail!(
+                    "workspace binding `{}` has no inspectable git repository",
+                    binding.id
+                );
+            }
+            binding.status = WorkspaceStatus::Pruned;
+            binding.updated_at = Utc::now();
+            self.upsert_workspace_binding(&binding)?;
+            self.store
+                .record_workspace_lifecycle_event(&binding.id, None, "prune", None)?;
+            return Ok(Some(binding));
+        };
+
+        if inspection.dirty && !force {
+            anyhow::bail!(
+                "workspace binding `{}` has dirty changes; pass force to prune",
+                binding.id
+            );
+        }
+
+        let worktree_path = inspection
+            .current_worktree
+            .clone()
+            .or_else(|| binding.worktree_path.as_ref().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(&binding.repo_root));
+        let repository = tt_git::GitRepository {
+            repository_root: inspection.repository_root.clone(),
+        };
+        if !repository.prune_worktree(&worktree_path)? {
+            anyhow::bail!(
+                "failed to prune worktree {}",
+                worktree_path.display()
+            );
+        }
+        if let Some(branch_name) = inspection.current_branch.as_deref()
+            && !repository.delete_branch(branch_name)?
+        {
+            anyhow::bail!("failed to delete branch {}", branch_name);
+        }
+        binding.status = WorkspaceStatus::Pruned;
+        binding.updated_at = Utc::now();
+        self.upsert_workspace_binding(&binding)?;
+        self.store
+            .record_workspace_lifecycle_event(&binding.id, None, "prune", None)?;
+        Ok(Some(binding))
+    }
+
+    pub fn close_workspace(
+        &self,
+        cwd: impl AsRef<Path>,
+        selector: Option<&str>,
+        force: bool,
+    ) -> Result<Option<WorkspaceBinding>> {
+        let Some(binding) = self.resolve_workspace_binding(cwd.as_ref(), selector)? else {
+            return Ok(None);
+        };
+        let Some(binding) = self.prune_workspace_binding(&binding.id, force)? else {
+            return Ok(None);
+        };
+        self.store.record_workspace_lifecycle_event(
+            &binding.id,
+            None,
+            "close",
+            if force { Some("forced") } else { None },
+        )?;
+        Ok(Some(binding))
+    }
+
+    pub fn park_workspace(
+        &self,
+        cwd: impl AsRef<Path>,
+        selector: Option<&str>,
+        note: Option<String>,
+    ) -> Result<Option<WorkspaceBinding>> {
+        let Some(mut binding) = self.resolve_workspace_binding(cwd.as_ref(), selector)? else {
+            return Ok(None);
+        };
+        binding.status = WorkspaceStatus::Abandoned;
+        binding.updated_at = Utc::now();
+        self.upsert_workspace_binding(&binding)?;
+        self.store.record_workspace_lifecycle_event(
+            &binding.id,
+            None,
+            "park",
+            note.as_deref(),
+        )?;
+        Ok(Some(binding))
+    }
+
+    pub fn split_workspace(
+        &self,
+        cwd: impl AsRef<Path>,
+        role: ThreadRole,
+        model: Option<String>,
+        ephemeral: bool,
+    ) -> Result<Option<WorkspaceBinding>> {
+        let cwd = cwd.as_ref();
+        let Some(repository) = tt_git::GitRepository::inspect(cwd)? else {
+            return Ok(None);
+        };
+        let repository_handle = tt_git::GitRepository {
+            repository_root: repository.repository_root.clone(),
+        };
+        let client = self.codex_runtime_client(cwd)?;
+        let split_id = uuid::Uuid::new_v4().to_string();
+        let branch_name = format!("tt/{}", sanitize_branch_component(&split_id));
+        let worktree_root = repository
+            .repository_root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| repository.repository_root.clone());
+        let short_id = split_id.chars().take(8).collect::<String>();
+        let worktree_path = worktree_root.join(format!("tt-{short_id}"));
+        if !repository_handle.create_worktree(
+            &worktree_path,
+            &branch_name,
+            repository.current_head_commit.as_deref(),
+        )? {
+            anyhow::bail!("failed to create worktree {}", worktree_path.display());
+        }
+        let snapshot = client.start_thread(&worktree_path, model, ephemeral)?;
+        let now = Utc::now();
+        let thread_binding = ThreadBinding {
+            codex_thread_id: snapshot.thread_id.clone(),
+            work_unit_id: None,
+            role,
+            status: ThreadBindingStatus::Bound,
+            notes: Some("split from current workspace".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_thread_binding(&thread_binding)?;
+        let workspace_binding = WorkspaceBinding {
+            id: split_id,
+            codex_thread_id: snapshot.thread_id.clone(),
+            repo_root: repository.repository_root.display().to_string(),
+            worktree_path: Some(worktree_path.display().to_string()),
+            branch_name: Some(branch_name),
+            base_ref: repository.current_branch.clone(),
+            base_commit: repository.current_head_commit.clone(),
+            landing_target: repository.current_branch.clone(),
+            strategy: WorkspaceStrategy::DedicatedWorktree,
+            sync_policy: WorkspaceSyncPolicy::RebaseBeforeLanding,
+            cleanup_policy: WorkspaceCleanupPolicy::PruneAfterLanding,
+            status: if repository.dirty {
+                WorkspaceStatus::Requested
+            } else {
+                WorkspaceStatus::Ready
+            },
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_workspace_binding(&workspace_binding)?;
+        self.store.record_workspace_lifecycle_event(
+            &workspace_binding.id,
+            None,
+            "split",
+            Some(snapshot.thread_id.as_str()),
+        )?;
+        Ok(Some(workspace_binding))
+    }
+
+    fn resolve_workspace_binding(
+        &self,
+        cwd: &Path,
+        selector: Option<&str>,
+    ) -> Result<Option<WorkspaceBinding>> {
+        if let Some(selector) = selector {
+            if let Some(binding) = self.get_workspace_binding(selector)? {
+                return Ok(Some(binding));
+            }
+            if let Some(binding) = self
+                .list_workspace_bindings_for_thread(selector)?
+                .into_iter()
+                .next()
+            {
+                return Ok(Some(binding));
+            }
+        }
+        if let Some(inspection) = tt_git::GitRepository::inspect(cwd)? {
+            let repo_root = inspection.repository_root.display().to_string();
+            let current_worktree = inspection.current_worktree.as_ref().map(|path| path.display().to_string());
+            for binding in self.list_workspace_bindings()? {
+                if binding.repo_root == repo_root
+                    || current_worktree
+                        .as_ref()
+                        .is_some_and(|worktree| binding.worktree_path.as_deref() == Some(worktree.as_str()))
+                {
+                    return Ok(Some(binding));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn list_merge_runs(&self) -> Result<Vec<MergeRun>> {
         self.store.list_merge_runs()
     }
@@ -750,6 +1068,37 @@ impl DaemonService {
             RefreshWorkspaceBinding { id } => {
                 DaemonResponse::WorkspaceBinding(self.refresh_workspace_binding(&id)?)
             }
+            PrepareWorkspaceBinding { id } => {
+                DaemonResponse::WorkspaceBinding(self.prepare_workspace_binding(&id)?)
+            }
+            MergePrepWorkspaceBinding { id } => {
+                DaemonResponse::MergeRun(self.merge_prep_workspace_binding(&id)?)
+            }
+            AuthorizeMergeWorkspaceBinding { id } => {
+                DaemonResponse::MergeRun(self.authorize_merge_workspace_binding(&id)?)
+            }
+            ExecuteLandingWorkspaceBinding { id } => {
+                DaemonResponse::MergeRun(self.execute_landing_workspace_binding(&id)?)
+            }
+            PruneWorkspaceBinding { id, force } => {
+                DaemonResponse::WorkspaceBinding(self.prune_workspace_binding(&id, force)?)
+            }
+            CloseWorkspace {
+                cwd,
+                selector,
+                force,
+            } => DaemonResponse::WorkspaceBinding(self.close_workspace(cwd, selector.as_deref(), force)?),
+            ParkWorkspace {
+                cwd,
+                selector,
+                note,
+            } => DaemonResponse::WorkspaceBinding(self.park_workspace(cwd, selector.as_deref(), note)?),
+            SplitWorkspace {
+                cwd,
+                role,
+                model,
+                ephemeral,
+            } => DaemonResponse::WorkspaceBinding(self.split_workspace(cwd, role, model, ephemeral)?),
             ListMergeRuns => DaemonResponse::MergeRuns(self.list_merge_runs()?),
             GetMergeRun { id } => DaemonResponse::MergeRun(self.get_merge_run(&id)?),
             UpsertMergeRun { run } => {
@@ -855,6 +1204,28 @@ fn workspace_status_from_git(inspection: &tt_git::GitRepositoryInspection) -> Wo
         WorkspaceStatus::Ahead
     } else {
         WorkspaceStatus::Ready
+    }
+}
+
+fn sanitize_branch_component(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            output.push(ch);
+        } else {
+            output.push('-');
+        }
+    }
+    while output.starts_with('-') {
+        output.remove(0);
+    }
+    while output.ends_with('-') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "tt".to_string()
+    } else {
+        output
     }
 }
 

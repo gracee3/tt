@@ -4243,6 +4243,7 @@ dependencies = [
  "tt-git",
  "tt-store",
  "tt-ui-core",
+ "uuid",
 ]
 
 [[package]]
@@ -4397,6 +4398,7 @@ dependencies = [
  "rusqlite",
  "tempfile",
  "tt-domain",
+ "uuid",
 ]
 
 [[package]]

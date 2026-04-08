@@ -15,6 +15,7 @@ chrono.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 tt-git = { path = "../tt-git" }
 tt-ui-core = { path = "../tt-ui-core" }
 tt-codex = { path = "../tt-codex" }

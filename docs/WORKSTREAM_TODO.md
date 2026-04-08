@@ -180,6 +180,7 @@ Tracked backlog for the active direct skill thread.
 - Added a Unix-socket daemon transport under `.tt/runtime/ttd.sock` and switched the CLI/TUI to route through it when available.
 - Added Codex thread lifecycle wiring through the daemon, CLI, and TUI, including thread start/resume/read/list flows with `.codex`-aware resolution.
 - Added workspace/merge reconciliation helpers that inspect git state, refresh workspace bindings, and upsert merge-run records from the same source of truth.
+- Added workspace actions and daemon-state-first lifecycle operations (`prepare`, `merge-prep`, `authorize-merge`, `execute-landing`, `prune`, `close`, `park`, `split`) plus a simplified TUI command guide and matching thin CLI surface.
 - Isolated the raw store-shaped CRUD/status CLI surface behind a `legacy` namespace so the main interface can stay centered on lifecycle and reconcile flows.
 - Implemented the lane filesystem layout scaffold and the `tt lane init|inspect|cleanup` CLI surface.
 - Added explicit lane/workspace manifest fields and surfaced discovered lane roots in `tt doctor`.

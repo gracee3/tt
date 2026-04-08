@@ -18,9 +18,10 @@ use tt_domain::{
 };
 
 pub const TT_OVERLAY_DB_FILENAME: &str = "overlay.db";
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const INIT_SCHEMA: &str = include_str!("../migrations/0001_init.sql");
+const UPGRADE_SCHEMA_V2: &str = include_str!("../migrations/0002_workspace_lifecycle_events.sql");
 
 #[derive(Debug)]
 pub struct OverlayStore {
@@ -56,7 +57,7 @@ impl OverlayStore {
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .context("enable foreign keys")?;
-        let version: i32 = connection
+        let mut version: i32 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .context("read overlay schema version")?;
         if version == 0 {
@@ -64,9 +65,20 @@ impl OverlayStore {
                 .execute_batch(INIT_SCHEMA)
                 .context("initialize overlay schema")?;
             connection
+                .pragma_update(None, "user_version", 1)
+                .context("set overlay schema version")?;
+            version = 1;
+        }
+        if version == 1 {
+            connection
+                .execute_batch(UPGRADE_SCHEMA_V2)
+                .context("upgrade overlay schema to v2")?;
+            connection
                 .pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("set overlay schema version")?;
-        } else if version != SCHEMA_VERSION {
+            version = SCHEMA_VERSION;
+        }
+        if version != SCHEMA_VERSION {
             anyhow::bail!(
                 "unsupported tt overlay schema version {} (expected {})",
                 version,
@@ -687,6 +699,34 @@ impl OverlayStore {
             )
             .context("update workspace binding status")?;
             Ok(1)
+        })
+    }
+
+    pub fn record_workspace_lifecycle_event(
+        &self,
+        workspace_binding_id: &str,
+        source_workspace_binding_id: Option<&str>,
+        kind: &str,
+        note: Option<&str>,
+    ) -> Result<()> {
+        self.with_transaction(|tx| {
+            tx.execute(
+                r#"
+                insert into workspace_lifecycle_events (
+                    id, workspace_binding_id, source_workspace_binding_id, kind, note, created_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    workspace_binding_id,
+                    source_workspace_binding_id,
+                    kind,
+                    note,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .context("record workspace lifecycle event")?;
+            Ok(())
         })
     }
 

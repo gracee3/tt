@@ -213,6 +213,18 @@ impl_from_str_for_kebab_case!(ThreadBindingStatus {
     Closed => "closed",
 });
 
+impl_from_str_for_kebab_case!(ThreadRole {
+    Develop => "develop",
+    Review => "review",
+    Test => "test",
+    Integrate => "integrate",
+    Todo => "todo",
+    Chat => "chat",
+    Learn => "learn",
+    Handoff => "handoff",
+    Custom => "custom",
+});
+
 impl_from_str_for_kebab_case!(WorkspaceStatus {
     Requested => "requested",
     Ready => "ready",
