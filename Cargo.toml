@@ -1,7 +1,5 @@
 [workspace]
 members = [
-    "crates/tt-core",
-    "crates/tt-runtime",
     "crates/tt-domain",
     "crates/tt-store",
     "crates/tt-codex",
@@ -12,8 +10,6 @@ members = [
     "crates/tt-cli",
 ]
 default-members = [
-    "crates/tt-core",
-    "crates/tt-runtime",
     "crates/tt-domain",
     "crates/tt-store",
     "crates/tt-codex",
@@ -44,7 +40,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
-tokio-tungstenite = "0.27.0"
+tokio-tungstenite = "0.28.0"
 toml = "0.9.7"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
@@ -53,6 +49,10 @@ uuid = { version = "1.18.1", features = ["serde", "v4", "v7"] }
 gloo-net = "0.6.0"
 leptos = { version = "0.8.12", default-features = false, features = ["csr"] }
 leptos_router = "0.8.12"
+
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

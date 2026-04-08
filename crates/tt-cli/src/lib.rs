@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use tt_daemon::{DaemonRequest, DaemonResponse, request_for_cwd};
 use tt_domain as _;
 use tt_domain::{
-    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus, ThreadBindingStatus,
-    ThreadRole, WorkUnitStatus, WorkspaceStatus,
+    MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, ProjectStatus,
+    ThreadBindingStatus, ThreadRole, WorkUnitStatus, WorkspaceStatus,
 };
 
 pub const TT_CLI_GENERATION: &str = "v2";
@@ -58,8 +58,12 @@ pub enum CodexCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CodexThreadsCommand {
-    List { limit: Option<usize> },
-    Get { selector: String },
+    List {
+        limit: Option<usize>,
+    },
+    Get {
+        selector: String,
+    },
     Read {
         selector: String,
         #[arg(long, default_value_t = true)]
@@ -146,11 +150,21 @@ pub enum WorkspaceCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum WorkspaceActionCommand {
-    Prepare { id: String },
-    Refresh { id: String },
-    MergePrep { id: String },
-    AuthorizeMerge { id: String },
-    ExecuteLanding { id: String },
+    Prepare {
+        id: String,
+    },
+    Refresh {
+        id: String,
+    },
+    MergePrep {
+        id: String,
+    },
+    AuthorizeMerge {
+        id: String,
+    },
+    ExecuteLanding {
+        id: String,
+    },
     Prune {
         id: String,
         #[arg(long, default_value_t = false)]
@@ -271,14 +285,10 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         Command::Workspace { command } => match command {
             WorkspaceCommand::Binding { command } => match command {
                 WorkspaceBindingCommand::List => DaemonRequest::ListWorkspaceBindings,
-                WorkspaceBindingCommand::Get { id } => {
-                    DaemonRequest::GetWorkspaceBinding { id }
-                }
-                WorkspaceBindingCommand::Upsert { file } => {
-                    DaemonRequest::UpsertWorkspaceBinding {
-                        binding: read_json(file)?,
-                    }
-                }
+                WorkspaceBindingCommand::Get { id } => DaemonRequest::GetWorkspaceBinding { id },
+                WorkspaceBindingCommand::Upsert { file } => DaemonRequest::UpsertWorkspaceBinding {
+                    binding: read_json(file)?,
+                },
                 WorkspaceBindingCommand::SetStatus { id, status } => {
                     DaemonRequest::SetWorkspaceBindingStatus {
                         id,
@@ -434,18 +444,27 @@ fn render_response(response: &DaemonResponse) -> String {
         DaemonResponse::Count(count) => format!("updated {count}"),
         DaemonResponse::Status(status) => format!(
             "status\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
-            status.project_count, status.work_unit_count, status.bound_thread_count, status.ready_workspace_count
+            status.project_count,
+            status.work_unit_count,
+            status.bound_thread_count,
+            status.ready_workspace_count
         ),
         DaemonResponse::DashboardSummary(summary) => format!(
             "dashboard\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
-            summary.active_projects, summary.active_work_units, summary.bound_threads, summary.ready_workspaces
+            summary.active_projects,
+            summary.active_work_units,
+            summary.bound_threads,
+            summary.ready_workspaces
         ),
         DaemonResponse::RepositorySummary(Some(summary)) => format!(
             "repository\nroot: {}\nworktree: {}\nbranch: {}\nhead: {}\ndirty: {}\nmerge-ready: {}\nworktrees: {}\n",
             summary.repository_root,
             summary.current_worktree.as_deref().unwrap_or("<unset>"),
             summary.current_branch.as_deref().unwrap_or("<detached>"),
-            summary.current_head_commit.as_deref().unwrap_or("<unknown>"),
+            summary
+                .current_head_commit
+                .as_deref()
+                .unwrap_or("<unknown>"),
             summary.dirty,
             summary.merge_ready,
             summary.worktree_count

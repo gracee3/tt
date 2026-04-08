@@ -150,7 +150,10 @@ fn render_status(status: &DaemonStatus) -> String {
     output.push_str(&format!("Projects: {}\n", status.project_count));
     output.push_str(&format!("Work units: {}\n", status.work_unit_count));
     output.push_str(&format!("Bound threads: {}\n", status.bound_thread_count));
-    output.push_str(&format!("Ready workspaces: {}\n", status.ready_workspace_count));
+    output.push_str(&format!(
+        "Ready workspaces: {}\n",
+        status.ready_workspace_count
+    ));
     output
 }
 
@@ -169,7 +172,10 @@ fn render_repository_summary(summary: &GitRepositorySummary) -> String {
     ));
     output.push_str(&format!(
         "Head: {}\n",
-        summary.current_head_commit.as_deref().unwrap_or("<unknown>")
+        summary
+            .current_head_commit
+            .as_deref()
+            .unwrap_or("<unknown>")
     ));
     output.push_str(&format!("Dirty: {}\n", summary.dirty));
     output.push_str(&format!("Merge ready: {}\n", summary.merge_ready));
@@ -311,12 +317,17 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             let Some(id_or_slug) = parts.next() else {
                 bail!("project requires an id or slug");
             };
-            let response = request_for_cwd(cwd, DaemonRequest::GetProject {
-                id_or_slug: id_or_slug.to_string(),
-            })?;
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::GetProject {
+                    id_or_slug: id_or_slug.to_string(),
+                },
+            )?;
             match response {
                 DaemonResponse::Project(Some(project)) => Ok(Some(render_project(&project))),
-                DaemonResponse::Project(None) => Ok(Some(format!("project not found: {id_or_slug}"))),
+                DaemonResponse::Project(None) => {
+                    Ok(Some(format!("project not found: {id_or_slug}")))
+                }
                 other => bail!("unexpected daemon response for project: {other:?}"),
             }
         }
@@ -352,9 +363,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             let Some(id_or_slug) = parts.next() else {
                 bail!("work-unit requires an id or slug");
             };
-            let response = request_for_cwd(cwd, DaemonRequest::GetWorkUnit {
-                id_or_slug: id_or_slug.to_string(),
-            })?;
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::GetWorkUnit {
+                    id_or_slug: id_or_slug.to_string(),
+                },
+            )?;
             match response {
                 DaemonResponse::WorkUnit(Some(work_unit)) => Ok(Some(render_work_unit(&work_unit))),
                 DaemonResponse::WorkUnit(None) => {
@@ -393,9 +407,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                     other => bail!("unexpected daemon response for thread bindings: {other:?}"),
                 };
             };
-            let response = request_for_cwd(cwd, DaemonRequest::ListThreadBindingsForWorkUnit {
-                work_unit_id: work_unit_id.to_string(),
-            })?;
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::ListThreadBindingsForWorkUnit {
+                    work_unit_id: work_unit_id.to_string(),
+                },
+            )?;
             match response {
                 DaemonResponse::ThreadBindings(bindings) => {
                     Ok(Some(render_thread_bindings(&bindings)))
@@ -455,9 +472,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                     other => bail!("unexpected daemon response for workspace bindings: {other:?}"),
                 };
             };
-            let response = request_for_cwd(cwd, DaemonRequest::ListWorkspaceBindingsForThread {
-                codex_thread_id: thread_id.to_string(),
-            })?;
+            let response = request_for_cwd(
+                cwd,
+                DaemonRequest::ListWorkspaceBindingsForThread {
+                    codex_thread_id: thread_id.to_string(),
+                },
+            )?;
             match response {
                 DaemonResponse::WorkspaceBindings(bindings) => {
                     Ok(Some(render_workspace_bindings(&bindings)))
@@ -471,12 +491,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::GetWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::GetWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(render_workspace_binding(&binding))),
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_binding(&binding)))
+                }
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some(format!("workspace binding not found: {id}")))
                 }
@@ -502,7 +522,9 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 DaemonResponse::Count(count) => {
                     Ok(Some(format!("updated {} workspace binding(s)", count)))
                 }
-                other => bail!("unexpected daemon response for workspace-binding-status: {other:?}"),
+                other => {
+                    bail!("unexpected daemon response for workspace-binding-status: {other:?}")
+                }
             }
         }
         "workspace-binding-refresh" => {
@@ -511,9 +533,7 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::RefreshWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::RefreshWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
                 DaemonResponse::WorkspaceBinding(Some(binding)) => {
@@ -522,7 +542,9 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some(format!("workspace binding not found: {id}")))
                 }
-                other => bail!("unexpected daemon response for workspace-binding-refresh: {other:?}"),
+                other => {
+                    bail!("unexpected daemon response for workspace-binding-refresh: {other:?}")
+                }
             }
         }
         "workspace-prepare" => {
@@ -531,12 +553,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::PrepareWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::PrepareWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(render_workspace_binding(&binding))),
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_binding(&binding)))
+                }
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some(format!("workspace binding not found: {id}")))
                 }
@@ -549,12 +571,12 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::RefreshWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::RefreshWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(render_workspace_binding(&binding))),
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_binding(&binding)))
+                }
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some(format!("workspace binding not found: {id}")))
                 }
@@ -567,15 +589,13 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::MergePrepWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::MergePrepWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
                 DaemonResponse::MergeRun(Some(run)) => Ok(Some(render_merge_run_detail(&run))),
-                DaemonResponse::MergeRun(None) => {
-                    Ok(Some(format!("merge run not found for workspace binding: {id}")))
-                }
+                DaemonResponse::MergeRun(None) => Ok(Some(format!(
+                    "merge run not found for workspace binding: {id}"
+                ))),
                 other => bail!("unexpected daemon response for workspace-merge-prep: {other:?}"),
             }
         }
@@ -585,18 +605,16 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::AuthorizeMergeWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::AuthorizeMergeWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
                 DaemonResponse::MergeRun(Some(run)) => Ok(Some(render_merge_run_detail(&run))),
-                DaemonResponse::MergeRun(None) => {
-                    Ok(Some(format!("merge run not found for workspace binding: {id}")))
+                DaemonResponse::MergeRun(None) => Ok(Some(format!(
+                    "merge run not found for workspace binding: {id}"
+                ))),
+                other => {
+                    bail!("unexpected daemon response for workspace-authorize-merge: {other:?}")
                 }
-                other => bail!(
-                    "unexpected daemon response for workspace-authorize-merge: {other:?}"
-                ),
             }
         }
         "workspace-execute-landing" => {
@@ -605,18 +623,16 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
             };
             let response = request_for_cwd(
                 cwd,
-                DaemonRequest::ExecuteLandingWorkspaceBinding {
-                    id: id.to_string(),
-                },
+                DaemonRequest::ExecuteLandingWorkspaceBinding { id: id.to_string() },
             )?;
             match response {
                 DaemonResponse::MergeRun(Some(run)) => Ok(Some(render_merge_run_detail(&run))),
-                DaemonResponse::MergeRun(None) => {
-                    Ok(Some(format!("merge run not found for workspace binding: {id}")))
+                DaemonResponse::MergeRun(None) => Ok(Some(format!(
+                    "merge run not found for workspace binding: {id}"
+                ))),
+                other => {
+                    bail!("unexpected daemon response for workspace-execute-landing: {other:?}")
                 }
-                other => bail!(
-                    "unexpected daemon response for workspace-execute-landing: {other:?}"
-                ),
             }
         }
         "workspace-prune" => {
@@ -659,14 +675,14 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(
-                    render_workspace_lifecycle_result(
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_lifecycle_result(
                         "workspace-close",
                         &binding,
                         force,
                         selector.as_deref(),
-                    ),
-                )),
+                    )))
+                }
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some("workspace binding not found".to_string()))
                 }
@@ -690,14 +706,14 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(
-                    render_workspace_lifecycle_result(
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_lifecycle_result(
                         "workspace-park",
                         &binding,
                         false,
                         selector.as_deref(),
-                    ),
-                )),
+                    )))
+                }
                 DaemonResponse::WorkspaceBinding(None) => {
                     Ok(Some("workspace binding not found".to_string()))
                 }
@@ -721,17 +737,17 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 },
             )?;
             match response {
-                DaemonResponse::WorkspaceBinding(Some(binding)) => Ok(Some(
-                    render_workspace_lifecycle_result(
+                DaemonResponse::WorkspaceBinding(Some(binding)) => {
+                    Ok(Some(render_workspace_lifecycle_result(
                         "workspace-split",
                         &binding,
                         ephemeral,
                         Some(role_raw),
-                    ),
-                )),
-                DaemonResponse::WorkspaceBinding(None) => {
-                    Ok(Some("could not split workspace from current cwd".to_string()))
+                    )))
                 }
+                DaemonResponse::WorkspaceBinding(None) => Ok(Some(
+                    "could not split workspace from current cwd".to_string(),
+                )),
                 other => bail!("unexpected daemon response for workspace-split: {other:?}"),
             }
         }
@@ -786,9 +802,7 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 },
             )?;
             match response {
-                DaemonResponse::CodexThread(Some(thread)) => {
-                    Ok(Some(render_codex_thread(&thread)))
-                }
+                DaemonResponse::CodexThread(Some(thread)) => Ok(Some(render_codex_thread(&thread))),
                 DaemonResponse::CodexThread(None) => {
                     Ok(Some(format!("codex thread not found: {selector}")))
                 }
@@ -893,9 +907,7 @@ fn handle_command(cwd: &Path, input: &str) -> Result<Option<String>> {
                 },
             )?;
             match response {
-                DaemonResponse::Count(count) => {
-                    Ok(Some(format!("updated {} merge run(s)", count)))
-                }
+                DaemonResponse::Count(count) => Ok(Some(format!("updated {} merge run(s)", count))),
                 other => bail!("unexpected daemon response for merge-run-status: {other:?}"),
             }
         }

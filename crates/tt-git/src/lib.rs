@@ -200,7 +200,10 @@ impl GitRepository {
                 "worktree",
                 "remove",
                 "--force",
-                worktree_path.as_ref().to_str().context("worktree path utf-8")?,
+                worktree_path
+                    .as_ref()
+                    .to_str()
+                    .context("worktree path utf-8")?,
             ],
         )
     }

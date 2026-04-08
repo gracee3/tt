@@ -8,20 +8,30 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use codex_app_server_protocol as protocol;
+use futures::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
-use tt_core::{AppConfig, AppPaths, ReconnectPolicy, TT_APP_SERVER_LISTEN_URL_ENV};
-use tt_runtime::{TTClient, types};
-use tt_domain as _;
+use tokio::sync::Mutex;
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use url::Url;
 
 pub const CODEX_HOME_ENV: &str = "CODEX_HOME";
 pub const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
 pub const SESSION_INDEX_FILE: &str = "session_index.jsonl";
 pub const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 pub const CODEX_LOGS_DB_FILENAME: &str = "logs_1.sqlite";
+pub const CODEX_APP_SERVER_LISTEN_URL_ENV: &str = "CODEX_APP_SERVER_LISTEN_URL";
+pub const DEFAULT_APP_SERVER_LISTEN_URL: &str = "ws://127.0.0.1:4500";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexHome {
@@ -196,7 +206,7 @@ pub struct CodexThreadRuntimeSnapshot {
 
 pub struct CodexRuntimeClient {
     runtime: Runtime,
-    client: std::sync::Arc<TTClient>,
+    connection: Arc<Mutex<CodexAppServerConnection>>,
     codex_home: CodexHome,
     listen_url: String,
 }
@@ -205,28 +215,12 @@ impl CodexRuntimeClient {
     pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
         let codex_home = CodexHome::discover_in(cwd.as_ref())?;
         let runtime = Runtime::new().context("create tokio runtime for Codex client")?;
-        let (listen_url, reconnect) = runtime.block_on(async {
-            let paths = AppPaths::discover().ok();
-            let mut listen_url = std::env::var(TT_APP_SERVER_LISTEN_URL_ENV).ok();
-            let mut reconnect = ReconnectPolicy::default();
-            if let Some(paths) = paths {
-                if let Ok(config) = AppConfig::load_or_default(&paths).await {
-                    listen_url = Some(config.tt.effective_listen_url().to_string());
-                    reconnect = config.tt.reconnect;
-                }
-            }
-            Ok::<_, anyhow::Error>((listen_url, reconnect))
-        })?;
-        let listen_url = listen_url.unwrap_or_else(|| "ws://127.0.0.1:4500".to_string());
-        let client = TTClient::websocket(listen_url.clone(), reconnect);
-        runtime.block_on(async {
-            client.connect().await?;
-            client.initialize(default_initialize_params()).await?;
-            Ok::<_, anyhow::Error>(())
-        })?;
+        let listen_url = resolve_app_server_listen_url();
+        let connection =
+            runtime.block_on(async { CodexAppServerConnection::connect(&listen_url).await })?;
         Ok(Self {
             runtime,
-            client,
+            connection: Arc::new(Mutex::new(connection)),
             codex_home,
             listen_url,
         })
@@ -244,13 +238,31 @@ impl CodexRuntimeClient {
         self.codex_home.session_catalog()
     }
 
-    pub fn list_threads(&self, cwd: &Path, limit: Option<usize>) -> Result<Vec<CodexThreadRuntimeSnapshot>> {
+    pub fn list_threads(
+        &self,
+        cwd: &Path,
+        limit: Option<usize>,
+    ) -> Result<Vec<CodexThreadRuntimeSnapshot>> {
         let cwd = cwd.to_path_buf();
+        let connection = Arc::clone(&self.connection);
         self.runtime.block_on(async {
-            let mut params = types::ThreadListParams::default();
-            params.cwd = Some(cwd.display().to_string());
-            params.limit = limit.map(|value| value as u32);
-            let response = self.client.thread_list(params).await?;
+            let mut connection = connection.lock().await;
+            let request_id = connection.next_request_id();
+            let response: protocol::ThreadListResponse = connection
+                .request_typed(protocol::ClientRequest::ThreadList {
+                    request_id,
+                    params: protocol::ThreadListParams {
+                        cursor: None,
+                        limit: limit.map(|value| value as u32),
+                        sort_key: None,
+                        model_providers: None,
+                        source_kinds: None,
+                        archived: None,
+                        cwd: Some(cwd.display().to_string()),
+                        search_term: None,
+                    },
+                })
+                .await?;
             Ok(response.data.into_iter().map(thread_to_snapshot).collect())
         })
     }
@@ -263,13 +275,17 @@ impl CodexRuntimeClient {
         let Some(thread_id) = self.resolve_selector(selector)? else {
             return Ok(None);
         };
-        let thread_id = thread_id.to_string();
+        let connection = Arc::clone(&self.connection);
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .thread_read(types::ThreadReadParams {
-                    thread_id,
-                    include_turns,
+            let mut connection = connection.lock().await;
+            let request_id = connection.next_request_id();
+            let response: protocol::ThreadReadResponse = connection
+                .request_typed(protocol::ClientRequest::ThreadRead {
+                    request_id,
+                    params: protocol::ThreadReadParams {
+                        thread_id: thread_id.to_string(),
+                        include_turns,
+                    },
                 })
                 .await?;
             Ok(Some(thread_to_snapshot(response.thread)))
@@ -283,18 +299,24 @@ impl CodexRuntimeClient {
         ephemeral: bool,
     ) -> Result<CodexThreadRuntimeSnapshot> {
         let cwd = cwd.display().to_string();
+        let connection = Arc::clone(&self.connection);
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .thread_start(types::ThreadStartParams {
-                    cwd: Some(cwd),
-                    model,
-                    sandbox: Some(types::SandboxMode::WorkspaceWrite),
-                    service_name: Some("tt".to_string()),
-                    ephemeral: Some(ephemeral),
-                    ..types::ThreadStartParams::default()
+            let mut connection = connection.lock().await;
+            let request_id = connection.next_request_id();
+            let response: protocol::ThreadStartResponse = connection
+                .request_typed(protocol::ClientRequest::ThreadStart {
+                    request_id,
+                    params: protocol::ThreadStartParams {
+                        cwd: Some(cwd),
+                        model,
+                        sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
+                        service_name: Some("tt".to_string()),
+                        ephemeral: Some(ephemeral),
+                        ..protocol::ThreadStartParams::default()
+                    },
                 })
-                .await?;
+                .await
+                .map_err(anyhow::Error::from)?;
             Ok(thread_to_snapshot(response.thread))
         })
     }
@@ -308,24 +330,34 @@ impl CodexRuntimeClient {
         let Some(thread_id) = self.resolve_selector(selector)? else {
             return Ok(None);
         };
-        let thread_id = thread_id.to_string();
         let cwd = cwd.map(|path| path.display().to_string());
+        let connection = Arc::clone(&self.connection);
         self.runtime.block_on(async {
-            let response = self
-                .client
-                .thread_resume(types::ThreadResumeParams {
-                    thread_id,
-                    cwd,
-                    model,
-                    approval_policy: Some(types::AskForApproval::default()),
-                    approvals_reviewer: None,
-                    sandbox: Some(types::SandboxMode::WorkspaceWrite),
-                    config: None,
-                    base_instructions: None,
-                    developer_instructions: None,
-                    persist_extended_history: true,
+            let mut connection = connection.lock().await;
+            let request_id = connection.next_request_id();
+            let response: protocol::ThreadResumeResponse = connection
+                .request_typed(protocol::ClientRequest::ThreadResume {
+                    request_id,
+                    params: protocol::ThreadResumeParams {
+                        thread_id: thread_id.to_string(),
+                        model,
+                        model_provider: None,
+                        history: None,
+                        path: None,
+                        service_tier: None,
+                        cwd,
+                        approval_policy: Some(protocol::AskForApproval::OnRequest),
+                        approvals_reviewer: None,
+                        sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
+                        config: None,
+                        base_instructions: None,
+                        developer_instructions: None,
+                        personality: None,
+                        persist_extended_history: true,
+                    },
                 })
-                .await?;
+                .await
+                .map_err(anyhow::Error::from)?;
             Ok(Some(thread_to_snapshot(response.thread)))
         })
     }
@@ -338,33 +370,221 @@ impl CodexRuntimeClient {
     }
 }
 
-fn default_initialize_params() -> types::InitializeParams {
-    types::InitializeParams {
-        client_info: types::ClientInfo {
-            name: "tt-codex".to_string(),
-            title: Some("TT Codex Adapter".to_string()),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-        capabilities: Some(types::InitializeCapabilities {
-            experimental_api: true,
-            opt_out_notification_methods: None,
-        }),
+struct CodexAppServerConnection {
+    stream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    next_request_id: i64,
+}
+
+impl CodexAppServerConnection {
+    async fn connect(listen_url: &str) -> Result<Self> {
+        let url = Url::parse(listen_url)
+            .with_context(|| format!("invalid Codex app-server URL `{listen_url}`"))?;
+        let request = url
+            .as_str()
+            .into_client_request()
+            .with_context(|| format!("prepare request for `{listen_url}`"))?;
+        let (mut stream, _) = connect_async(request)
+            .await
+            .with_context(|| format!("connect to Codex app-server `{listen_url}`"))?;
+
+        let initialize_request_id = protocol::RequestId::String("initialize".to_string());
+        Self::send_jsonrpc_message(
+            &mut stream,
+            protocol::JSONRPCMessage::Request(protocol::JSONRPCRequest {
+                method: "initialize".to_string(),
+                params: Some(serde_json::to_value(protocol::InitializeParams {
+                    client_info: protocol::ClientInfo {
+                        name: "tt-codex".to_string(),
+                        title: Some("TT Codex Adapter".to_string()),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    },
+                    capabilities: Some(protocol::InitializeCapabilities {
+                        experimental_api: true,
+                        opt_out_notification_methods: None,
+                    }),
+                })?),
+                id: initialize_request_id.clone(),
+                trace: None,
+            }),
+            listen_url,
+        )
+        .await?;
+
+        loop {
+            let Some(message) = stream.next().await else {
+                anyhow::bail!("Codex app-server `{listen_url}` closed during initialize");
+            };
+            let message = message.with_context(|| {
+                format!("Codex app-server `{listen_url}` sent invalid websocket frame")
+            })?;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let jsonrpc =
+                serde_json::from_str::<protocol::JSONRPCMessage>(&text).with_context(|| {
+                    format!("Codex app-server `{listen_url}` sent invalid JSON-RPC")
+                })?;
+            match jsonrpc {
+                protocol::JSONRPCMessage::Response(response)
+                    if response.id == initialize_request_id =>
+                {
+                    break;
+                }
+                protocol::JSONRPCMessage::Error(error) if error.id == initialize_request_id => {
+                    anyhow::bail!(
+                        "Codex app-server `{listen_url}` rejected initialize: {}",
+                        error.error.message
+                    );
+                }
+                protocol::JSONRPCMessage::Notification(_notification) => {}
+                protocol::JSONRPCMessage::Request(request) => {
+                    Self::reject_server_request(&mut stream, request).await?;
+                }
+                protocol::JSONRPCMessage::Response(_) | protocol::JSONRPCMessage::Error(_) => {}
+            }
+        }
+
+        Self::send_jsonrpc_message(
+            &mut stream,
+            protocol::JSONRPCMessage::Notification(jsonrpc_notification_from_client_notification(
+                protocol::ClientNotification::Initialized,
+            )),
+            listen_url,
+        )
+        .await?;
+
+        Ok(Self {
+            stream,
+            next_request_id: 1,
+        })
+    }
+
+    fn next_request_id(&mut self) -> protocol::RequestId {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        protocol::RequestId::Integer(id)
+    }
+
+    async fn request_typed<T>(&mut self, request: protocol::ClientRequest) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let request_id = request_id_from_client_request(&request);
+        let request_message =
+            protocol::JSONRPCMessage::Request(jsonrpc_request_from_client_request(request.clone()));
+        let listen_url = "<codex-app-server>";
+        Self::send_jsonrpc_message(&mut self.stream, request_message, listen_url).await?;
+
+        loop {
+            let Some(message) = self.stream.next().await else {
+                anyhow::bail!("Codex app-server closed while waiting for response");
+            };
+            let message = message.context("read websocket message from Codex app-server")?;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let jsonrpc = serde_json::from_str::<protocol::JSONRPCMessage>(&text)
+                .context("parse JSON-RPC message from Codex app-server")?;
+            match jsonrpc {
+                protocol::JSONRPCMessage::Response(response) if response.id == request_id => {
+                    return serde_json::from_value(response.result)
+                        .context("decode Codex app-server response");
+                }
+                protocol::JSONRPCMessage::Error(error) if error.id == request_id => {
+                    anyhow::bail!("Codex app-server request failed: {}", error.error.message);
+                }
+                protocol::JSONRPCMessage::Notification(_notification) => {}
+                protocol::JSONRPCMessage::Request(request) => {
+                    Self::reject_server_request(&mut self.stream, request).await?;
+                }
+                protocol::JSONRPCMessage::Response(_) | protocol::JSONRPCMessage::Error(_) => {}
+            }
+        }
+    }
+
+    async fn send_jsonrpc_message(
+        stream: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+        message: protocol::JSONRPCMessage,
+        listen_url: &str,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(&message).context("serialize JSON-RPC message")?;
+        stream
+            .send(Message::Text(payload.into()))
+            .await
+            .with_context(|| format!("write websocket message to `{listen_url}`"))?;
+        Ok(())
+    }
+
+    async fn reject_server_request(
+        stream: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+        request: protocol::JSONRPCRequest,
+    ) -> Result<()> {
+        let id = request.id.clone();
+        Self::send_jsonrpc_message(
+            stream,
+            protocol::JSONRPCMessage::Error(protocol::JSONRPCError {
+                error: protocol::JSONRPCErrorError {
+                    code: -32601,
+                    message: format!("unsupported Codex app-server request `{}`", request.method),
+                    data: None,
+                },
+                id,
+            }),
+            "<codex-app-server>",
+        )
+        .await
     }
 }
 
-fn thread_to_snapshot(thread: types::Thread) -> CodexThreadRuntimeSnapshot {
+fn request_id_from_client_request(request: &protocol::ClientRequest) -> protocol::RequestId {
+    jsonrpc_request_from_client_request(request.clone()).id
+}
+
+fn jsonrpc_request_from_client_request(
+    request: protocol::ClientRequest,
+) -> protocol::JSONRPCRequest {
+    let value = serde_json::to_value(request).expect("client request should serialize");
+    serde_json::from_value(value).expect("client request should encode as JSON-RPC request")
+}
+
+fn jsonrpc_notification_from_client_notification(
+    notification: protocol::ClientNotification,
+) -> protocol::JSONRPCNotification {
+    let value = serde_json::to_value(notification).expect("client notification should serialize");
+    serde_json::from_value(value)
+        .expect("client notification should encode as JSON-RPC notification")
+}
+
+fn resolve_app_server_listen_url() -> String {
+    std::env::var(CODEX_APP_SERVER_LISTEN_URL_ENV)
+        .or_else(|_| std::env::var("TT_APP_SERVER_LISTEN_URL"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_APP_SERVER_LISTEN_URL.to_string())
+}
+
+fn thread_to_snapshot(thread: protocol::Thread) -> CodexThreadRuntimeSnapshot {
     CodexThreadRuntimeSnapshot {
         thread_id: thread.id,
         thread_name: thread.name,
         preview: thread.preview,
-        status: thread.status.label().to_string(),
-        cwd: thread.cwd,
+        status: format_thread_status(&thread.status),
+        cwd: thread.cwd.display().to_string(),
         model_provider: thread.model_provider,
         ephemeral: thread.ephemeral,
         updated_at: thread.updated_at,
         turn_count: thread.turns.len(),
         latest_turn_id: thread.turns.last().map(|turn| turn.id.clone()),
-        path: thread.path,
+        path: thread.path.map(|path| path.display().to_string()),
+    }
+}
+
+fn format_thread_status(status: &protocol::ThreadStatus) -> String {
+    match status {
+        protocol::ThreadStatus::NotLoaded => "notLoaded".to_string(),
+        protocol::ThreadStatus::Idle => "idle".to_string(),
+        protocol::ThreadStatus::SystemError => "systemError".to_string(),
+        protocol::ThreadStatus::Active { .. } => "active".to_string(),
     }
 }
 

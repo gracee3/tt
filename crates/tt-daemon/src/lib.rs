@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::Result;
+use chrono::Utc;
 use clap as _;
 use serde::{Deserialize, Serialize};
 use tt_codex::{CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot};
@@ -24,7 +25,6 @@ use tt_domain::{
 };
 use tt_store::OverlayStore;
 use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRepositorySummary};
-use chrono::Utc;
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 pub const TT_DAEMON_SOCKET_NAME: &str = "tt-daemon.sock";
@@ -503,12 +503,8 @@ impl DaemonService {
         run.authorization = MergeAuthorizationStatus::Authorized;
         run.updated_at = Utc::now();
         self.upsert_merge_run(&run)?;
-        self.store.record_workspace_lifecycle_event(
-            &binding.id,
-            None,
-            "authorize-merge",
-            None,
-        )?;
+        self.store
+            .record_workspace_lifecycle_event(&binding.id, None, "authorize-merge", None)?;
         Ok(Some(run))
     }
 
@@ -588,10 +584,7 @@ impl DaemonService {
             repository_root: inspection.repository_root.clone(),
         };
         if !repository.prune_worktree(&worktree_path)? {
-            anyhow::bail!(
-                "failed to prune worktree {}",
-                worktree_path.display()
-            );
+            anyhow::bail!("failed to prune worktree {}", worktree_path.display());
         }
         if let Some(branch_name) = inspection.current_branch.as_deref()
             && !repository.delete_branch(branch_name)?
@@ -639,12 +632,8 @@ impl DaemonService {
         binding.status = WorkspaceStatus::Abandoned;
         binding.updated_at = Utc::now();
         self.upsert_workspace_binding(&binding)?;
-        self.store.record_workspace_lifecycle_event(
-            &binding.id,
-            None,
-            "park",
-            note.as_deref(),
-        )?;
+        self.store
+            .record_workspace_lifecycle_event(&binding.id, None, "park", note.as_deref())?;
         Ok(Some(binding))
     }
 
@@ -740,12 +729,15 @@ impl DaemonService {
         }
         if let Some(inspection) = tt_git::GitRepository::inspect(cwd)? {
             let repo_root = inspection.repository_root.display().to_string();
-            let current_worktree = inspection.current_worktree.as_ref().map(|path| path.display().to_string());
+            let current_worktree = inspection
+                .current_worktree
+                .as_ref()
+                .map(|path| path.display().to_string());
             for binding in self.list_workspace_bindings()? {
                 if binding.repo_root == repo_root
-                    || current_worktree
-                        .as_ref()
-                        .is_some_and(|worktree| binding.worktree_path.as_deref() == Some(worktree.as_str()))
+                    || current_worktree.as_ref().is_some_and(|worktree| {
+                        binding.worktree_path.as_deref() == Some(worktree.as_str())
+                    })
                 {
                     return Ok(Some(binding));
                 }
@@ -851,8 +843,7 @@ impl DaemonService {
         cwd: impl AsRef<Path>,
         limit: Option<usize>,
     ) -> Result<Vec<CodexThreadSummary>> {
-        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok()
-        else {
+        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok() else {
             return Ok(Vec::new());
         };
         let limit = limit.unwrap_or(catalog.all_threads().len());
@@ -885,8 +876,7 @@ impl DaemonService {
         cwd: impl AsRef<Path>,
         selector: &str,
     ) -> Result<Option<CodexThreadSummary>> {
-        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok()
-        else {
+        let Some(catalog) = CodexHome::discover_in(cwd)?.session_catalog().ok() else {
             return Ok(None);
         };
         let Some(thread) = catalog.resolve_thread(selector) else {
@@ -1087,18 +1077,28 @@ impl DaemonService {
                 cwd,
                 selector,
                 force,
-            } => DaemonResponse::WorkspaceBinding(self.close_workspace(cwd, selector.as_deref(), force)?),
+            } => DaemonResponse::WorkspaceBinding(self.close_workspace(
+                cwd,
+                selector.as_deref(),
+                force,
+            )?),
             ParkWorkspace {
                 cwd,
                 selector,
                 note,
-            } => DaemonResponse::WorkspaceBinding(self.park_workspace(cwd, selector.as_deref(), note)?),
+            } => DaemonResponse::WorkspaceBinding(self.park_workspace(
+                cwd,
+                selector.as_deref(),
+                note,
+            )?),
             SplitWorkspace {
                 cwd,
                 role,
                 model,
                 ephemeral,
-            } => DaemonResponse::WorkspaceBinding(self.split_workspace(cwd, role, model, ephemeral)?),
+            } => {
+                DaemonResponse::WorkspaceBinding(self.split_workspace(cwd, role, model, ephemeral)?)
+            }
             ListMergeRuns => DaemonResponse::MergeRuns(self.list_merge_runs()?),
             GetMergeRun { id } => DaemonResponse::MergeRun(self.get_merge_run(&id)?),
             UpsertMergeRun { run } => {
@@ -1141,20 +1141,16 @@ impl DaemonService {
                 cwd,
                 model,
                 ephemeral,
-            } => DaemonResponse::CodexThreadDetail(Some(self.start_codex_thread(
-                cwd,
-                model,
-                ephemeral,
-            )?)),
+            } => DaemonResponse::CodexThreadDetail(Some(
+                self.start_codex_thread(cwd, model, ephemeral)?,
+            )),
             ResumeCodexThread {
                 cwd,
                 selector,
                 model,
-            } => DaemonResponse::CodexThreadDetail(self.resume_codex_thread(
-                cwd,
-                &selector,
-                model,
-            )?),
+            } => {
+                DaemonResponse::CodexThreadDetail(self.resume_codex_thread(cwd, &selector, model)?)
+            }
         })
     }
 
