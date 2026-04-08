@@ -388,7 +388,12 @@ impl CodexAppServerConnection {
         let mut last_error = None;
 
         for attempt in 1..=APP_SERVER_CONNECT_ATTEMPTS {
-            match timeout(APP_SERVER_CONNECT_TIMEOUT, Self::connect_once(&url, listen_url)).await {
+            match timeout(
+                APP_SERVER_CONNECT_TIMEOUT,
+                Self::connect_once(&url, listen_url),
+            )
+            .await
+            {
                 Ok(Ok(connection)) => return Ok(connection),
                 Ok(Err(error)) => last_error = Some(error),
                 Err(_) => {
@@ -542,8 +547,8 @@ impl CodexAppServerConnection {
             let Message::Text(text) = message else {
                 continue;
             };
-            let jsonrpc = serde_json::from_str::<protocol::JSONRPCMessage>(&text)
-                .with_context(|| {
+            let jsonrpc =
+                serde_json::from_str::<protocol::JSONRPCMessage>(&text).with_context(|| {
                     format!(
                         "parse JSON-RPC message from Codex app-server `{}`",
                         self.listen_url

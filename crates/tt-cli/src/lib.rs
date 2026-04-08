@@ -42,9 +42,10 @@ pub enum Command {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
-    Legacy {
+    #[command(alias = "legacy")]
+    Records {
         #[command(subcommand)]
-        command: LegacyCommand,
+        command: RecordsCommand,
     },
 }
 
@@ -195,7 +196,7 @@ pub enum WorkspaceLifecycleCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum LegacyCommand {
+pub enum RecordsCommand {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -375,8 +376,8 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                 },
             },
         },
-        Command::Legacy { command } => match command {
-            LegacyCommand::Project { command } => match command {
+        Command::Records { command } => match command {
+            RecordsCommand::Project { command } => match command {
                 ProjectCommand::List => DaemonRequest::ListProjects,
                 ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
                 ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
@@ -392,7 +393,7 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                     DaemonRequest::DeleteProject { id_or_slug }
                 }
             },
-            LegacyCommand::WorkUnit { command } => match command {
+            RecordsCommand::WorkUnit { command } => match command {
                 WorkUnitCommand::List { project_id } => DaemonRequest::ListWorkUnits { project_id },
                 WorkUnitCommand::Get { id_or_slug } => DaemonRequest::GetWorkUnit { id_or_slug },
                 WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
@@ -408,7 +409,7 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                     DaemonRequest::DeleteWorkUnit { id_or_slug }
                 }
             },
-            LegacyCommand::ThreadBinding { command } => match command {
+            RecordsCommand::ThreadBinding { command } => match command {
                 ThreadBindingCommand::List => DaemonRequest::ListThreadBindings,
                 ThreadBindingCommand::Get { codex_thread_id } => {
                     DaemonRequest::GetThreadBinding { codex_thread_id }
@@ -660,11 +661,24 @@ mod tests {
 
     #[test]
     fn parses_project_list_command() {
+        let cli = Cli::parse_from(["tt", "records", "project", "list"]);
+        assert!(matches!(
+            cli.command,
+            Command::Records {
+                command: RecordsCommand::Project {
+                    command: ProjectCommand::List
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_legacy_alias_for_records_command() {
         let cli = Cli::parse_from(["tt", "legacy", "project", "list"]);
         assert!(matches!(
             cli.command,
-            Command::Legacy {
-                command: LegacyCommand::Project {
+            Command::Records {
+                command: RecordsCommand::Project {
                     command: ProjectCommand::List
                 }
             }

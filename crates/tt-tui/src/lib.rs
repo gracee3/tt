@@ -267,7 +267,7 @@ fn command_help() -> String {
         "  Codex: codex-threads [limit], codex-thread <selector>, codex-thread-read <selector> [include_turns], codex-thread-start [model] [ephemeral], codex-thread-resume <selector> [model]",
         "  Workspace actions: workspace-prepare <id>, workspace-refresh <id>, workspace-merge-prep <id>, workspace-authorize-merge <id>, workspace-execute-landing <id>, workspace-prune <id> [force]",
         "  Workspace lifecycle: workspace-close [selector] [force], workspace-park [selector] [note...], workspace-split <role> [model] [ephemeral]",
-        "  Records / legacy: projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding <thread>, thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding <id>, workspace-binding-status <id> <status>, workspace-binding-refresh <id>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], merge-run-refresh <workspace-binding-id>",
+        "  Records: projects, project <id>, project-status <id> <status>, work-units [project], work-unit <id>, work-unit-status <id> <status>, thread-bindings [work-unit], thread-binding <thread>, thread-binding-status <thread> <status>, workspace-bindings [thread], workspace-binding <id>, workspace-binding-status <id> <status>, workspace-binding-refresh <id>, merge-runs, merge-run-status <id> <readiness> <authorization> <execution> [head_commit], merge-run-refresh <workspace-binding-id>",
     ]
     .join("\n")
 }

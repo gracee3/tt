@@ -203,7 +203,7 @@ The remaining low-level helper crates exist only where v2 still depends on them 
 
 ### v2 migration rules
 
-- do not build new features on top of legacy compatibility bridges once a v2 equivalent exists
+- do not build new features on top of older compatibility bridges once a v2 equivalent exists
 - keep the v2 command surfaces and daemon APIs canonical
 - retire any remaining helper dependency only after a v2-native replacement exists
 
@@ -219,7 +219,7 @@ The remaining low-level helper crates exist only where v2 still depends on them 
 ## Explicit Non-Goals For Initial v2
 
 - reviving `operator-web`
-- preserving the full legacy CLI shape
+- preserving the full older CLI shape
 - remote inbox, delivery, and notification parity
 - replacing Codex app-server with TT-owned transport
 - duplicating Codex rollout storage under `.tt`
