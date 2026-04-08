@@ -23,11 +23,14 @@ use tt_domain::{
     WorkspaceBinding, WorkspaceCleanupPolicy, WorkspaceStatus, WorkspaceStrategy,
     WorkspaceSyncPolicy,
 };
+use tt_git::GitRepository;
 use tt_store::OverlayStore;
 use tt_ui_core::{CodexThreadDetail, CodexThreadSummary, DashboardSummary, GitRepositorySummary};
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 pub const TT_DAEMON_SOCKET_NAME: &str = "tt-daemon.sock";
+const DEFAULT_AGENT_CONFIG_MAX_THREADS: usize = 6;
+const DEFAULT_AGENT_CONFIG_MAX_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
@@ -190,6 +193,17 @@ pub enum DaemonRequest {
         selector: String,
         model: Option<String>,
     },
+    OpenManagedProject {
+        cwd: PathBuf,
+        title: Option<String>,
+        objective: Option<String>,
+        base_branch: Option<String>,
+        worktree_root: Option<PathBuf>,
+        director_model: Option<String>,
+        dev_model: Option<String>,
+        test_model: Option<String>,
+        integration_model: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +228,29 @@ pub enum DaemonResponse {
     CodexThread(Option<CodexThreadSummary>),
     CodexThreadDetails(Vec<CodexThreadDetail>),
     CodexThreadDetail(Option<CodexThreadDetail>),
+    ManagedProject(ManagedProjectBootstrap),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectRoleBootstrap {
+    pub role: ThreadRole,
+    pub work_unit: WorkUnit,
+    pub agent_path: PathBuf,
+    pub model: Option<String>,
+    pub branch_name: Option<String>,
+    pub worktree_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectBootstrap {
+    pub project: Project,
+    pub repo_root: PathBuf,
+    pub base_branch: String,
+    pub worktree_root: PathBuf,
+    pub manifest_path: PathBuf,
+    pub contract_path: PathBuf,
+    pub codex_config_path: PathBuf,
+    pub roles: Vec<ManagedProjectRoleBootstrap>,
 }
 
 #[derive(Debug, Clone)]
@@ -980,6 +1017,185 @@ impl DaemonService {
         }))
     }
 
+    pub fn open_managed_project(
+        &self,
+        cwd: impl AsRef<Path>,
+        title: Option<String>,
+        objective: Option<String>,
+        base_branch: Option<String>,
+        worktree_root: Option<PathBuf>,
+        director_model: Option<String>,
+        dev_model: Option<String>,
+        test_model: Option<String>,
+        integration_model: Option<String>,
+    ) -> Result<ManagedProjectBootstrap> {
+        let cwd = cwd.as_ref();
+        let Some(repository) = GitRepository::discover(cwd)? else {
+            anyhow::bail!("managed project open requires a git repository");
+        };
+        let inspection = repository.inspect_repository()?;
+        let repo_root = repository.repository_root.clone();
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("tt-project");
+        let title = title.unwrap_or_else(|| repo_name.replace('-', " "));
+        let slug = sanitize_project_slug(&title);
+        let base_branch = base_branch
+            .or(inspection.current_branch)
+            .unwrap_or_else(|| "main".to_string());
+        let objective = objective
+            .unwrap_or_else(|| format!("Coordinate dev, test, and integration work for {title}"));
+        let now = Utc::now();
+        let project = Project {
+            id: uuid::Uuid::now_v7().to_string(),
+            slug: slug.clone(),
+            title: title.clone(),
+            objective: objective.clone(),
+            status: ProjectStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_project(&project)?;
+
+        let worktree_root = worktree_root
+            .map(|path| resolve_path(cwd, path))
+            .unwrap_or_else(|| default_worktree_root(&repo_root, &slug));
+        fs::create_dir_all(&worktree_root)?;
+
+        let contract_path = repo_root
+            .join(".tt")
+            .join("contracts")
+            .join("worker-contract.md");
+        let codex_config_path = repo_root.join(".codex").join("config.toml");
+        write_managed_file(
+            &codex_config_path,
+            &render_codex_config(
+                DEFAULT_AGENT_CONFIG_MAX_THREADS,
+                DEFAULT_AGENT_CONFIG_MAX_DEPTH,
+            ),
+        )?;
+        write_managed_file(
+            &contract_path,
+            &render_worker_contract(&repo_root, &slug, &base_branch),
+        )?;
+
+        let director_role = self.build_role_bootstrap(
+            &repository,
+            &project,
+            ThreadRole::Director,
+            &base_branch,
+            director_model,
+            &worktree_root,
+            false,
+        )?;
+        let dev_role = self.build_role_bootstrap(
+            &repository,
+            &project,
+            ThreadRole::Develop,
+            &base_branch,
+            dev_model,
+            &worktree_root,
+            true,
+        )?;
+        let test_role = self.build_role_bootstrap(
+            &repository,
+            &project,
+            ThreadRole::Test,
+            &base_branch,
+            test_model,
+            &worktree_root,
+            true,
+        )?;
+        let integration_role = self.build_role_bootstrap(
+            &repository,
+            &project,
+            ThreadRole::Integrate,
+            &base_branch,
+            integration_model,
+            &worktree_root,
+            true,
+        )?;
+
+        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        write_managed_file(
+            &manifest_path,
+            &render_project_manifest(
+                &project,
+                &repo_root,
+                &base_branch,
+                &worktree_root,
+                &contract_path,
+                &codex_config_path,
+                &[&director_role, &dev_role, &test_role, &integration_role],
+            ),
+        )?;
+
+        Ok(ManagedProjectBootstrap {
+            project,
+            repo_root,
+            base_branch,
+            worktree_root,
+            manifest_path,
+            contract_path,
+            codex_config_path,
+            roles: vec![director_role, dev_role, test_role, integration_role],
+        })
+    }
+
+    fn build_role_bootstrap(
+        &self,
+        repository: &GitRepository,
+        project: &Project,
+        role: ThreadRole,
+        base_branch: &str,
+        model: Option<String>,
+        worktree_root: &Path,
+        create_worktree: bool,
+    ) -> Result<ManagedProjectRoleBootstrap> {
+        let now = Utc::now();
+        let role_slug = role_slug(role);
+        let work_unit = WorkUnit {
+            id: uuid::Uuid::now_v7().to_string(),
+            project_id: project.id.clone(),
+            slug: Some(role_slug.to_string()),
+            title: role_title(role).to_string(),
+            task: role_task(role, &project.title),
+            status: WorkUnitStatus::Ready,
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_work_unit(&work_unit)?;
+
+        let agent_path = repository
+            .repository_root
+            .join(".codex")
+            .join("agents")
+            .join(format!("{role_slug}.toml"));
+        write_managed_file(
+            &agent_path,
+            &render_agent_file(role, model.as_deref(), &project.title, &project.objective),
+        )?;
+
+        let (branch_name, worktree_path) = if create_worktree {
+            let branch_name = format!("tt/{}/{}", project.slug, role_slug);
+            let worktree_path = worktree_root.join(role_slug);
+            ensure_role_worktree(repository, &worktree_path, &branch_name, base_branch)?;
+            (Some(branch_name), Some(worktree_path))
+        } else {
+            (None, None)
+        };
+
+        Ok(ManagedProjectRoleBootstrap {
+            role,
+            work_unit,
+            agent_path,
+            model,
+            branch_name,
+            worktree_path,
+        })
+    }
+
     pub fn handle_request(&self, request: DaemonRequest) -> Result<DaemonResponse> {
         use DaemonRequest::*;
         Ok(match request {
@@ -1151,6 +1367,27 @@ impl DaemonService {
             } => {
                 DaemonResponse::CodexThreadDetail(self.resume_codex_thread(cwd, &selector, model)?)
             }
+            OpenManagedProject {
+                cwd,
+                title,
+                objective,
+                base_branch,
+                worktree_root,
+                director_model,
+                dev_model,
+                test_model,
+                integration_model,
+            } => DaemonResponse::ManagedProject(self.open_managed_project(
+                cwd,
+                title,
+                objective,
+                base_branch,
+                worktree_root,
+                director_model,
+                dev_model,
+                test_model,
+                integration_model,
+            )?),
         })
     }
 
@@ -1186,6 +1423,312 @@ impl DaemonService {
             bound_work_unit_id,
             workspace_binding_count,
         })
+    }
+}
+
+fn role_slug(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director => "director",
+        ThreadRole::Develop => "dev",
+        ThreadRole::Test => "test",
+        ThreadRole::Integrate => "integration",
+        ThreadRole::Review => "review",
+        ThreadRole::Todo => "todo",
+        ThreadRole::Chat => "chat",
+        ThreadRole::Learn => "learn",
+        ThreadRole::Handoff => "handoff",
+        ThreadRole::Custom => "custom",
+    }
+}
+
+fn role_title(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director => "Director",
+        ThreadRole::Develop => "Developer",
+        ThreadRole::Test => "Test",
+        ThreadRole::Integrate => "Integration",
+        ThreadRole::Review => "Reviewer",
+        ThreadRole::Todo => "TODO",
+        ThreadRole::Chat => "Chat",
+        ThreadRole::Learn => "Research",
+        ThreadRole::Handoff => "Handoff",
+        ThreadRole::Custom => "Custom",
+    }
+}
+
+fn role_task(role: ThreadRole, project_title: &str) -> String {
+    match role {
+        ThreadRole::Director => {
+            format!("Coordinate workers, branch strategy, and handoffs for {project_title}")
+        }
+        ThreadRole::Develop => {
+            format!("Implement the assigned feature slice for {project_title}")
+        }
+        ThreadRole::Test => format!("Validate the assigned work for {project_title}"),
+        ThreadRole::Integrate => {
+            format!("Prepare landing and merge readiness for {project_title}")
+        }
+        ThreadRole::Review => format!("Review the assigned change set for {project_title}"),
+        ThreadRole::Todo => format!("Capture and organize TODOs for {project_title}"),
+        ThreadRole::Chat => format!("Discuss the current project for {project_title}"),
+        ThreadRole::Learn => format!("Research gaps and unknowns for {project_title}"),
+        ThreadRole::Handoff => format!("Prepare the handoff package for {project_title}"),
+        ThreadRole::Custom => format!("Handle the assigned custom role for {project_title}"),
+    }
+}
+
+fn role_description(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director => "Coordinates TT-managed workers, branch strategy, and handoffs.",
+        ThreadRole::Develop => "Implementation worker focused on the assigned code slice.",
+        ThreadRole::Test => "Validation worker that reports exact failures and test results.",
+        ThreadRole::Integrate => "Landing worker that prepares merge readiness and cleanup.",
+        ThreadRole::Review => "Review worker focused on correctness and test coverage.",
+        ThreadRole::Todo => "Organizer that converts notes into scoped work.",
+        ThreadRole::Chat => "Discussion worker for design and planning conversations.",
+        ThreadRole::Learn => "Research worker for gaps, unknowns, and evidence gathering.",
+        ThreadRole::Handoff => "Package handoff context for the next worker or maintainer.",
+        ThreadRole::Custom => "Custom worker role.",
+    }
+}
+
+fn role_sandbox_mode(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director | ThreadRole::Test | ThreadRole::Review | ThreadRole::Learn => {
+            "read-only"
+        }
+        ThreadRole::Develop | ThreadRole::Integrate | ThreadRole::Handoff => "workspace-write",
+        ThreadRole::Todo | ThreadRole::Chat | ThreadRole::Custom => "workspace-write",
+    }
+}
+
+fn render_codex_config(max_threads: usize, max_depth: usize) -> String {
+    format!("[agents]\nmax_threads = {max_threads}\nmax_depth = {max_depth}\n")
+}
+
+fn render_agent_file(
+    role: ThreadRole,
+    model: Option<&str>,
+    project_title: &str,
+    project_objective: &str,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("name = {:?}\n", role_slug(role)));
+    output.push_str(&format!("description = {:?}\n", role_description(role)));
+    if let Some(model) = model {
+        output.push_str(&format!("model = {:?}\n", model));
+    }
+    output.push_str(&format!("sandbox_mode = {:?}\n", role_sandbox_mode(role)));
+    output.push_str("developer_instructions = \"\"\"\n");
+    output.push_str(&format!(
+        "You are the {} agent for {project_title}.\n",
+        role_slug(role)
+    ));
+    output.push_str(&format!("Project objective: {project_objective}\n"));
+    output
+        .push_str("Follow .tt/contracts/worker-contract.md and stay inside your assigned scope.\n");
+    match role {
+        ThreadRole::Director => {
+            output.push_str("Own branch strategy, worker assignment, handoffs, and readiness.\n");
+            output.push_str("Do not implement product code unless explicitly instructed.\n");
+        }
+        ThreadRole::Develop => {
+            output.push_str("Implement only the assigned slice in the provided worktree.\n");
+            output.push_str("Report changed files, tests run, blockers, and next step.\n");
+        }
+        ThreadRole::Test => {
+            output.push_str("Validate the assigned changes and report exact failures.\n");
+            output.push_str("Do not widen scope or rewrite implementation code.\n");
+        }
+        ThreadRole::Integrate => {
+            output
+                .push_str("Own merge prep, landing checks, and cleanup for the managed project.\n");
+            output.push_str("Keep the landing path narrow and evidence-driven.\n");
+        }
+        ThreadRole::Review => {
+            output.push_str("Review correctness, regressions, and missing tests.\n");
+        }
+        ThreadRole::Todo => {
+            output.push_str("Convert notes into scoped work items and preserve traceability.\n");
+        }
+        ThreadRole::Chat => {
+            output.push_str("Use the conversation to clarify intent, not to change code.\n");
+        }
+        ThreadRole::Learn => {
+            output.push_str("Gather evidence and fill gaps before implementation starts.\n");
+        }
+        ThreadRole::Handoff => {
+            output.push_str("Summarize the state for the next worker or maintainer.\n");
+        }
+        ThreadRole::Custom => {
+            output.push_str("Follow the project contract and stay within the assigned scope.\n");
+        }
+    }
+    output.push_str("\"\"\"\n");
+    output
+}
+
+fn render_worker_contract(repo_root: &Path, project_slug: &str, base_branch: &str) -> String {
+    format!(
+        "# TT Worker Contract\n\n\
+Project: `{project_slug}`\n\
+Repository root: `{}`\n\
+Base branch: `{base_branch}`\n\n\
+## Roles\n\
+- `director`: assigns work, manages branching, and approves handoffs.\n\
+- `dev`: implements the assigned slice only.\n\
+- `test`: validates the branch and reports failures exactly.\n\
+- `integration`: prepares landing and merge readiness.\n\n\
+## Handoff Format\n\
+- `status`: `blocked`, `needs-review`, or `complete`\n\
+- `changed_files`: list of paths\n\
+- `tests_run`: list of commands\n\
+- `blockers`: list of blockers or `[]`\n\
+- `next_step`: the next concrete action\n\n\
+## Rules\n\
+- Stay inside the assigned worktree and scope.\n\
+- Do not widen scope without director approval.\n\
+- Keep evidence in the handoff, not in prose alone.\n",
+        repo_root.display()
+    )
+}
+
+fn render_project_manifest(
+    project: &Project,
+    repo_root: &Path,
+    base_branch: &str,
+    worktree_root: &Path,
+    contract_path: &Path,
+    codex_config_path: &Path,
+    roles: &[&ManagedProjectRoleBootstrap],
+) -> String {
+    let mut output = String::new();
+    output.push_str("schema = \"tt-managed-project-v1\"\n");
+    output.push_str(&format!("project_id = {:?}\n", project.id));
+    output.push_str(&format!("slug = {:?}\n", project.slug));
+    output.push_str(&format!("title = {:?}\n", project.title));
+    output.push_str(&format!("objective = {:?}\n", project.objective));
+    output.push_str(&format!(
+        "repo_root = {:?}\n",
+        repo_root.display().to_string()
+    ));
+    output.push_str(&format!("base_branch = {:?}\n", base_branch));
+    output.push_str(&format!(
+        "worktree_root = {:?}\n",
+        worktree_root.display().to_string()
+    ));
+    output.push_str(&format!(
+        "contract_path = {:?}\n",
+        contract_path.display().to_string()
+    ));
+    output.push_str(&format!(
+        "codex_config_path = {:?}\n\n",
+        codex_config_path.display().to_string()
+    ));
+    output.push_str("[roles]\n");
+    for role in roles {
+        output.push_str(&format!("[roles.{}]\n", role_slug(role.role)));
+        output.push_str(&format!("work_unit_id = {:?}\n", role.work_unit.id));
+        output.push_str(&format!(
+            "agent_path = {:?}\n",
+            role.agent_path.display().to_string()
+        ));
+        if let Some(model) = role.model.as_ref() {
+            output.push_str(&format!("model = {:?}\n", model));
+        }
+        if let Some(branch_name) = role.branch_name.as_ref() {
+            output.push_str(&format!("branch_name = {:?}\n", branch_name));
+        }
+        if let Some(worktree_path) = role.worktree_path.as_ref() {
+            output.push_str(&format!(
+                "worktree_path = {:?}\n",
+                worktree_path.display().to_string()
+            ));
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn ensure_role_worktree(
+    repository: &GitRepository,
+    worktree_path: &Path,
+    branch_name: &str,
+    base_branch: &str,
+) -> Result<()> {
+    if repository
+        .list_worktrees()?
+        .iter()
+        .any(|worktree| worktree.worktree_path == worktree_path)
+    {
+        return Ok(());
+    }
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if repository.create_worktree(worktree_path, branch_name, Some(base_branch))? {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "failed to create worktree `{}` for branch `{}`",
+            worktree_path.display(),
+            branch_name
+        )
+    }
+}
+
+fn write_managed_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::read_to_string(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        Ok(_) => anyhow::bail!(
+            "managed file already exists and differs: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::write(path, contents)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn resolve_path(base: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+fn default_worktree_root(repo_root: &Path, project_slug: &str) -> PathBuf {
+    let base = repo_root.parent().unwrap_or(repo_root);
+    base.join(".tt-worktrees").join(project_slug)
+}
+
+fn sanitize_project_slug(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            output.push(ch);
+        } else {
+            output.push('-');
+        }
+    }
+    while output.starts_with('-') {
+        output.remove(0);
+    }
+    while output.ends_with('-') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "tt-project".to_string()
+    } else {
+        output
     }
 }
 
@@ -1473,6 +2016,80 @@ mod tests {
         assert!(matches!(deleted, DaemonResponse::Count(1)));
 
         let _ = repo;
+    }
+
+    #[test]
+    fn open_managed_project_bootstraps_roles_and_files() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        assert_eq!(bootstrap.project.slug, "alpha");
+        assert!(bootstrap.contract_path.exists());
+        assert!(bootstrap.codex_config_path.exists());
+        assert!(bootstrap.manifest_path.exists());
+        assert_eq!(bootstrap.roles.len(), 4);
+        assert!(bootstrap.roles.iter().all(|role| role.agent_path.exists()));
+
+        let director_role = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Director)
+            .expect("director role");
+        assert!(director_role.branch_name.is_none());
+        assert!(director_role.worktree_path.is_none());
+
+        let dev_role = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Develop)
+            .expect("dev role");
+        assert_eq!(dev_role.branch_name.as_deref(), Some("tt/alpha/dev"));
+        assert!(
+            dev_role
+                .worktree_path
+                .as_ref()
+                .expect("dev worktree")
+                .exists()
+        );
+
+        let test_role = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Test)
+            .expect("test role");
+        assert_eq!(test_role.branch_name.as_deref(), Some("tt/alpha/test"));
+
+        let integration_role = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Integrate)
+            .expect("integration role");
+        assert_eq!(
+            integration_role.branch_name.as_deref(),
+            Some("tt/alpha/integration")
+        );
+
+        let inspection = GitRepository::discover(&repo)
+            .expect("discover repo")
+            .expect("repo")
+            .inspect_repository()
+            .expect("inspect repo");
+        assert!(inspection.worktrees.len() >= 4);
     }
 
     #[test]

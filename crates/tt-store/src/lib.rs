@@ -1025,6 +1025,7 @@ fn work_unit_status_from_str(raw: &str) -> rusqlite::Result<WorkUnitStatus> {
 
 fn thread_role_to_str(role: ThreadRole) -> &'static str {
     match role {
+        ThreadRole::Director => "director",
         ThreadRole::Develop => "develop",
         ThreadRole::Review => "review",
         ThreadRole::Test => "test",
@@ -1039,6 +1040,7 @@ fn thread_role_to_str(role: ThreadRole) -> &'static str {
 
 fn thread_role_from_str(raw: &str) -> rusqlite::Result<ThreadRole> {
     match raw {
+        "director" => Ok(ThreadRole::Director),
         "develop" => Ok(ThreadRole::Develop),
         "review" => Ok(ThreadRole::Review),
         "test" => Ok(ThreadRole::Test),

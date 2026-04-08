@@ -64,6 +64,7 @@ pub struct ThreadBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThreadRole {
+    Director,
     Develop,
     Review,
     Test,
@@ -214,6 +215,7 @@ impl_from_str_for_kebab_case!(ThreadBindingStatus {
 });
 
 impl_from_str_for_kebab_case!(ThreadRole {
+    Director => "director",
     Develop => "develop",
     Review => "review",
     Test => "test",

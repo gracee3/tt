@@ -34,6 +34,10 @@ pub struct Cli {
 pub enum Command {
     Status,
     Repo,
+    Project {
+        #[command(subcommand)]
+        command: ProjectFlowCommand,
+    },
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
@@ -80,6 +84,28 @@ pub enum CodexThreadsCommand {
         selector: String,
         #[arg(long)]
         model: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectFlowCommand {
+    Open {
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        objective: Option<String>,
+        #[arg(long)]
+        base_branch: Option<String>,
+        #[arg(long)]
+        worktree_root: Option<PathBuf>,
+        #[arg(long)]
+        director_model: Option<String>,
+        #[arg(long)]
+        dev_model: Option<String>,
+        #[arg(long)]
+        test_model: Option<String>,
+        #[arg(long)]
+        integration_model: Option<String>,
     },
 }
 
@@ -248,6 +274,28 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         Command::Status => DaemonRequest::Status,
         Command::Repo => DaemonRequest::RepositorySummary {
             cwd: cwd.to_path_buf(),
+        },
+        Command::Project { command } => match command {
+            ProjectFlowCommand::Open {
+                title,
+                objective,
+                base_branch,
+                worktree_root,
+                director_model,
+                dev_model,
+                test_model,
+                integration_model,
+            } => DaemonRequest::OpenManagedProject {
+                cwd: cwd.to_path_buf(),
+                title,
+                objective,
+                base_branch,
+                worktree_root,
+                director_model,
+                dev_model,
+                test_model,
+                integration_model,
+            },
         },
         Command::Codex { command } => match command {
             CodexCommand::Threads { command } => match command {
@@ -622,6 +670,66 @@ fn render_response(response: &DaemonResponse) -> String {
             thread.workspace_binding_count
         ),
         DaemonResponse::CodexThreadDetail(None) => "codex thread not found".to_string(),
+        DaemonResponse::ManagedProject(bootstrap) => render_managed_project_bootstrap(bootstrap),
+    }
+}
+
+fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstrap) -> String {
+    let mut output = String::new();
+    output.push_str("managed project\n");
+    output.push_str("===============\n");
+    output.push_str(&format!(
+        "Project: {} ({})\n",
+        bootstrap.project.title, bootstrap.project.slug
+    ));
+    output.push_str(&format!("Repo root: {}\n", bootstrap.repo_root.display()));
+    output.push_str(&format!("Base branch: {}\n", bootstrap.base_branch));
+    output.push_str(&format!(
+        "Worktree root: {}\n",
+        bootstrap.worktree_root.display()
+    ));
+    output.push_str(&format!(
+        "Manifest: {}\n",
+        bootstrap.manifest_path.display()
+    ));
+    output.push_str(&format!(
+        "Contract: {}\n",
+        bootstrap.contract_path.display()
+    ));
+    output.push_str(&format!(
+        "Codex config: {}\n",
+        bootstrap.codex_config_path.display()
+    ));
+    output.push_str("\nRoles\n");
+    output.push_str("-----\n");
+    for role in &bootstrap.roles {
+        output.push_str(&format!(
+            "{} | work-unit={} | branch={} | worktree={} | agent={}\n",
+            role_name(role.role),
+            role.work_unit.id,
+            role.branch_name.as_deref().unwrap_or("<none>"),
+            role.worktree_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            role.agent_path.display()
+        ));
+    }
+    output
+}
+
+fn role_name(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director => "director",
+        ThreadRole::Develop => "dev",
+        ThreadRole::Test => "test",
+        ThreadRole::Integrate => "integration",
+        ThreadRole::Review => "review",
+        ThreadRole::Todo => "todo",
+        ThreadRole::Chat => "chat",
+        ThreadRole::Learn => "learn",
+        ThreadRole::Handoff => "handoff",
+        ThreadRole::Custom => "custom",
     }
 }
 
@@ -669,6 +777,20 @@ mod tests {
                     command: ProjectCommand::List
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn parses_project_open_command() {
+        let cli = Cli::parse_from(["tt", "project", "open", "--title", "Alpha"]);
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectFlowCommand::Open {
+                    title: Some(ref title),
+                    ..
+                }
+            } if title == "Alpha"
         ));
     }
 
