@@ -38,25 +38,13 @@ pub enum Command {
         #[command(subcommand)]
         command: CodexCommand,
     },
-    Project {
+    Workspace {
         #[command(subcommand)]
-        command: ProjectCommand,
+        command: WorkspaceCommand,
     },
-    WorkUnit {
+    Legacy {
         #[command(subcommand)]
-        command: WorkUnitCommand,
-    },
-    ThreadBinding {
-        #[command(subcommand)]
-        command: ThreadBindingCommand,
-    },
-    WorkspaceBinding {
-        #[command(subcommand)]
-        command: WorkspaceBindingCommand,
-    },
-    MergeRun {
-        #[command(subcommand)]
-        command: MergeRunCommand,
+        command: LegacyCommand,
     },
 }
 
@@ -137,6 +125,34 @@ pub enum WorkspaceBindingCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum WorkspaceCommand {
+    Binding {
+        #[command(subcommand)]
+        command: WorkspaceBindingCommand,
+    },
+    MergeRun {
+        #[command(subcommand)]
+        command: MergeRunCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LegacyCommand {
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    WorkUnit {
+        #[command(subcommand)]
+        command: WorkUnitCommand,
+    },
+    ThreadBinding {
+        #[command(subcommand)]
+        command: ThreadBindingCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum MergeRunCommand {
     List,
     Get {
@@ -208,91 +224,109 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                 }
             },
         },
-        Command::Project { command } => match command {
-            ProjectCommand::List => DaemonRequest::ListProjects,
-            ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
-            ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
-                project: read_json(file)?,
-            },
-            ProjectCommand::SetStatus { id_or_slug, status } => DaemonRequest::SetProjectStatus {
-                id_or_slug,
-                status: parse_status::<ProjectStatus>(&status)?,
-            },
-            ProjectCommand::Delete { id_or_slug } => DaemonRequest::DeleteProject { id_or_slug },
-        },
-        Command::WorkUnit { command } => match command {
-            WorkUnitCommand::List { project_id } => DaemonRequest::ListWorkUnits { project_id },
-            WorkUnitCommand::Get { id_or_slug } => DaemonRequest::GetWorkUnit { id_or_slug },
-            WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
-                work_unit: read_json(file)?,
-            },
-            WorkUnitCommand::SetStatus { id_or_slug, status } => DaemonRequest::SetWorkUnitStatus {
-                id_or_slug,
-                status: parse_status::<WorkUnitStatus>(&status)?,
-            },
-            WorkUnitCommand::Delete { id_or_slug } => DaemonRequest::DeleteWorkUnit { id_or_slug },
-        },
-        Command::ThreadBinding { command } => match command {
-            ThreadBindingCommand::List => DaemonRequest::ListThreadBindings,
-            ThreadBindingCommand::Get { codex_thread_id } => {
-                DaemonRequest::GetThreadBinding { codex_thread_id }
-            }
-            ThreadBindingCommand::Upsert { file } => DaemonRequest::UpsertThreadBinding {
-                binding: read_json(file)?,
-            },
-            ThreadBindingCommand::SetStatus {
-                codex_thread_id,
-                status,
-            } => DaemonRequest::SetThreadBindingStatus {
-                codex_thread_id,
-                status: parse_status::<ThreadBindingStatus>(&status)?,
-            },
-            ThreadBindingCommand::Delete { codex_thread_id } => {
-                DaemonRequest::DeleteThreadBinding { codex_thread_id }
-            }
-        },
-        Command::WorkspaceBinding { command } => match command {
-            WorkspaceBindingCommand::List => DaemonRequest::ListWorkspaceBindings,
-            WorkspaceBindingCommand::Get { id } => DaemonRequest::GetWorkspaceBinding { id },
-            WorkspaceBindingCommand::Upsert { file } => DaemonRequest::UpsertWorkspaceBinding {
-                binding: read_json(file)?,
-            },
-            WorkspaceBindingCommand::SetStatus { id, status } => {
-                DaemonRequest::SetWorkspaceBindingStatus {
-                    id,
-                    status: parse_status::<WorkspaceStatus>(&status)?,
+        Command::Workspace { command } => match command {
+            WorkspaceCommand::Binding { command } => match command {
+                WorkspaceBindingCommand::List => DaemonRequest::ListWorkspaceBindings,
+                WorkspaceBindingCommand::Get { id } => {
+                    DaemonRequest::GetWorkspaceBinding { id }
                 }
-            }
-            WorkspaceBindingCommand::Refresh { id } => {
-                DaemonRequest::RefreshWorkspaceBinding { id }
-            }
-            WorkspaceBindingCommand::Delete { id } => DaemonRequest::DeleteWorkspaceBinding { id },
+                WorkspaceBindingCommand::Upsert { file } => {
+                    DaemonRequest::UpsertWorkspaceBinding {
+                        binding: read_json(file)?,
+                    }
+                }
+                WorkspaceBindingCommand::SetStatus { id, status } => {
+                    DaemonRequest::SetWorkspaceBindingStatus {
+                        id,
+                        status: parse_status::<WorkspaceStatus>(&status)?,
+                    }
+                }
+                WorkspaceBindingCommand::Refresh { id } => {
+                    DaemonRequest::RefreshWorkspaceBinding { id }
+                }
+                WorkspaceBindingCommand::Delete { id } => {
+                    DaemonRequest::DeleteWorkspaceBinding { id }
+                }
+            },
+            WorkspaceCommand::MergeRun { command } => match command {
+                MergeRunCommand::List => DaemonRequest::ListMergeRuns,
+                MergeRunCommand::Get { id } => DaemonRequest::GetMergeRun { id },
+                MergeRunCommand::Upsert { file } => DaemonRequest::UpsertMergeRun {
+                    run: read_json(file)?,
+                },
+                MergeRunCommand::SetStatus {
+                    id,
+                    readiness,
+                    authorization,
+                    execution,
+                    head_commit,
+                } => DaemonRequest::SetMergeRunStatus {
+                    id,
+                    readiness: parse_status::<MergeReadiness>(&readiness)?,
+                    authorization: parse_status::<MergeAuthorizationStatus>(&authorization)?,
+                    execution: parse_status::<MergeExecutionStatus>(&execution)?,
+                    head_commit,
+                },
+                MergeRunCommand::Refresh {
+                    workspace_binding_id,
+                } => DaemonRequest::RefreshMergeRun {
+                    workspace_binding_id,
+                },
+                MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
+            },
         },
-        Command::MergeRun { command } => match command {
-            MergeRunCommand::List => DaemonRequest::ListMergeRuns,
-            MergeRunCommand::Get { id } => DaemonRequest::GetMergeRun { id },
-            MergeRunCommand::Upsert { file } => DaemonRequest::UpsertMergeRun {
-                run: read_json(file)?,
+        Command::Legacy { command } => match command {
+            LegacyCommand::Project { command } => match command {
+                ProjectCommand::List => DaemonRequest::ListProjects,
+                ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
+                ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
+                    project: read_json(file)?,
+                },
+                ProjectCommand::SetStatus { id_or_slug, status } => {
+                    DaemonRequest::SetProjectStatus {
+                        id_or_slug,
+                        status: parse_status::<ProjectStatus>(&status)?,
+                    }
+                }
+                ProjectCommand::Delete { id_or_slug } => {
+                    DaemonRequest::DeleteProject { id_or_slug }
+                }
             },
-            MergeRunCommand::SetStatus {
-                id,
-                readiness,
-                authorization,
-                execution,
-                head_commit,
-            } => DaemonRequest::SetMergeRunStatus {
-                id,
-                readiness: parse_status::<MergeReadiness>(&readiness)?,
-                authorization: parse_status::<MergeAuthorizationStatus>(&authorization)?,
-                execution: parse_status::<MergeExecutionStatus>(&execution)?,
-                head_commit,
+            LegacyCommand::WorkUnit { command } => match command {
+                WorkUnitCommand::List { project_id } => DaemonRequest::ListWorkUnits { project_id },
+                WorkUnitCommand::Get { id_or_slug } => DaemonRequest::GetWorkUnit { id_or_slug },
+                WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
+                    work_unit: read_json(file)?,
+                },
+                WorkUnitCommand::SetStatus { id_or_slug, status } => {
+                    DaemonRequest::SetWorkUnitStatus {
+                        id_or_slug,
+                        status: parse_status::<WorkUnitStatus>(&status)?,
+                    }
+                }
+                WorkUnitCommand::Delete { id_or_slug } => {
+                    DaemonRequest::DeleteWorkUnit { id_or_slug }
+                }
             },
-            MergeRunCommand::Refresh {
-                workspace_binding_id,
-            } => DaemonRequest::RefreshMergeRun {
-                workspace_binding_id,
+            LegacyCommand::ThreadBinding { command } => match command {
+                ThreadBindingCommand::List => DaemonRequest::ListThreadBindings,
+                ThreadBindingCommand::Get { codex_thread_id } => {
+                    DaemonRequest::GetThreadBinding { codex_thread_id }
+                }
+                ThreadBindingCommand::Upsert { file } => DaemonRequest::UpsertThreadBinding {
+                    binding: read_json(file)?,
+                },
+                ThreadBindingCommand::SetStatus {
+                    codex_thread_id,
+                    status,
+                } => DaemonRequest::SetThreadBindingStatus {
+                    codex_thread_id,
+                    status: parse_status::<ThreadBindingStatus>(&status)?,
+                },
+                ThreadBindingCommand::Delete { codex_thread_id } => {
+                    DaemonRequest::DeleteThreadBinding { codex_thread_id }
+                }
             },
-            MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
         },
     })
 }
@@ -331,11 +365,13 @@ mod tests {
 
     #[test]
     fn parses_project_list_command() {
-        let cli = Cli::parse_from(["tt", "project", "list"]);
+        let cli = Cli::parse_from(["tt", "legacy", "project", "list"]);
         assert!(matches!(
             cli.command,
-            Command::Project {
-                command: ProjectCommand::List
+            Command::Legacy {
+                command: LegacyCommand::Project {
+                    command: ProjectCommand::List
+                }
             }
         ));
     }
