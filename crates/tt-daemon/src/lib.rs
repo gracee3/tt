@@ -2777,10 +2777,16 @@ fn initialize_git_repository(path: &Path, base_branch: Option<&str>) -> Result<(
 fn scaffold_managed_project_template(path: &Path, template: Option<&str>) -> Result<()> {
     match template.unwrap_or("rust-taskflow") {
         "rust-taskflow" => {
-            run_command(
-                path,
-                "cargo",
-                ["init", "--name", "taskflow", "--bin", "--vcs", "none", "."],
+            if !path.join("src").exists() {
+                fs::create_dir_all(path.join("src"))?;
+            }
+            write_managed_file(
+                &path.join("Cargo.toml"),
+                "[package]\nname = \"taskflow\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\nserde_json = \"1\"\nserde_yaml = \"0.9\"\n",
+            )?;
+            write_managed_file(
+                &path.join("src").join("main.rs"),
+                "fn main() {\n    println!(\"taskflow\");\n}\n",
             )?;
             write_managed_file(
                 &path.join("src").join("lib.rs"),

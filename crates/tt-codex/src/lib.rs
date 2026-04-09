@@ -334,6 +334,7 @@ impl CodexRuntimeClient {
             cwd: Some(cwd.display().to_string()),
             model,
             sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
+            approval_policy: Some(protocol::AskForApproval::Never),
             service_name: Some("tt".to_string()),
             ephemeral: Some(ephemeral),
             ..protocol::ThreadStartParams::default()
@@ -381,7 +382,7 @@ impl CodexRuntimeClient {
                         path: None,
                         service_tier: None,
                         cwd,
-                        approval_policy: Some(protocol::AskForApproval::OnRequest),
+                        approval_policy: Some(protocol::AskForApproval::Never),
                         approvals_reviewer: None,
                         sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
                         config: None,
@@ -422,6 +423,7 @@ impl CodexRuntimeClient {
                         }],
                         cwd,
                         model,
+                        approval_policy: Some(protocol::AskForApproval::Never),
                         ..protocol::TurnStartParams::default()
                     },
                 })
@@ -437,9 +439,23 @@ impl CodexRuntimeClient {
     ) -> Result<protocol::Turn> {
         let deadline = std::time::Instant::now() + TURN_WAIT_TIMEOUT;
         loop {
-            let thread = self
-                .read_thread_full(thread_id, true)?
-                .ok_or_else(|| anyhow::anyhow!("codex thread `{thread_id}` disappeared"))?;
+            let thread = match self.read_thread_full(thread_id, true) {
+                Ok(Some(thread)) => thread,
+                Ok(None) => anyhow::bail!("codex thread `{thread_id}` disappeared"),
+                Err(error) if can_retry_without_turns(&error) => {
+                    if std::time::Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "timed out waiting for turn `{}` in thread `{}` after {:?}",
+                            turn_id,
+                            thread_id,
+                            TURN_WAIT_TIMEOUT
+                        );
+                    }
+                    std::thread::sleep(TURN_POLL_INTERVAL);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let turn = thread
                 .turns
                 .into_iter()
@@ -465,11 +481,22 @@ impl CodexRuntimeClient {
     }
 
     fn resolve_selector(&self, selector: &str) -> Result<Option<String>> {
+        if uuid::Uuid::parse_str(selector).is_ok() {
+            return Ok(Some(selector.to_string()));
+        }
         let catalog = self.catalog()?;
         Ok(catalog
             .resolve_thread(selector)
             .map(|thread| thread.thread_id.clone()))
     }
+}
+
+fn can_retry_without_turns(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("includeTurns is unavailable before first user message")
+            || message.contains("ephemeral threads do not support includeTurns")
+    })
 }
 
 struct CodexAppServerConnection {

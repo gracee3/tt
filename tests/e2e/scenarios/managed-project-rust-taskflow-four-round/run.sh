@@ -8,7 +8,7 @@ e2e_load_scenario_metadata "$scenario_dir"
 e2e_prepare_scenario_dirs "$NAME"
 e2e_prepare_live_tt_environment "mprt" 6400
 
-repo_root="$E2E_SCENARIO_WORKTREES_DIR/taskflow-repo"
+repo_root="$E2E_SCENARIO_ARTIFACTS_DIR/taskflow-repo"
 daemon_log="$E2E_SCENARIO_LOGS_DIR/tt-daemon.log"
 reports_dir="$E2E_SCENARIO_REPORTS_DIR"
 seed_file="$scenario_dir/taskflow-seed.toml"

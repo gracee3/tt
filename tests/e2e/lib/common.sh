@@ -315,13 +315,13 @@ e2e_start_managed_daemon() {
   local daemon_log="$1"
   if e2e_is_true "${TT_E2E_REUSE_CURRENT_DAEMON:-false}"; then
     [[ -n "${TT_E2E_SHARED_SOCKET_FILE:-}" ]] || e2e_fail "TT_E2E_SHARED_SOCKET_FILE is required when TT_E2E_REUSE_CURRENT_DAEMON=true"
-    e2e_tt daemon status >"$daemon_log" 2>&1 || e2e_fail "shared lab daemon is not responsive"
+    e2e_tt status >"$daemon_log" 2>&1 || e2e_fail "shared lab daemon is not responsive"
     printf 'shared lab daemon reused via %s\n' "$TT_E2E_SHARED_SOCKET_FILE" >>"$daemon_log"
     e2e_daemon_pid=""
     return 0
   fi
-  e2e_tt daemon start --force-spawn >"$daemon_log" 2>&1 &
-  e2e_daemon_pid=$!
+  printf 'repo-local v2 daemon startup is on-demand; using tt-cli request fallback\n' >"$daemon_log"
+  e2e_daemon_pid=""
 }
 
 e2e_stop_managed_daemon() {
