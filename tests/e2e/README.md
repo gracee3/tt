@@ -23,6 +23,10 @@ Generated output is written only under `target/e2e/`:
 - `target/e2e/tt/<run-id>/<scenario>/`
 - `target/e2e/xdg/<run-id>/<scenario>/`
 
+Managed-project live scenarios also write a scenario-local progress stream at:
+
+- `target/e2e/artifacts/<run-id>/<scenario>/.tt/scenarios/<scenario-id>/progress.jsonl`
+
 ## Scenario Metadata
 
 Each scenario provides `scenario.env` with shell-friendly key/value pairs:
@@ -106,4 +110,5 @@ The managed-project scenarios exercise the current TT v2 workflow:
 - run a seeded multi-round Rust project scenario
 - run a seeded multi-round Rust project scenario with integration pressure
 - inspect attachment state through the daemon
+- inspect the JSONL progress stream while the director/subagents are running
 - verify the commands work from a linked git worktree path

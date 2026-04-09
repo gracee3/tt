@@ -497,6 +497,22 @@ pub struct ManagedProjectApprovalState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectProgressEvent {
+    pub event: String,
+    pub scenario_id: String,
+    pub scenario_kind: String,
+    pub phase: String,
+    pub round: usize,
+    pub role: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub state: Option<String>,
+    pub signal: Option<String>,
+    pub message: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedProjectRoundState {
     pub round_number: usize,
     pub phase: String,
@@ -545,6 +561,13 @@ struct WorkerHandoffExtraction {
 enum WorkerHandoffSource {
     Extracted,
     SeededFallback,
+}
+
+fn handoff_source_string(source: &WorkerHandoffSource) -> &'static str {
+    match source {
+        WorkerHandoffSource::Extracted => "extracted",
+        WorkerHandoffSource::SeededFallback => "seeded_fallback",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3159,6 +3182,32 @@ impl DaemonService {
             rounds: Vec::new(),
             completed: false,
         };
+        write_scenario_progress_event(
+            bootstrap,
+            &state.scenario_id,
+            &ManagedProjectProgressEvent {
+                event: "scenario-start".to_string(),
+                scenario_id: state.scenario_id.clone(),
+                scenario_kind: scenario_kind.to_string(),
+                phase: state.current_phase.clone(),
+                round: state.current_round,
+                role: Some("director".to_string()),
+                thread_id: Some(director_thread_id.to_string()),
+                turn_id: None,
+                state: state
+                    .watchdog
+                    .as_ref()
+                    .map(|watchdog| watchdog.state.clone()),
+                signal: state
+                    .watchdog
+                    .as_ref()
+                    .and_then(|watchdog| watchdog.last_signal.clone()),
+                message: format!(
+                    "director thread {director_thread_id} starting managed project with roles director/dev/test/integration"
+                ),
+                timestamp: Utc::now(),
+            },
+        )?;
 
         let round_specs = taskflow_round_specs(scenario_kind);
         let mut worker_context = String::new();
@@ -3170,6 +3219,33 @@ impl DaemonService {
                 "tt director scenario {} round {} phase {} starting",
                 scenario_kind, spec.round_number, spec.phase
             );
+            write_scenario_progress_event(
+                bootstrap,
+                &state.scenario_id,
+                &ManagedProjectProgressEvent {
+                    event: "round-start".to_string(),
+                    scenario_id: state.scenario_id.clone(),
+                    scenario_kind: scenario_kind.to_string(),
+                    phase: spec.phase.to_string(),
+                    round: spec.round_number,
+                    role: Some("director".to_string()),
+                    thread_id: Some(director_thread_id.to_string()),
+                    turn_id: None,
+                    state: state
+                        .watchdog
+                        .as_ref()
+                        .map(|watchdog| watchdog.state.clone()),
+                    signal: state
+                        .watchdog
+                        .as_ref()
+                        .and_then(|watchdog| watchdog.last_signal.clone()),
+                    message: format!(
+                        "director round {} phase {} planning and dispatch",
+                        spec.round_number, spec.phase
+                    ),
+                    timestamp: Utc::now(),
+                },
+            )?;
 
             let mut round = ManagedProjectRoundState {
                 round_number: spec.round_number,
@@ -3205,6 +3281,34 @@ impl DaemonService {
                 "tt director scenario {} round {} director completed turn {}",
                 scenario_kind, spec.round_number, director_turn.turn_id
             );
+            write_scenario_progress_event(
+                bootstrap,
+                &state.scenario_id,
+                &ManagedProjectProgressEvent {
+                    event: "director-turn-complete".to_string(),
+                    scenario_id: state.scenario_id.clone(),
+                    scenario_kind: scenario_kind.to_string(),
+                    phase: spec.phase.to_string(),
+                    round: spec.round_number,
+                    role: Some("director".to_string()),
+                    thread_id: Some(director_thread_id.to_string()),
+                    turn_id: Some(director_turn.turn_id.clone()),
+                    state: state
+                        .watchdog
+                        .as_ref()
+                        .map(|watchdog| watchdog.state.clone()),
+                    signal: state
+                        .watchdog
+                        .as_ref()
+                        .and_then(|watchdog| watchdog.last_signal.clone()),
+                    message: format!(
+                        "director completed turn {} with summary {}",
+                        director_turn.turn_id,
+                        director_turn.summary.lines().next().unwrap_or("<empty>")
+                    ),
+                    timestamp: Utc::now(),
+                },
+            )?;
             round.director_turn_id = Some(director_turn.turn_id.clone());
             round.director_summary = Some(director_turn.summary.clone());
             state.watchdog = director_turn.watchdog.clone();
@@ -3240,6 +3344,38 @@ impl DaemonService {
                     &director_turn.summary,
                     state.pending_approval.as_ref(),
                 );
+                let assigned_goal = worker_prompt
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Assigned goal: "))
+                    .unwrap_or("<empty>");
+                write_scenario_progress_event(
+                    bootstrap,
+                    &state.scenario_id,
+                    &ManagedProjectProgressEvent {
+                        event: "worker-dispatch".to_string(),
+                        scenario_id: state.scenario_id.clone(),
+                        scenario_kind: scenario_kind.to_string(),
+                        phase: spec.phase.to_string(),
+                        round: spec.round_number,
+                        role: Some(role_slug(role.role).to_string()),
+                        thread_id: Some(thread_id.to_string()),
+                        turn_id: None,
+                        state: state
+                            .watchdog
+                            .as_ref()
+                            .map(|watchdog| watchdog.state.clone()),
+                        signal: state
+                            .watchdog
+                            .as_ref()
+                            .and_then(|watchdog| watchdog.last_signal.clone()),
+                        message: format!(
+                            "director dispatching {} with goal {}",
+                            role_slug(role.role),
+                            assigned_goal
+                        ),
+                        timestamp: Utc::now(),
+                    },
+                )?;
                 write_scenario_artifact(
                     bootstrap,
                     &state.scenario_id,
@@ -3315,6 +3451,36 @@ impl DaemonService {
                     role_slug(role.role),
                     handoff.turn_id
                 );
+                write_scenario_progress_event(
+                    bootstrap,
+                    &state.scenario_id,
+                    &ManagedProjectProgressEvent {
+                        event: "worker-turn-complete".to_string(),
+                        scenario_id: state.scenario_id.clone(),
+                        scenario_kind: scenario_kind.to_string(),
+                        phase: spec.phase.to_string(),
+                        round: spec.round_number,
+                        role: Some(role_slug(role.role).to_string()),
+                        thread_id: Some(thread_id.to_string()),
+                        turn_id: Some(handoff.turn_id.clone()),
+                        state: state
+                            .watchdog
+                            .as_ref()
+                            .map(|watchdog| watchdog.state.clone()),
+                        signal: state
+                            .watchdog
+                            .as_ref()
+                            .and_then(|watchdog| watchdog.last_signal.clone()),
+                        message: format!(
+                            "{} completed turn {} source={} status={}",
+                            role_slug(role.role),
+                            handoff.turn_id,
+                            handoff_source_string(&handoff_source),
+                            structured_handoff.status
+                        ),
+                        timestamp: Utc::now(),
+                    },
+                )?;
                 round.role_handoffs.insert(
                     role_slug(role.role).to_string(),
                     ManagedProjectRoleHandoff {
@@ -3347,6 +3513,35 @@ impl DaemonService {
                 "round-summary.md",
                 &worker_context,
             )?;
+            write_scenario_progress_event(
+                bootstrap,
+                &state.scenario_id,
+                &ManagedProjectProgressEvent {
+                    event: "round-summary".to_string(),
+                    scenario_id: state.scenario_id.clone(),
+                    scenario_kind: scenario_kind.to_string(),
+                    phase: spec.phase.to_string(),
+                    round: spec.round_number,
+                    role: Some("director".to_string()),
+                    thread_id: Some(director_thread_id.to_string()),
+                    turn_id: round.director_turn_id.clone(),
+                    state: state
+                        .watchdog
+                        .as_ref()
+                        .map(|watchdog| watchdog.state.clone()),
+                    signal: state
+                        .watchdog
+                        .as_ref()
+                        .and_then(|watchdog| watchdog.last_signal.clone()),
+                    message: format!(
+                        "round {} phase {} summary recorded with {} role handoffs",
+                        spec.round_number,
+                        spec.phase,
+                        round.role_handoffs.len()
+                    ),
+                    timestamp: Utc::now(),
+                },
+            )?;
             state.rounds.push(round);
             bootstrap.scenario = Some(state.clone());
             self.save_managed_project_bootstrap(bootstrap)?;
@@ -3360,6 +3555,30 @@ impl DaemonService {
         state.completed = true;
         bootstrap.scenario = Some(state.clone());
         self.save_managed_project_bootstrap(bootstrap)?;
+        write_scenario_progress_event(
+            bootstrap,
+            &state.scenario_id,
+            &ManagedProjectProgressEvent {
+                event: "scenario-complete".to_string(),
+                scenario_id: state.scenario_id.clone(),
+                scenario_kind: scenario_kind.to_string(),
+                phase: state.current_phase.clone(),
+                round: state.current_round,
+                role: Some("director".to_string()),
+                thread_id: Some(director_thread_id.to_string()),
+                turn_id: None,
+                state: state
+                    .watchdog
+                    .as_ref()
+                    .map(|watchdog| watchdog.state.clone()),
+                signal: state
+                    .watchdog
+                    .as_ref()
+                    .and_then(|watchdog| watchdog.last_signal.clone()),
+                message: "managed project scenario completed".to_string(),
+                timestamp: Utc::now(),
+            },
+        )?;
         eprintln!("tt director scenario {} completed", scenario_kind);
         Ok(state)
     }
@@ -3428,6 +3647,16 @@ impl DaemonService {
             app_server_log_size: None,
             note: Some("waiting for the first turn observation".to_string()),
         });
+        let scenario_kind_name = bootstrap
+            .scenario
+            .as_ref()
+            .map(|scenario| scenario.scenario_kind.clone())
+            .unwrap_or_else(|| "managed-project".to_string());
+        let phase_name = bootstrap
+            .scenario
+            .as_ref()
+            .map(|scenario| scenario.current_phase.clone())
+            .unwrap_or_else(|| "unknown".to_string());
 
         for attempt_number in 1..=LIVE_TURN_MAX_ATTEMPTS {
             let attempt_result: Result<ManagedProjectTurnOutcome> = (|| {
@@ -3491,6 +3720,27 @@ impl DaemonService {
                         };
                         latest_watchdog = Some(watchdog_state);
                         if let Some(watchdog_state) = latest_watchdog.as_ref() {
+                            let _ = write_scenario_progress_event(
+                                bootstrap,
+                                scenario_id,
+                                &ManagedProjectProgressEvent {
+                                    event: "watchdog-progress".to_string(),
+                                    scenario_id: scenario_id.to_string(),
+                                    scenario_kind: scenario_kind_name.clone(),
+                                    phase: phase_name.clone(),
+                                    round: round_number,
+                                    role: Some(role_slug(role_bootstrap.role).to_string()),
+                                    thread_id: Some(thread_id.to_string()),
+                                    turn_id: Some(turn.id.clone()),
+                                    state: Some(watchdog_state.state.clone()),
+                                    signal: watchdog_state.last_signal.clone(),
+                                    message: watchdog_state
+                                        .note
+                                        .clone()
+                                        .unwrap_or_else(|| "watchdog observation".to_string()),
+                                    timestamp: Utc::now(),
+                                },
+                            );
                             eprintln!(
                                 "tt watchdog role={} round={} state={} elapsed={}s silence={}s status={} items={} signal={} log_size={}",
                                 role_slug(role_bootstrap.role),
@@ -4632,6 +4882,30 @@ fn write_scenario_artifact(
         fs::create_dir_all(parent)?;
     }
     fs::write(path, contents)?;
+    Ok(())
+}
+
+fn write_scenario_progress_event(
+    bootstrap: &ManagedProjectBootstrap,
+    scenario_id: &str,
+    event: &ManagedProjectProgressEvent,
+) -> Result<()> {
+    let path = bootstrap
+        .repo_root
+        .join(".tt")
+        .join("scenarios")
+        .join(scenario_id)
+        .join("progress.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(event)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    use std::io::Write;
+    writeln!(file, "{}", line)?;
     Ok(())
 }
 

@@ -6,6 +6,11 @@ director-led project workflow.
 This writes the project contract and agent definitions so Codex can spawn the
 roles directly. The director is the operator-facing coordinator, and the
 workers report only to the director.
+The live workflow uses explicit subagents, not anonymous background threads:
+the director opens first, prints the environment and plan, and then spawns the
+worker subagents for the project.
+The runtime also writes a scenario-level JSONL progress stream so the operator
+can see what the director and subagents are doing while a run is live.
 
 ## What It Creates
 
@@ -18,6 +23,7 @@ workers report only to the director.
 - `.tt/plan.toml` with the director's current plan and checkpoints
 - `.tt/contracts/worker-contract.md`
 - `.tt/managed-project.toml`
+- `.tt/scenarios/<scenario-id>/progress.jsonl` for live director/subagent progress
 - one worktree each for `dev`, `test`, and `integration`
 
 ## Role Model
@@ -36,6 +42,8 @@ Default managed-project model roster:
 
 Workers do not coordinate peer-to-peer. All assignments, clarifications, and
 escalations flow through the director.
+The managed-project runtime also writes a JSONL progress stream so the operator
+can inspect what the director and subagents are doing while a run is live.
 
 ## Lifecycle
 

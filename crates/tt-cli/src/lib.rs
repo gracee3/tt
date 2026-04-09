@@ -1128,6 +1128,12 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
         ));
     }
     if let Some(scenario) = bootstrap.scenario.as_ref() {
+        let progress_stream = bootstrap
+            .repo_root
+            .join(".tt")
+            .join("scenarios")
+            .join(&scenario.scenario_id)
+            .join("progress.jsonl");
         output.push_str("\nScenario\n");
         output.push_str("--------\n");
         output.push_str(&format!("id: {}\n", scenario.scenario_id));
@@ -1136,12 +1142,19 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
         output.push_str(&format!("round: {}\n", scenario.current_round));
         output.push_str(&format!("completed: {}\n", scenario.completed));
         output.push_str(&format!(
-            "liveness_policy: expected_long_build={} progress_updates_required={} soft_silence_seconds={} hard_ceiling_seconds={}\n",
-            scenario.liveness_policy.expected_long_build,
-            scenario.liveness_policy.require_progress_updates,
-            scenario.liveness_policy.soft_silence_seconds,
-            scenario.liveness_policy.hard_ceiling_seconds
-        ));
+                "liveness_policy: expected_long_build={} progress_updates_required={} soft_silence_seconds={} hard_ceiling_seconds={}\n",
+                scenario.liveness_policy.expected_long_build,
+                scenario.liveness_policy.require_progress_updates,
+                scenario.liveness_policy.soft_silence_seconds,
+                scenario.liveness_policy.hard_ceiling_seconds
+            ));
+        output.push_str(&format!("progress_stream: {}\n", progress_stream.display()));
+        if let Ok(stream_contents) = fs::read_to_string(&progress_stream) {
+            output.push_str(&format!(
+                "progress_events: {}\n",
+                stream_contents.lines().count()
+            ));
+        }
         if let Some(approval) = scenario.pending_approval.as_ref() {
             output.push_str(&format!(
                 "pending_approval: {} by {} approved={}\n",
@@ -1776,6 +1789,7 @@ mod tests {
         assert!(text.contains("dev"));
         assert!(text.contains("thread-1"));
         assert!(text.contains("liveness_policy: expected_long_build=false"));
+        assert!(text.contains("progress_stream: /repo/.tt/scenarios/scn-1/progress.jsonl"));
         assert!(text.contains("watchdog: state=healthy"));
         assert!(text.contains("watchdog_summary: healthy"));
         assert!(
