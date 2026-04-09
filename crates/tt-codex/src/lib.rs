@@ -1269,6 +1269,26 @@ pub fn codex_session_index_path(codex_home: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use std::time::Duration;
+
+    fn watchdog_snapshot(
+        thread_updated_at: i64,
+        turn_count: usize,
+        turn_status: Option<&str>,
+        turn_items: usize,
+        app_server_log_modified_at: Option<i64>,
+        app_server_log_size: Option<u64>,
+    ) -> TurnWatchdogSnapshot {
+        TurnWatchdogSnapshot {
+            thread_updated_at,
+            turn_count,
+            turn_status: turn_status.map(std::string::ToString::to_string),
+            turn_items,
+            app_server_log_modified_at,
+            app_server_log_size,
+            progress_signal: None,
+        }
+    }
 
     #[test]
     fn discover_uses_environment_override() {
@@ -1367,5 +1387,55 @@ mod tests {
             "Codex app-server `ws://127.0.0.1:4500` request failed: model provider rejected request"
         );
         assert!(!can_retry_after_turn_completion(&error));
+    }
+
+    #[test]
+    fn watchdog_progress_signal_detects_thread_update() {
+        let previous = watchdog_snapshot(1, 1, Some("InProgress"), 0, Some(10), Some(100));
+        let current = watchdog_snapshot(2, 1, Some("InProgress"), 0, Some(10), Some(100));
+
+        assert_eq!(
+            current.progress_signal(&Some(previous)),
+            Some("thread.updated_at changed".to_string())
+        );
+    }
+
+    #[test]
+    fn watchdog_progress_signal_detects_log_growth() {
+        let previous = watchdog_snapshot(1, 1, Some("InProgress"), 0, Some(10), Some(100));
+        let current = watchdog_snapshot(1, 1, Some("InProgress"), 0, Some(11), Some(100));
+
+        assert_eq!(
+            current.progress_signal(&Some(previous)),
+            Some("app-server log changed".to_string())
+        );
+    }
+
+    #[test]
+    fn watchdog_state_transitions_through_quiet_suspect_and_stalled() {
+        let snapshot = watchdog_snapshot(1, 1, Some("InProgress"), 0, Some(10), Some(100));
+        let soft = Duration::from_secs(10);
+        let healthy_last_progress = std::time::Instant::now();
+        let quiet_last_progress = std::time::Instant::now() - Duration::from_secs(12);
+        let suspect_last_progress = std::time::Instant::now() - Duration::from_secs(25);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let stalled_deadline = std::time::Instant::now() - Duration::from_secs(1);
+
+        assert_eq!(
+            snapshot.state(&healthy_last_progress, soft, deadline),
+            TurnWatchdogState::Healthy
+        );
+        assert_eq!(
+            snapshot.state(&quiet_last_progress, soft, deadline),
+            TurnWatchdogState::Quiet
+        );
+        assert_eq!(
+            snapshot.state(&suspect_last_progress, soft, deadline),
+            TurnWatchdogState::Suspect
+        );
+        assert_eq!(
+            snapshot.state(&healthy_last_progress, soft, stalled_deadline),
+            TurnWatchdogState::Stalled
+        );
     }
 }

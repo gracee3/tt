@@ -991,6 +991,11 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
                 watchdog.silence_seconds,
                 watchdog.last_signal.as_deref().unwrap_or("<none>")
             ));
+            output.push_str(&format!(
+                "watchdog_summary: {} (last progress: {})\n",
+                watchdog.state,
+                watchdog.last_signal.as_deref().unwrap_or("<none>")
+            ));
         }
         let fallback_rounds = scenario
             .rounds
@@ -1509,6 +1514,7 @@ mod tests {
         assert!(text.contains("thread-1"));
         assert!(text.contains("liveness_policy: expected_long_build=false"));
         assert!(text.contains("watchdog: state=healthy"));
+        assert!(text.contains("watchdog_summary: healthy"));
         assert!(text.contains("fallback_handoffs: 1"));
         assert!(text.contains("strict_extraction_ready: false"));
         assert!(text.contains("latest_round_summary: round 4 merge"));
