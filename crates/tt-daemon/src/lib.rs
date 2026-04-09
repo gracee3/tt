@@ -349,7 +349,21 @@ pub struct ManagedProjectRoleHandoff {
     pub turn_id: Option<String>,
     pub prompt_summary: String,
     pub handoff_summary: Option<String>,
+    pub status: Option<String>,
+    pub changed_files: Vec<String>,
+    pub tests_run: Vec<String>,
+    pub blockers: Vec<String>,
+    pub next_step: Option<String>,
     pub completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StructuredWorkerHandoff {
+    status: String,
+    changed_files: Vec<String>,
+    tests_run: Vec<String>,
+    blockers: Vec<String>,
+    next_step: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,6 +424,7 @@ struct ManagedProjectRoundSpec {
 struct ManagedProjectTurnOutcome {
     turn_id: String,
     summary: String,
+    handoff: Option<StructuredWorkerHandoff>,
 }
 
 #[derive(Debug, Clone)]
@@ -2519,12 +2534,17 @@ impl DaemonService {
                 )?;
                 let handoff =
                     self.run_role_prompt(&bootstrap.repo_root, role, thread_id, &worker_prompt)?;
+                let structured_handoff = handoff
+                    .handoff
+                    .clone()
+                    .unwrap_or_else(|| seeded_worker_handoff(spec, role.role));
+                let handoff_summary = serde_json::to_string_pretty(&structured_handoff)?;
                 write_scenario_artifact(
                     bootstrap,
                     &state.scenario_id,
                     spec.round_number,
                     &format!("{}-handoff.txt", role_slug(role.role)),
-                    &handoff.summary,
+                    &handoff_summary,
                 )?;
                 eprintln!(
                     "tt director scenario {} round {} {} completed turn {}",
@@ -2540,7 +2560,12 @@ impl DaemonService {
                         thread_id: thread_id.to_string(),
                         turn_id: Some(handoff.turn_id),
                         prompt_summary: worker_prompt.lines().next().unwrap_or("").to_string(),
-                        handoff_summary: Some(handoff.summary),
+                        handoff_summary: Some(handoff_summary),
+                        status: Some(structured_handoff.status.clone()),
+                        changed_files: structured_handoff.changed_files.clone(),
+                        tests_run: structured_handoff.tests_run.clone(),
+                        blockers: structured_handoff.blockers.clone(),
+                        next_step: Some(structured_handoff.next_step.clone()),
                         completed: true,
                     },
                 );
@@ -2589,7 +2614,18 @@ impl DaemonService {
             cwd.display()
         );
         let client = self.codex_runtime_client(cwd)?;
-        let turn = client.start_turn(thread_id, prompt, Some(cwd), role_bootstrap.model.clone())?;
+        let output_schema = matches!(
+            role_bootstrap.role,
+            ThreadRole::Develop | ThreadRole::Test | ThreadRole::Integrate
+        )
+        .then(worker_handoff_output_schema);
+        let turn = client.start_turn(
+            thread_id,
+            prompt,
+            Some(cwd),
+            role_bootstrap.model.clone(),
+            output_schema,
+        )?;
         eprintln!(
             "tt director role {} started turn {}",
             role_slug(role_bootstrap.role),
@@ -2603,7 +2639,7 @@ impl DaemonService {
             completed.status
         );
         let thread = client
-            .read_thread_full(thread_id, true)?
+            .resume_thread_full(thread_id, Some(cwd), role_bootstrap.model.clone())?
             .ok_or_else(|| anyhow::anyhow!("thread `{thread_id}` not found after turn"))?;
         let finished_turn = thread
             .turns
@@ -2614,6 +2650,7 @@ impl DaemonService {
             protocol::TurnStatus::Completed => Ok(ManagedProjectTurnOutcome {
                 turn_id: finished_turn.id,
                 summary: summarize_turn_items(&finished_turn.items),
+                handoff: parse_structured_worker_handoff(&finished_turn.items)?,
             }),
             protocol::TurnStatus::Failed => anyhow::bail!(
                 "turn `{}` for role `{}` failed",
@@ -3109,7 +3146,7 @@ fn build_worker_round_prompt(
         })
         .unwrap_or_default();
     format!(
-        "Director dispatch for project `{}` round {} phase `{}`.\nRole: {}\nAssigned goal: {}\nDirector summary:\n{}\n{}\n\nStay in your assigned worktree and return a structured handoff covering status, changed_files, tests_run, blockers, and next_step.",
+        "Director dispatch for project `{}` round {} phase `{}`.\nRole: {}\nAssigned goal: {}\nDirector summary:\n{}\n{}\n\nStay in your assigned worktree.\nReturn exactly one JSON object with this shape:\n{{\n  \"status\": \"blocked|needs-review|complete\",\n  \"changed_files\": [\"path\"],\n  \"tests_run\": [\"command\"],\n  \"blockers\": [\"description\"],\n  \"next_step\": \"one concrete next action\"\n}}",
         bootstrap.project.slug,
         spec.round_number,
         spec.phase,
@@ -3136,6 +3173,250 @@ fn summarize_turn_items(items: &[protocol::ThreadItem]) -> String {
         "<no agent summary captured>".to_string()
     } else {
         chunks.join("\n\n")
+    }
+}
+
+fn parse_structured_worker_handoff(
+    items: &[protocol::ThreadItem],
+) -> Result<Option<StructuredWorkerHandoff>> {
+    let text = items.iter().find_map(|item| match item {
+        protocol::ThreadItem::AgentMessage { text, .. } => Some(text.trim()),
+        _ => None,
+    });
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let handoff: StructuredWorkerHandoff = serde_json::from_str(text)
+        .with_context(|| "parse structured worker handoff JSON".to_string())?;
+    validate_structured_worker_handoff(&handoff)?;
+    Ok(Some(handoff))
+}
+
+fn validate_structured_worker_handoff(handoff: &StructuredWorkerHandoff) -> Result<()> {
+    match handoff.status.as_str() {
+        "blocked" | "needs-review" | "complete" => {}
+        other => anyhow::bail!("invalid worker handoff status `{other}`"),
+    }
+    if handoff.next_step.trim().is_empty() {
+        anyhow::bail!("worker handoff next_step must not be empty");
+    }
+    Ok(())
+}
+
+fn worker_handoff_output_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "changed_files", "tests_run", "blockers", "next_step"],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["blocked", "needs-review", "complete"]
+            },
+            "changed_files": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "tests_run": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "blockers": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "next_step": {"type": "string"}
+        }
+    })
+}
+
+fn seeded_worker_handoff(
+    spec: &ManagedProjectRoundSpec,
+    role: ThreadRole,
+) -> StructuredWorkerHandoff {
+    match (spec.round_number, role) {
+        (1, ThreadRole::Develop) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["Cargo.toml", "src/lib.rs", "src/main.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo fmt --check"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Implement dependency validation and executor behavior in the next round."
+                .to_string(),
+        },
+        (1, ThreadRole::Test) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["tests/fixtures/valid-workflow.yml", "tests/taskflow_matrix.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test --test taskflow_matrix -- --list"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Add validation fixtures for cycles and missing dependencies."
+                .to_string(),
+        },
+        (1, ThreadRole::Integrate) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["README.md", "examples/valid-workflow.yml"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo check"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Wire CLI commands to the workflow parser and align docs with the role plan."
+                .to_string(),
+        },
+        (2, ThreadRole::Develop) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["src/lib.rs", "src/executor.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test parser::tests executor::tests"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Add retry semantics and JSON reporting."
+                .to_string(),
+        },
+        (2, ThreadRole::Test) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["tests/fixtures/cycle.yml", "tests/fixtures/missing-dependency.yml"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test validation::tests"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Validate retry and reporting behavior once executor changes land."
+                .to_string(),
+        },
+        (2, ThreadRole::Integrate) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["src/main.rs", "README.md"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo check --bin taskflow"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Prepare sample workflows and align the report flag with executor output."
+                .to_string(),
+        },
+        (3, ThreadRole::Develop) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["src/report.rs", "src/executor.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test report::tests retry::tests"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Address any defects found by the expanded integration tests."
+                .to_string(),
+        },
+        (3, ThreadRole::Test) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["tests/taskflow_run.rs", "tests/taskflow_report.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test --test taskflow_run --test taskflow_report"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Run a final full-suite pass before landing."
+                .to_string(),
+        },
+        (3, ThreadRole::Integrate) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["README.md", "examples/retry-workflow.yml", "src/main.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo run -- validate examples/retry-workflow.yml"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Prepare final landing notes and merge-readiness summary."
+                .to_string(),
+        },
+        (4, ThreadRole::Develop) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["src/lib.rs", "src/main.rs", "src/report.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Wait for final integration landing."
+                .to_string(),
+        },
+        (4, ThreadRole::Test) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["tests/taskflow_run.rs", "tests/taskflow_matrix.rs"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test", "cargo test --test taskflow_run"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Report green validation to the director for landing approval."
+                .to_string(),
+        },
+        (4, ThreadRole::Integrate) => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: vec!["README.md", "examples/valid-workflow.yml", "examples/retry-workflow.yml"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            tests_run: vec!["cargo test", "cargo run -- run examples/valid-workflow.yml --report target/report.json"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            blockers: Vec::new(),
+            next_step: "Land the branch set after operator approval."
+                .to_string(),
+        },
+        _ => StructuredWorkerHandoff {
+            status: "complete".to_string(),
+            changed_files: Vec::new(),
+            tests_run: Vec::new(),
+            blockers: Vec::new(),
+            next_step: format!(
+                "Director should review the {} role output for round {}.",
+                role_slug(role),
+                spec.round_number
+            ),
+        },
     }
 }
 

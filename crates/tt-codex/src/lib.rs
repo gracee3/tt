@@ -16,6 +16,7 @@ use codex_app_server_protocol as protocol;
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep, timeout};
@@ -337,6 +338,7 @@ impl CodexRuntimeClient {
             approval_policy: Some(protocol::AskForApproval::Never),
             service_name: Some("tt".to_string()),
             ephemeral: Some(ephemeral),
+            persist_extended_history: true,
             ..protocol::ThreadStartParams::default()
         })
     }
@@ -398,12 +400,54 @@ impl CodexRuntimeClient {
         })
     }
 
+    pub fn resume_thread_full(
+        &self,
+        selector: &str,
+        cwd: Option<&Path>,
+        model: Option<String>,
+    ) -> Result<Option<protocol::Thread>> {
+        let Some(thread_id) = self.resolve_selector(selector)? else {
+            return Ok(None);
+        };
+        let cwd = cwd.map(|path| path.display().to_string());
+        let connection = Arc::clone(&self.connection);
+        self.runtime.block_on(async {
+            let mut connection = connection.lock().await;
+            let request_id = connection.next_request_id();
+            let response: protocol::ThreadResumeResponse = connection
+                .request_typed(protocol::ClientRequest::ThreadResume {
+                    request_id,
+                    params: protocol::ThreadResumeParams {
+                        thread_id: thread_id.to_string(),
+                        model,
+                        model_provider: None,
+                        history: None,
+                        path: None,
+                        service_tier: None,
+                        cwd,
+                        approval_policy: Some(protocol::AskForApproval::Never),
+                        approvals_reviewer: None,
+                        sandbox: Some(protocol::SandboxMode::WorkspaceWrite),
+                        config: None,
+                        base_instructions: None,
+                        developer_instructions: None,
+                        personality: None,
+                        persist_extended_history: true,
+                    },
+                })
+                .await
+                .map_err(anyhow::Error::from)?;
+            Ok(Some(response.thread))
+        })
+    }
+
     pub fn start_turn(
         &self,
         thread_id: &str,
         prompt: &str,
         cwd: Option<&Path>,
         model: Option<String>,
+        output_schema: Option<JsonValue>,
     ) -> Result<protocol::Turn> {
         let connection = Arc::clone(&self.connection);
         let thread_id = thread_id.to_string();
@@ -424,6 +468,7 @@ impl CodexRuntimeClient {
                         cwd,
                         model,
                         approval_policy: Some(protocol::AskForApproval::Never),
+                        output_schema,
                         ..protocol::TurnStartParams::default()
                     },
                 })
@@ -456,11 +501,18 @@ impl CodexRuntimeClient {
                 }
                 Err(error) => return Err(error),
             };
-            let turn = thread
-                .turns
-                .into_iter()
-                .find(|turn| turn.id == turn_id)
-                .ok_or_else(|| anyhow::anyhow!("turn `{turn_id}` not found in thread `{thread_id}`"))?;
+            let Some(turn) = thread.turns.into_iter().find(|turn| turn.id == turn_id) else {
+                if std::time::Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "timed out waiting for turn `{}` in thread `{}` after {:?}",
+                        turn_id,
+                        thread_id,
+                        TURN_WAIT_TIMEOUT
+                    );
+                }
+                std::thread::sleep(TURN_POLL_INTERVAL);
+                continue;
+            };
             match turn.status {
                 protocol::TurnStatus::Completed
                 | protocol::TurnStatus::Failed
