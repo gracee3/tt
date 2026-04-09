@@ -183,7 +183,7 @@ Tracked backlog for the active direct skill thread.
 - Added workspace actions and daemon-state-first lifecycle operations (`prepare`, `merge-prep`, `authorize-merge`, `execute-landing`, `prune`, `close`, `park`, `split`) plus a simplified TUI command guide and matching thin CLI surface.
 - Isolated the raw store-shaped CRUD/status CLI surface behind a `legacy` namespace so the main interface can stay centered on lifecycle and reconcile flows.
 - Implemented the lane filesystem layout scaffold and the `tt lane init|inspect|cleanup` CLI surface.
-- Added explicit lane/workspace manifest fields and surfaced discovered lane roots in `tt doctor`.
+- Added explicit lane/workspace manifest fields and surfaced discovered lane roots in the internal runtime probe.
 - Added lane attachment mirroring so `tt lane attach|detach` updates tracked-thread binding state and records the attachment list in the workspace manifest.
 - Added `tt lane list` plus a cleanup guard that refuses to delete live-attached workspaces without `--force`.
 - Added the new role/lifecycle CLI surface for `todo`, `develop`, `test`, `integrate`, `chat`, `learn`, `handoff`, `diff`, `split`, `close`, and `park`, backed by role prompts and shared branch/worktree helpers.

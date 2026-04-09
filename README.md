@@ -34,7 +34,6 @@ Runtime-only state such as `.tt/overlay.db` stays ignored.
 ```bash
 cargo build -p tt-cli -p tt-daemon
 ./target/debug/tt-cli status
-./target/debug/tt-cli internal project inspect
 ./target/debug/tt-cli codex app-servers
 ```
 

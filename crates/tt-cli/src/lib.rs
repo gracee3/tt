@@ -84,12 +84,6 @@ pub enum Command {
         command: CodexCommand,
     },
     Status,
-    Doctor {
-        #[arg(long, default_value_t = false)]
-        codex: bool,
-        #[arg(long = "check-listen", default_value_t = false)]
-        check_listen: bool,
-    },
     #[command(hide = true)]
     Internal {
         #[command(subcommand)]
@@ -108,6 +102,12 @@ pub enum DocsCommand {
 #[derive(Debug, Subcommand)]
 pub enum InternalCommand {
     Repo,
+    Doctor {
+        #[arg(long, default_value_t = false)]
+        codex: bool,
+        #[arg(long = "check-listen", default_value_t = false)]
+        check_listen: bool,
+    },
     Project {
         #[command(subcommand)]
         command: InternalProjectCommand,
@@ -428,9 +428,9 @@ fn local_command_output(command: &Command, cli_cwd: &Option<PathBuf>) -> Result<
         } => {
             let markdown = render_cli_reference_markdown();
             if let Some(path) = output {
-                let base = cli_cwd
-                    .clone()
-                    .unwrap_or(std::env::current_dir().context("resolve current working directory")?);
+                let base = cli_cwd.clone().unwrap_or(
+                    std::env::current_dir().context("resolve current working directory")?,
+                );
                 let resolved = resolve_cli_path(&base, path.clone());
                 if let Some(parent) = resolved.parent() {
                     fs::create_dir_all(parent)
@@ -520,22 +520,6 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             seed_file: None,
         },
         Command::Docs { .. } => anyhow::bail!("docs commands are handled locally"),
-        Command::Doctor {
-            codex,
-            check_listen,
-        } => {
-            if codex {
-                DaemonRequest::DoctorCodex {
-                    cwd: cwd.to_path_buf(),
-                    check_listen,
-                }
-            } else {
-                DaemonRequest::Doctor {
-                    cwd: cwd.to_path_buf(),
-                    check_listen,
-                }
-            }
-        }
         Command::Status => DaemonRequest::Status {
             cwd: cwd.to_path_buf(),
         },
@@ -580,261 +564,286 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             InternalCommand::Repo => DaemonRequest::RepositorySummary {
                 cwd: cwd.to_path_buf(),
             },
-            InternalCommand::Project { command } => match command {
-            InternalProjectCommand::Inspect => DaemonRequest::InspectManagedProject {
-                cwd: cwd.to_path_buf(),
-            },
-            InternalProjectCommand::Plan { command } => match command {
-                ProjectPlanCommand::Show => DaemonRequest::InspectManagedProjectPlan {
-                    cwd: cwd.to_path_buf(),
-                },
-                ProjectPlanCommand::Refresh => DaemonRequest::RefreshManagedProjectPlan {
-                    cwd: cwd.to_path_buf(),
-                },
-            },
-            InternalProjectCommand::Init {
-                path,
-                title,
-                objective,
-                template,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-            } => DaemonRequest::InitManagedProject {
-                path: path
-                    .map(|path| resolve_cli_path(cwd, path))
-                    .unwrap_or_else(|| cwd.to_path_buf()),
-                title,
-                objective,
-                template,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-            },
-            InternalProjectCommand::Open {
-                title,
-                objective,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-            } => DaemonRequest::OpenManagedProject {
-                cwd: cwd.to_path_buf(),
-                title,
-                objective,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-            },
-            InternalProjectCommand::Director {
-                title,
-                objective,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-                role,
-                binding,
-                scenario,
-                seed_file,
-            } => DaemonRequest::DirectManagedProject {
-                cwd: cwd.to_path_buf(),
-                title,
-                objective,
-                base_branch,
-                worktree_root,
-                director_model,
-                dev_model,
-                test_model,
-                integration_model,
-                roles: if role.is_empty() {
-                    None
+            InternalCommand::Doctor {
+                codex,
+                check_listen,
+            } => {
+                if codex {
+                    DaemonRequest::DoctorCodex {
+                        cwd: cwd.to_path_buf(),
+                        check_listen,
+                    }
                 } else {
-                    Some(parse_thread_roles(&role)?)
-                },
-                bindings: parse_thread_bindings(&binding)?,
-                scenario,
-                seed_file: seed_file.map(|path| resolve_cli_path(cwd, path)),
-            },
-            InternalProjectCommand::Control { role, mode } => {
-                DaemonRequest::SetManagedProjectThreadControl {
-                    cwd: cwd.to_path_buf(),
-                    role: ThreadRole::from_str(&role).map_err(|error| anyhow::anyhow!(error))?,
-                    mode: parse_thread_control_mode(&mode)?,
+                    DaemonRequest::Doctor {
+                        cwd: cwd.to_path_buf(),
+                        check_listen,
+                    }
                 }
             }
-            InternalProjectCommand::Spawn { role } => DaemonRequest::SpawnManagedProject {
-                cwd: cwd.to_path_buf(),
-                roles: if role.is_empty() {
-                    None
-                } else {
-                    Some(parse_thread_roles(&role)?)
-                },
-            },
-            InternalProjectCommand::Attach { binding } => DaemonRequest::AttachManagedProject {
-                cwd: cwd.to_path_buf(),
-                bindings: parse_thread_bindings(&binding)?,
-            },
-        },
-        InternalCommand::Workspace { command } => match command {
-            WorkspaceCommand::Binding { command } => match command {
-                WorkspaceBindingCommand::List => DaemonRequest::ListWorkspaceBindings,
-                WorkspaceBindingCommand::Get { id } => DaemonRequest::GetWorkspaceBinding { id },
-                WorkspaceBindingCommand::Upsert { file } => DaemonRequest::UpsertWorkspaceBinding {
-                    binding: read_json(file)?,
-                },
-                WorkspaceBindingCommand::SetStatus { id, status } => {
-                    DaemonRequest::SetWorkspaceBindingStatus {
-                        id,
-                        status: parse_status::<WorkspaceStatus>(&status)?,
-                    }
-                }
-                WorkspaceBindingCommand::Refresh { id } => {
-                    DaemonRequest::RefreshWorkspaceBinding { id }
-                }
-                WorkspaceBindingCommand::Delete { id } => {
-                    DaemonRequest::DeleteWorkspaceBinding { id }
-                }
-            },
-            WorkspaceCommand::MergeRun { command } => match command {
-                MergeRunCommand::List => DaemonRequest::ListMergeRuns,
-                MergeRunCommand::Get { id } => DaemonRequest::GetMergeRun { id },
-                MergeRunCommand::Upsert { file } => DaemonRequest::UpsertMergeRun {
-                    run: read_json(file)?,
-                },
-                MergeRunCommand::SetStatus {
-                    id,
-                    readiness,
-                    authorization,
-                    execution,
-                    head_commit,
-                } => DaemonRequest::SetMergeRunStatus {
-                    id,
-                    readiness: parse_status::<MergeReadiness>(&readiness)?,
-                    authorization: parse_status::<MergeAuthorizationStatus>(&authorization)?,
-                    execution: parse_status::<MergeExecutionStatus>(&execution)?,
-                    head_commit,
-                },
-                MergeRunCommand::Refresh {
-                    workspace_binding_id,
-                } => DaemonRequest::RefreshMergeRun {
-                    workspace_binding_id,
-                },
-                MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
-            },
-            WorkspaceCommand::Action { command } => match command {
-                WorkspaceActionCommand::Prepare { id } => {
-                    DaemonRequest::PrepareWorkspaceBinding { id }
-                }
-                WorkspaceActionCommand::Refresh { id } => {
-                    DaemonRequest::RefreshWorkspaceBinding { id }
-                }
-                WorkspaceActionCommand::MergePrep { id } => {
-                    DaemonRequest::MergePrepWorkspaceBinding { id }
-                }
-                WorkspaceActionCommand::AuthorizeMerge { id } => {
-                    DaemonRequest::AuthorizeMergeWorkspaceBinding { id }
-                }
-                WorkspaceActionCommand::ExecuteLanding { id } => {
-                    DaemonRequest::ExecuteLandingWorkspaceBinding { id }
-                }
-                WorkspaceActionCommand::Prune { id, force } => {
-                    DaemonRequest::PruneWorkspaceBinding { id, force }
-                }
-            },
-            WorkspaceCommand::Lifecycle { command } => match command {
-                WorkspaceLifecycleCommand::Close { selector, force } => {
-                    DaemonRequest::CloseWorkspace {
-                        cwd: cwd.to_path_buf(),
-                        selector,
-                        force,
-                    }
-                }
-                WorkspaceLifecycleCommand::Park { selector, note } => {
-                    DaemonRequest::ParkWorkspace {
-                        cwd: cwd.to_path_buf(),
-                        selector,
-                        note,
-                    }
-                }
-                WorkspaceLifecycleCommand::Split {
-                    role,
-                    model,
-                    ephemeral,
-                } => DaemonRequest::SplitWorkspace {
+            InternalCommand::Project { command } => match command {
+                InternalProjectCommand::Inspect => DaemonRequest::InspectManagedProject {
                     cwd: cwd.to_path_buf(),
-                    role: parse_status::<ThreadRole>(&role)?,
-                    model,
-                    ephemeral,
                 },
-            },
-        },
-        InternalCommand::Records { command } => match command {
-            RecordsCommand::Project { command } => match command {
-                ProjectCommand::List => DaemonRequest::ListProjects,
-                ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
-                ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
-                    project: read_json(file)?,
+                InternalProjectCommand::Plan { command } => match command {
+                    ProjectPlanCommand::Show => DaemonRequest::InspectManagedProjectPlan {
+                        cwd: cwd.to_path_buf(),
+                    },
+                    ProjectPlanCommand::Refresh => DaemonRequest::RefreshManagedProjectPlan {
+                        cwd: cwd.to_path_buf(),
+                    },
                 },
-                ProjectCommand::SetStatus { id_or_slug, status } => {
-                    DaemonRequest::SetProjectStatus {
-                        id_or_slug,
-                        status: parse_status::<ProjectStatus>(&status)?,
+                InternalProjectCommand::Init {
+                    path,
+                    title,
+                    objective,
+                    template,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                } => DaemonRequest::InitManagedProject {
+                    path: path
+                        .map(|path| resolve_cli_path(cwd, path))
+                        .unwrap_or_else(|| cwd.to_path_buf()),
+                    title,
+                    objective,
+                    template,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                },
+                InternalProjectCommand::Open {
+                    title,
+                    objective,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                } => DaemonRequest::OpenManagedProject {
+                    cwd: cwd.to_path_buf(),
+                    title,
+                    objective,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                },
+                InternalProjectCommand::Director {
+                    title,
+                    objective,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                    role,
+                    binding,
+                    scenario,
+                    seed_file,
+                } => DaemonRequest::DirectManagedProject {
+                    cwd: cwd.to_path_buf(),
+                    title,
+                    objective,
+                    base_branch,
+                    worktree_root,
+                    director_model,
+                    dev_model,
+                    test_model,
+                    integration_model,
+                    roles: if role.is_empty() {
+                        None
+                    } else {
+                        Some(parse_thread_roles(&role)?)
+                    },
+                    bindings: parse_thread_bindings(&binding)?,
+                    scenario,
+                    seed_file: seed_file.map(|path| resolve_cli_path(cwd, path)),
+                },
+                InternalProjectCommand::Control { role, mode } => {
+                    DaemonRequest::SetManagedProjectThreadControl {
+                        cwd: cwd.to_path_buf(),
+                        role: ThreadRole::from_str(&role)
+                            .map_err(|error| anyhow::anyhow!(error))?,
+                        mode: parse_thread_control_mode(&mode)?,
                     }
                 }
-                ProjectCommand::Delete { id_or_slug } => {
-                    DaemonRequest::DeleteProject { id_or_slug }
-                }
-            },
-            RecordsCommand::WorkUnit { command } => match command {
-                WorkUnitCommand::List { project_id } => DaemonRequest::ListWorkUnits { project_id },
-                WorkUnitCommand::Get { id_or_slug } => DaemonRequest::GetWorkUnit { id_or_slug },
-                WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
-                    work_unit: read_json(file)?,
+                InternalProjectCommand::Spawn { role } => DaemonRequest::SpawnManagedProject {
+                    cwd: cwd.to_path_buf(),
+                    roles: if role.is_empty() {
+                        None
+                    } else {
+                        Some(parse_thread_roles(&role)?)
+                    },
                 },
-                WorkUnitCommand::SetStatus { id_or_slug, status } => {
-                    DaemonRequest::SetWorkUnitStatus {
-                        id_or_slug,
-                        status: parse_status::<WorkUnitStatus>(&status)?,
+                InternalProjectCommand::Attach { binding } => DaemonRequest::AttachManagedProject {
+                    cwd: cwd.to_path_buf(),
+                    bindings: parse_thread_bindings(&binding)?,
+                },
+            },
+            InternalCommand::Workspace { command } => match command {
+                WorkspaceCommand::Binding { command } => match command {
+                    WorkspaceBindingCommand::List => DaemonRequest::ListWorkspaceBindings,
+                    WorkspaceBindingCommand::Get { id } => {
+                        DaemonRequest::GetWorkspaceBinding { id }
                     }
-                }
-                WorkUnitCommand::Delete { id_or_slug } => {
-                    DaemonRequest::DeleteWorkUnit { id_or_slug }
-                }
-            },
-            RecordsCommand::ThreadBinding { command } => match command {
-                ThreadBindingCommand::List => DaemonRequest::ListThreadBindings,
-                ThreadBindingCommand::Get { codex_thread_id } => {
-                    DaemonRequest::GetThreadBinding { codex_thread_id }
-                }
-                ThreadBindingCommand::Upsert { file } => DaemonRequest::UpsertThreadBinding {
-                    binding: read_json(file)?,
+                    WorkspaceBindingCommand::Upsert { file } => {
+                        DaemonRequest::UpsertWorkspaceBinding {
+                            binding: read_json(file)?,
+                        }
+                    }
+                    WorkspaceBindingCommand::SetStatus { id, status } => {
+                        DaemonRequest::SetWorkspaceBindingStatus {
+                            id,
+                            status: parse_status::<WorkspaceStatus>(&status)?,
+                        }
+                    }
+                    WorkspaceBindingCommand::Refresh { id } => {
+                        DaemonRequest::RefreshWorkspaceBinding { id }
+                    }
+                    WorkspaceBindingCommand::Delete { id } => {
+                        DaemonRequest::DeleteWorkspaceBinding { id }
+                    }
                 },
-                ThreadBindingCommand::SetStatus {
-                    codex_thread_id,
-                    status,
-                } => DaemonRequest::SetThreadBindingStatus {
-                    codex_thread_id,
-                    status: parse_status::<ThreadBindingStatus>(&status)?,
+                WorkspaceCommand::MergeRun { command } => match command {
+                    MergeRunCommand::List => DaemonRequest::ListMergeRuns,
+                    MergeRunCommand::Get { id } => DaemonRequest::GetMergeRun { id },
+                    MergeRunCommand::Upsert { file } => DaemonRequest::UpsertMergeRun {
+                        run: read_json(file)?,
+                    },
+                    MergeRunCommand::SetStatus {
+                        id,
+                        readiness,
+                        authorization,
+                        execution,
+                        head_commit,
+                    } => DaemonRequest::SetMergeRunStatus {
+                        id,
+                        readiness: parse_status::<MergeReadiness>(&readiness)?,
+                        authorization: parse_status::<MergeAuthorizationStatus>(&authorization)?,
+                        execution: parse_status::<MergeExecutionStatus>(&execution)?,
+                        head_commit,
+                    },
+                    MergeRunCommand::Refresh {
+                        workspace_binding_id,
+                    } => DaemonRequest::RefreshMergeRun {
+                        workspace_binding_id,
+                    },
+                    MergeRunCommand::Delete { id } => DaemonRequest::DeleteMergeRun { id },
                 },
-                ThreadBindingCommand::Delete { codex_thread_id } => {
-                    DaemonRequest::DeleteThreadBinding { codex_thread_id }
-                }
+                WorkspaceCommand::Action { command } => match command {
+                    WorkspaceActionCommand::Prepare { id } => {
+                        DaemonRequest::PrepareWorkspaceBinding { id }
+                    }
+                    WorkspaceActionCommand::Refresh { id } => {
+                        DaemonRequest::RefreshWorkspaceBinding { id }
+                    }
+                    WorkspaceActionCommand::MergePrep { id } => {
+                        DaemonRequest::MergePrepWorkspaceBinding { id }
+                    }
+                    WorkspaceActionCommand::AuthorizeMerge { id } => {
+                        DaemonRequest::AuthorizeMergeWorkspaceBinding { id }
+                    }
+                    WorkspaceActionCommand::ExecuteLanding { id } => {
+                        DaemonRequest::ExecuteLandingWorkspaceBinding { id }
+                    }
+                    WorkspaceActionCommand::Prune { id, force } => {
+                        DaemonRequest::PruneWorkspaceBinding { id, force }
+                    }
+                },
+                WorkspaceCommand::Lifecycle { command } => match command {
+                    WorkspaceLifecycleCommand::Close { selector, force } => {
+                        DaemonRequest::CloseWorkspace {
+                            cwd: cwd.to_path_buf(),
+                            selector,
+                            force,
+                        }
+                    }
+                    WorkspaceLifecycleCommand::Park { selector, note } => {
+                        DaemonRequest::ParkWorkspace {
+                            cwd: cwd.to_path_buf(),
+                            selector,
+                            note,
+                        }
+                    }
+                    WorkspaceLifecycleCommand::Split {
+                        role,
+                        model,
+                        ephemeral,
+                    } => DaemonRequest::SplitWorkspace {
+                        cwd: cwd.to_path_buf(),
+                        role: parse_status::<ThreadRole>(&role)?,
+                        model,
+                        ephemeral,
+                    },
+                },
             },
-        },
+            InternalCommand::Records { command } => match command {
+                RecordsCommand::Project { command } => match command {
+                    ProjectCommand::List => DaemonRequest::ListProjects,
+                    ProjectCommand::Get { id_or_slug } => DaemonRequest::GetProject { id_or_slug },
+                    ProjectCommand::Upsert { file } => DaemonRequest::UpsertProject {
+                        project: read_json(file)?,
+                    },
+                    ProjectCommand::SetStatus { id_or_slug, status } => {
+                        DaemonRequest::SetProjectStatus {
+                            id_or_slug,
+                            status: parse_status::<ProjectStatus>(&status)?,
+                        }
+                    }
+                    ProjectCommand::Delete { id_or_slug } => {
+                        DaemonRequest::DeleteProject { id_or_slug }
+                    }
+                },
+                RecordsCommand::WorkUnit { command } => match command {
+                    WorkUnitCommand::List { project_id } => {
+                        DaemonRequest::ListWorkUnits { project_id }
+                    }
+                    WorkUnitCommand::Get { id_or_slug } => {
+                        DaemonRequest::GetWorkUnit { id_or_slug }
+                    }
+                    WorkUnitCommand::Upsert { file } => DaemonRequest::UpsertWorkUnit {
+                        work_unit: read_json(file)?,
+                    },
+                    WorkUnitCommand::SetStatus { id_or_slug, status } => {
+                        DaemonRequest::SetWorkUnitStatus {
+                            id_or_slug,
+                            status: parse_status::<WorkUnitStatus>(&status)?,
+                        }
+                    }
+                    WorkUnitCommand::Delete { id_or_slug } => {
+                        DaemonRequest::DeleteWorkUnit { id_or_slug }
+                    }
+                },
+                RecordsCommand::ThreadBinding { command } => match command {
+                    ThreadBindingCommand::List => DaemonRequest::ListThreadBindings,
+                    ThreadBindingCommand::Get { codex_thread_id } => {
+                        DaemonRequest::GetThreadBinding { codex_thread_id }
+                    }
+                    ThreadBindingCommand::Upsert { file } => DaemonRequest::UpsertThreadBinding {
+                        binding: read_json(file)?,
+                    },
+                    ThreadBindingCommand::SetStatus {
+                        codex_thread_id,
+                        status,
+                    } => DaemonRequest::SetThreadBindingStatus {
+                        codex_thread_id,
+                        status: parse_status::<ThreadBindingStatus>(&status)?,
+                    },
+                    ThreadBindingCommand::Delete { codex_thread_id } => {
+                        DaemonRequest::DeleteThreadBinding { codex_thread_id }
+                    }
+                },
+            },
         },
     })
 }
@@ -846,7 +855,11 @@ where
     T::from_str(raw).map_err(|error| anyhow::anyhow!(error))
 }
 
-fn rewrite_open_runtime_error(cwd: &Path, is_open_command: bool, error: anyhow::Error) -> anyhow::Error {
+fn rewrite_open_runtime_error(
+    cwd: &Path,
+    is_open_command: bool,
+    error: anyhow::Error,
+) -> anyhow::Error {
     if !is_open_command {
         return error;
     }
@@ -855,7 +868,7 @@ fn rewrite_open_runtime_error(cwd: &Path, is_open_command: bool, error: anyhow::
         return error;
     }
     anyhow::anyhow!(
-        "cannot open TT project in {} because the Codex app-server is unreachable.\nRun `tt doctor --codex --check-listen` to inspect the runtime contract and listen URL.\n\nOriginal error:\n{error_text}",
+        "cannot open TT project in {} because the Codex app-server is unreachable.\nRun `tt status` for the persisted project snapshot and `tt internal doctor --codex --check-listen` for the runtime probe.\n\nOriginal error:\n{error_text}",
         cwd.display()
     )
 }
@@ -935,7 +948,11 @@ fn format_argument_markdown(arg: &Arg) -> String {
     }
     let takes_value = !matches!(
         arg.get_action(),
-        ArgAction::SetTrue | ArgAction::SetFalse | ArgAction::Count | ArgAction::Help | ArgAction::Version
+        ArgAction::SetTrue
+            | ArgAction::SetFalse
+            | ArgAction::Count
+            | ArgAction::Help
+            | ArgAction::Version
     );
     if takes_value {
         if let Some(value_names) = arg.get_value_names() {
@@ -1022,7 +1039,7 @@ fn render_response(response: &DaemonResponse) -> String {
             report.error.as_deref().unwrap_or("<none>")
         ),
         DaemonResponse::Status(status) => format!(
-            "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\ncodex_contract_ok: {}\ncodex_runtime: {}\ncodex_listen_url: {}\ncodex_runtime_error: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
+            "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
             status
                 .repo_root
                 .as_deref()
@@ -1030,16 +1047,6 @@ fn render_response(response: &DaemonResponse) -> String {
                 .unwrap_or_else(|| "<none>".to_string()),
             status.project_initialized,
             status.project_state.as_deref().unwrap_or("<none>"),
-            status.codex_contract_ok,
-            status
-                .codex_runtime_reachable
-                .map(|reachable| if reachable { "reachable" } else { "unreachable" })
-                .unwrap_or("<unknown>"),
-            status.codex_listen_url,
-            status
-                .codex_runtime_error
-                .as_deref()
-                .unwrap_or("<none>"),
             status.project_count,
             status.work_unit_count,
             status.bound_thread_count,
@@ -1730,24 +1737,28 @@ mod tests {
 
     #[test]
     fn parses_doctor_codex_command() {
-        let cli = Cli::parse_from(["tt", "doctor", "--codex"]);
+        let cli = Cli::parse_from(["tt", "internal", "doctor", "--codex"]);
         assert!(matches!(
             cli.command,
-            Command::Doctor {
-                codex: true,
-                check_listen: false
+            Command::Internal {
+                command: InternalCommand::Doctor {
+                    codex: true,
+                    check_listen: false
+                }
             }
         ));
     }
 
     #[test]
-    fn parses_doctor_codex_check_listen_command() {
-        let cli = Cli::parse_from(["tt", "doctor", "--codex", "--check-listen"]);
+    fn parses_internal_doctor_codex_check_listen_command() {
+        let cli = Cli::parse_from(["tt", "internal", "doctor", "--codex", "--check-listen"]);
         assert!(matches!(
             cli.command,
-            Command::Doctor {
-                codex: true,
-                check_listen: true
+            Command::Internal {
+                command: InternalCommand::Doctor {
+                    codex: true,
+                    check_listen: true
+                }
             }
         ));
     }
@@ -1874,14 +1885,7 @@ mod tests {
     #[test]
     fn parses_internal_project_spawn_command() {
         let cli = Cli::parse_from([
-            "tt",
-            "internal",
-            "project",
-            "spawn",
-            "--role",
-            "dev",
-            "--role",
-            "test",
+            "tt", "internal", "project", "spawn", "--role", "dev", "--role", "test",
         ]);
         assert!(matches!(
             cli.command,
@@ -2456,18 +2460,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_status_with_codex_runtime_health() {
+    fn renders_status_with_project_snapshot_only() {
         let text = render_response(&DaemonResponse::Status(tt_daemon::DaemonStatus {
             repo_root: Some("/repo".into()),
             project_initialized: true,
             project_state: Some("attached (4/4)".into()),
-            codex_home: Some("/home/me/.codex".into()),
-            codex_state_db: Some("/home/me/.codex/state.db".into()),
-            codex_session_index: Some("/home/me/.codex/session_index.json".into()),
-            codex_contract_ok: true,
-            codex_listen_url: "ws://127.0.0.1:4500".into(),
-            codex_runtime_reachable: Some(false),
-            codex_runtime_error: Some("connection refused".into()),
             project_count: 2,
             work_unit_count: 6,
             bound_thread_count: 4,
@@ -2477,10 +2474,6 @@ mod tests {
         assert!(text.contains("repo_root: /repo"));
         assert!(text.contains("project_initialized: true"));
         assert!(text.contains("project_state: attached (4/4)"));
-        assert!(text.contains("codex_contract_ok: true"));
-        assert!(text.contains("codex_runtime: unreachable"));
-        assert!(text.contains("codex_listen_url: ws://127.0.0.1:4500"));
-        assert!(text.contains("codex_runtime_error: connection refused"));
         assert!(text.contains("projects: 2"));
     }
 
@@ -2491,8 +2484,10 @@ mod tests {
         );
         let rewritten = rewrite_open_runtime_error(Path::new("/repo"), true, error);
         let text = format!("{rewritten:#}");
-        assert!(text.contains("cannot open TT project in /repo because the Codex app-server is unreachable"));
-        assert!(text.contains("tt doctor --codex --check-listen"));
+        assert!(text.contains(
+            "cannot open TT project in /repo because the Codex app-server is unreachable"
+        ));
+        assert!(text.contains("tt internal doctor --codex --check-listen"));
     }
 
     #[test]

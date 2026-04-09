@@ -49,13 +49,6 @@ pub struct DaemonStatus {
     pub repo_root: Option<PathBuf>,
     pub project_initialized: bool,
     pub project_state: Option<String>,
-    pub codex_home: Option<PathBuf>,
-    pub codex_state_db: Option<PathBuf>,
-    pub codex_session_index: Option<PathBuf>,
-    pub codex_contract_ok: bool,
-    pub codex_listen_url: String,
-    pub codex_runtime_reachable: Option<bool>,
-    pub codex_runtime_error: Option<String>,
     pub project_count: usize,
     pub work_unit_count: usize,
     pub bound_thread_count: usize,
@@ -1448,8 +1441,6 @@ impl DaemonService {
 
     pub fn status(&self, cwd: impl AsRef<Path>) -> Result<DaemonStatus> {
         let cwd = cwd.as_ref();
-        let codex_doctor = self.codex_doctor_with_listen_check(cwd);
-        let codex_home = self.codex_home.as_ref();
         let repo_root = managed_project_repo_root(cwd)?;
         let (project_initialized, project_state) = match &repo_root {
             Some(repo_root) => managed_project_status_for_repo(repo_root)?,
@@ -1459,13 +1450,6 @@ impl DaemonService {
             repo_root,
             project_initialized,
             project_state,
-            codex_home: codex_home.map(|home| home.root().to_path_buf()),
-            codex_state_db: codex_home.map(|home| home.state_db_path()),
-            codex_session_index: codex_home.map(|home| home.session_index_path()),
-            codex_contract_ok: codex_doctor.contract_ok,
-            codex_listen_url: codex_doctor.configured_listen_url,
-            codex_runtime_reachable: codex_doctor.listen_reachable,
-            codex_runtime_error: codex_doctor.listen_error.or(codex_doctor.error),
             project_count: self.store.count_projects()?,
             work_unit_count: self.store.count_work_units()?,
             bound_thread_count: self.store.count_bound_threads()?,

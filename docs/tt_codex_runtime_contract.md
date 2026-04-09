@@ -160,10 +160,8 @@ Recommended lanes:
 - catches protocol and runtime drift before the next stable release
 
 TT should add an explicit compatibility check surface, preferably through:
-- `tt doctor`
-- `tt doctor --codex`
-- `tt doctor --codex --check-listen`
 - `tt codex app-servers`
+- an internal runtime probe used by `tt open` and the live harness
 
 That output should include:
 - resolved `codex` binary path
@@ -245,8 +243,8 @@ but it should not be the default product assumption.
 
 ## Recommended Next TT Work
 
-1. Add explicit Codex discovery env vars to TT docs and doctor output
-2. Add compatibility reporting in `tt doctor --codex`
+1. Add explicit Codex discovery env vars to TT docs and internal probe output
+2. Add compatibility reporting in the internal Codex runtime probe
 3. Teach TT CI to consume prebuilt Codex stable and alpha artifacts
 4. Keep live managed-project scenarios as the runtime compatibility gate
 

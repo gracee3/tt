@@ -36,10 +36,10 @@ There is no longer an operator-facing legacy planning command namespace.
 Any remaining collaboration planning compatibility is internal to the daemon or
 used for runtime detail; it is not a supported CLI expansion surface.
 .SH QUICK START
-Check the local TT environment:
+Check the local TT project snapshot:
 
 .P
-.B tt doctor
+.B tt status
 
 .P
 Query daemon status:
@@ -59,7 +59,7 @@ Start or inspect the daemon:
 Set debug logging for a single session:
 
 .P
-.B RUST_LOG=debug tt doctor
+.B RUST_LOG=debug tt status
 .SH OPTIONS
 .TP
 .B --tt-bin \fIPATH\fR

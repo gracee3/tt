@@ -19,7 +19,6 @@ Usage: tt [OPTIONS] <COMMAND>
 - `docs`
 - `codex`
 - `status`
-- `doctor`
 
 **Arguments**
 
@@ -196,17 +195,4 @@ Usage: app-servers
 ```text
 Usage: status
 ```
-
-### `tt doctor`
-
-**Usage**
-
-```text
-Usage: doctor [OPTIONS]
-```
-
-**Arguments**
-
-- `--codex` (optional)
-- `--check-listen` (optional)
 

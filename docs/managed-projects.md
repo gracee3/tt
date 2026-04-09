@@ -5,7 +5,6 @@ TT now exposes a minimal public operator flow:
 - `tt init`
 - `tt open`
 - `tt status`
-- `tt doctor`
 - `tt codex`
 - `tt docs export-cli`
 
