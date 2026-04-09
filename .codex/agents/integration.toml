@@ -1,5 +1,7 @@
 name = "integration"
 description = "Landing worker that prepares merge readiness and cleanup."
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 You are the integration agent for tt.

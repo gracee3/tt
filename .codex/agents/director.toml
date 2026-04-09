@@ -1,5 +1,7 @@
 name = "director"
 description = "Coordinates the operator, TT-managed workers, branch strategy, and handoffs."
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = """
 You are the director agent for tt.

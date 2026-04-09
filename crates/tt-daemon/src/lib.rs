@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap as _;
 use codex_app_server_protocol as protocol;
+use codex_protocol::openai_models::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use tt_codex::{CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot};
 use tt_domain::{
@@ -280,6 +281,7 @@ pub struct ManagedProjectRoleBootstrap {
     pub work_unit: WorkUnit,
     pub agent_path: PathBuf,
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub branch_name: Option<String>,
     pub worktree_path: Option<PathBuf>,
     pub thread_id: Option<String>,
@@ -411,6 +413,7 @@ struct ManagedProjectManifestRole {
     work_unit_id: String,
     agent_path: String,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     branch_name: Option<String>,
     worktree_path: Option<String>,
     thread_id: Option<String>,
@@ -423,6 +426,7 @@ struct ManagedAgentFile {
     name: String,
     description: String,
     model: Option<String>,
+    model_reasoning_effort: Option<String>,
     sandbox_mode: String,
     developer_instructions: String,
 }
@@ -1377,6 +1381,8 @@ impl DaemonService {
     ) -> Result<ManagedProjectRoleBootstrap> {
         let now = Utc::now();
         let role_slug = role_slug(role);
+        let model = Some(model.unwrap_or_else(|| role_default_model(role).to_string()));
+        let reasoning_effort = Some(role_default_reasoning_effort(role).to_string());
         let work_unit = WorkUnit {
             id: uuid::Uuid::now_v7().to_string(),
             project_id: project.id.clone(),
@@ -1396,7 +1402,13 @@ impl DaemonService {
             .join(format!("{role_slug}.toml"));
         write_managed_file(
             &agent_path,
-            &render_agent_file(role, model.as_deref(), &project.title, &project.objective),
+            &render_agent_file(
+                role,
+                model.as_deref(),
+                reasoning_effort.as_deref(),
+                &project.title,
+                &project.objective,
+            ),
         )?;
 
         let (branch_name, worktree_path) = if create_worktree {
@@ -1413,6 +1425,7 @@ impl DaemonService {
             work_unit,
             agent_path,
             model,
+            reasoning_effort,
             branch_name,
             worktree_path,
             thread_id: None,
@@ -1833,6 +1846,18 @@ fn role_sandbox_mode(role: ThreadRole) -> &'static str {
     }
 }
 
+fn role_default_model(role: ThreadRole) -> &'static str {
+    match role {
+        ThreadRole::Director => "gpt-5.4",
+        ThreadRole::Develop | ThreadRole::Test | ThreadRole::Integrate => "gpt-5.4-mini",
+        _ => "gpt-5.4-mini",
+    }
+}
+
+fn role_default_reasoning_effort(_role: ThreadRole) -> &'static str {
+    "medium"
+}
+
 fn render_codex_config(max_threads: usize, max_depth: usize) -> String {
     format!("[agents]\nmax_threads = {max_threads}\nmax_depth = {max_depth}\n")
 }
@@ -1840,16 +1865,21 @@ fn render_codex_config(max_threads: usize, max_depth: usize) -> String {
 fn render_agent_file(
     role: ThreadRole,
     model: Option<&str>,
+    reasoning_effort: Option<&str>,
     project_title: &str,
     project_objective: &str,
 ) -> String {
     let role_roster = managed_project_role_roster();
+    let model = model.unwrap_or_else(|| role_default_model(role));
+    let reasoning_effort = reasoning_effort.unwrap_or_else(|| role_default_reasoning_effort(role));
     let mut output = String::new();
     output.push_str(&format!("name = {:?}\n", role_slug(role)));
     output.push_str(&format!("description = {:?}\n", role_description(role)));
-    if let Some(model) = model {
-        output.push_str(&format!("model = {:?}\n", model));
-    }
+    output.push_str(&format!("model = {:?}\n", model));
+    output.push_str(&format!(
+        "model_reasoning_effort = {:?}\n",
+        reasoning_effort
+    ));
     output.push_str(&format!("sandbox_mode = {:?}\n", role_sandbox_mode(role)));
     output.push_str("developer_instructions = \"\"\"\n");
     output.push_str(&format!(
@@ -1985,6 +2015,7 @@ fn build_managed_project_manifest(
                 work_unit_id: role.work_unit.id.clone(),
                 agent_path: role.agent_path.display().to_string(),
                 model: role.model.clone(),
+                reasoning_effort: role.reasoning_effort.clone(),
                 branch_name: role.branch_name.clone(),
                 worktree_path: role
                     .worktree_path
@@ -2154,6 +2185,16 @@ fn parse_managed_project_sandbox_mode(raw: &str) -> Result<protocol::SandboxMode
     }
 }
 
+fn parse_managed_project_reasoning_effort(raw: &str) -> Result<ReasoningEffort> {
+    raw.trim().parse::<ReasoningEffort>().map_err(|error| {
+        anyhow::anyhow!(
+            "unknown reasoning effort `{}`: {}",
+            raw.trim(),
+            error
+        )
+    })
+}
+
 fn load_managed_agent_file(path: &Path) -> Result<ManagedAgentFile> {
     let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     toml::from_str(&contents).with_context(|| format!("parse {}", path.display()))
@@ -2220,7 +2261,18 @@ impl DaemonService {
                         )
                     })?,
                 agent_path: PathBuf::from(&role_manifest.agent_path),
-                model: role_manifest.model.clone(),
+                model: Some(
+                    role_manifest
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| role_default_model(role).to_string()),
+                ),
+                reasoning_effort: Some(
+                    role_manifest
+                        .reasoning_effort
+                        .clone()
+                        .unwrap_or_else(|| role_default_reasoning_effort(role).to_string()),
+                ),
                 branch_name: role_manifest.branch_name.clone(),
                 worktree_path: role_manifest.worktree_path.as_ref().map(PathBuf::from),
                 thread_id: role_manifest.thread_id.clone(),
@@ -2691,6 +2743,11 @@ impl DaemonService {
             prompt,
             Some(cwd),
             role_bootstrap.model.clone(),
+            role_bootstrap
+                .reasoning_effort
+                .as_deref()
+                .map(parse_managed_project_reasoning_effort)
+                .transpose()?,
             output_schema,
         )?;
         eprintln!(
@@ -4024,6 +4081,8 @@ mod tests {
             .iter()
             .find(|role| role.role == ThreadRole::Director)
             .expect("director role");
+        assert_eq!(director_role.model.as_deref(), Some("director-model"));
+        assert_eq!(director_role.reasoning_effort.as_deref(), Some("medium"));
         assert!(director_role.branch_name.is_none());
         assert!(director_role.worktree_path.is_none());
 
@@ -4032,6 +4091,8 @@ mod tests {
             .iter()
             .find(|role| role.role == ThreadRole::Develop)
             .expect("dev role");
+        assert_eq!(dev_role.model.as_deref(), Some("dev-model"));
+        assert_eq!(dev_role.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(dev_role.branch_name.as_deref(), Some("tt/alpha/dev"));
         assert!(
             dev_role
@@ -4092,6 +4153,7 @@ mod tests {
             },
             agent_path: dir.path().join(".codex/agents/dev.toml"),
             model: Some("gpt-5.4".into()),
+            reasoning_effort: Some("medium".into()),
             branch_name: Some("tt/alpha/dev".into()),
             worktree_path: Some(dir.path().join("worktree")),
             thread_id: Some("thread-1".into()),
@@ -4112,6 +4174,8 @@ mod tests {
         save_managed_project_manifest(&path, &manifest).expect("save manifest");
         let loaded = load_managed_project_manifest(&path).expect("load manifest");
         let loaded_role = loaded.roles.get("dev").expect("dev role");
+        assert_eq!(loaded_role.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(loaded_role.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(loaded_role.thread_id.as_deref(), Some("thread-1"));
         assert_eq!(loaded_role.thread_name.as_deref(), Some("alpha-dev"));
         assert_eq!(
@@ -4189,9 +4253,12 @@ mod tests {
         let instructions = render_agent_file(
             ThreadRole::Director,
             Some("gpt-5.4"),
+            Some("medium"),
             "Alpha",
             "Ship the alpha slice",
         );
+        assert!(instructions.contains("model = \"gpt-5.4\""));
+        assert!(instructions.contains("model_reasoning_effort = \"medium\""));
         assert!(instructions.contains("You are the director agent for Alpha."));
         assert!(instructions.contains("The operator talks to the director."));
         assert!(instructions.contains(

@@ -25,6 +25,13 @@ workers report only to the director.
 - `test`: validates the assigned branch and reports failures exactly
 - `integration`: prepares landing and merge readiness
 
+Default managed-project model roster:
+
+- `director`: `gpt-5.4` with `model_reasoning_effort = "medium"`
+- `dev`: `gpt-5.4-mini` with `model_reasoning_effort = "medium"`
+- `test`: `gpt-5.4-mini` with `model_reasoning_effort = "medium"`
+- `integration`: `gpt-5.4-mini` with `model_reasoning_effort = "medium"`
+
 Workers do not coordinate peer-to-peer. All assignments, clarifications, and
 escalations flow through the director.
 
@@ -79,6 +86,9 @@ tt project attach --cwd /path/to/repo \
 - The managed-project manifest records the role/worktree/thread layout plus the
   director-managed attachment state so the project can move from scaffolded to
   partially or fully attached without regenerating the workspace layout
+- `--director_model`, `--dev_model`, `--test_model`, and `--integration_model`
+  override the default model string for that role while keeping reasoning
+  effort at `medium`
 
 ## Contract
 

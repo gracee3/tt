@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use codex_app_server_protocol as protocol;
+use codex_protocol::openai_models::ReasoningEffort;
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -447,6 +448,7 @@ impl CodexRuntimeClient {
         prompt: &str,
         cwd: Option<&Path>,
         model: Option<String>,
+        effort: Option<ReasoningEffort>,
         output_schema: Option<JsonValue>,
     ) -> Result<protocol::Turn> {
         let connection = Arc::clone(&self.connection);
@@ -467,6 +469,7 @@ impl CodexRuntimeClient {
                         }],
                         cwd,
                         model,
+                        effort,
                         approval_policy: Some(protocol::AskForApproval::Never),
                         output_schema,
                         ..protocol::TurnStartParams::default()

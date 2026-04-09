@@ -23,6 +23,7 @@ tt-codex = { path = "../tt-codex" }
 tt-domain = { path = "../tt-domain" }
 tt-store = { path = "../tt-store" }
 codex-app-server-protocol = { path = "../../../codex/codex-rs/app-server-protocol" }
+codex-protocol = { path = "../../../codex/codex-rs/protocol" }
 
 [dev-dependencies]
 chrono.workspace = true

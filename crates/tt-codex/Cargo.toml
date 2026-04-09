@@ -21,6 +21,7 @@ tokio-tungstenite.workspace = true
 url.workspace = true
 uuid.workspace = true
 codex-app-server-protocol = { path = "../../../codex/codex-rs/app-server-protocol" }
+codex-protocol = { path = "../../../codex/codex-rs/protocol" }
 
 [dev-dependencies]
 tempfile = "3.23.0"
