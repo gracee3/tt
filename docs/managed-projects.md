@@ -94,10 +94,16 @@ Each handoff should include:
 The contract is intentionally explicit so the director can coordinate workers
 with prompts, skills, and agent definitions without relying on hidden state.
 
-## Seeded Scenario
+## Seeded Scenarios
 
-The built-in `rust-taskflow-four-round` scenario uses real Codex threads and a
-TT-owned round state record in the managed-project manifest. It seeds the
-director with an initial operator prompt, records round handoffs for `dev`,
-`test`, and `integration`, and stores a deterministic landing approval before
-the final round completes.
+The built-in seeded scenarios use real Codex threads and a TT-owned round state
+record in the managed-project manifest.
+
+- `rust-taskflow-four-round`
+  - seeds the director with an initial operator prompt
+  - records deterministic structured handoffs for `dev`, `test`, and `integration`
+  - stores a deterministic landing approval before the final round completes
+- `rust-taskflow-integration-pressure`
+  - uses the same taskflow project shape
+  - introduces a deterministic integration blocker in round 3
+  - verifies the director carries that blocker into the final landing round

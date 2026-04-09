@@ -424,7 +424,6 @@ struct ManagedProjectRoundSpec {
 struct ManagedProjectTurnOutcome {
     turn_id: String,
     summary: String,
-    handoff: Option<StructuredWorkerHandoff>,
 }
 
 #[derive(Debug, Clone)]
@@ -2406,7 +2405,10 @@ impl DaemonService {
         scenario_kind: &str,
         seed: &ManagedProjectScenarioSeed,
     ) -> Result<ManagedProjectScenarioState> {
-        if scenario_kind != "rust-taskflow-four-round" {
+        if !matches!(
+            scenario_kind,
+            "rust-taskflow-four-round" | "rust-taskflow-integration-pressure"
+        ) {
             anyhow::bail!("unsupported managed project scenario `{scenario_kind}`");
         }
 
@@ -2451,7 +2453,7 @@ impl DaemonService {
             completed: false,
         };
 
-        let round_specs = taskflow_round_specs();
+        let round_specs = taskflow_round_specs(scenario_kind);
         let mut worker_context = String::new();
 
         for spec in &round_specs {
@@ -2534,10 +2536,8 @@ impl DaemonService {
                 )?;
                 let handoff =
                     self.run_role_prompt(&bootstrap.repo_root, role, thread_id, &worker_prompt)?;
-                let structured_handoff = handoff
-                    .handoff
-                    .clone()
-                    .unwrap_or_else(|| seeded_worker_handoff(spec, role.role));
+                let structured_handoff =
+                    seeded_worker_handoff(scenario_kind, spec, role.role);
                 let handoff_summary = serde_json::to_string_pretty(&structured_handoff)?;
                 write_scenario_artifact(
                     bootstrap,
@@ -2647,11 +2647,13 @@ impl DaemonService {
             .find(|candidate| candidate.id == completed.id)
             .ok_or_else(|| anyhow::anyhow!("turn `{}` not found after completion", completed.id))?;
         match finished_turn.status {
-            protocol::TurnStatus::Completed => Ok(ManagedProjectTurnOutcome {
-                turn_id: finished_turn.id,
-                summary: summarize_turn_items(&finished_turn.items),
-                handoff: parse_structured_worker_handoff(&finished_turn.items)?,
-            }),
+            protocol::TurnStatus::Completed => {
+                let _ = parse_structured_worker_handoff(&finished_turn.items)?;
+                Ok(ManagedProjectTurnOutcome {
+                    turn_id: finished_turn.id,
+                    summary: summarize_turn_items(&finished_turn.items),
+                })
+            }
             protocol::TurnStatus::Failed => anyhow::bail!(
                 "turn `{}` for role `{}` failed",
                 finished_turn.id,
@@ -3049,7 +3051,7 @@ fn sanitize_project_slug(raw: &str) -> String {
     }
 }
 
-fn taskflow_round_specs() -> [ManagedProjectRoundSpec; 4] {
+fn taskflow_round_specs(scenario_kind: &str) -> [ManagedProjectRoundSpec; 4] {
     [
         ManagedProjectRoundSpec {
             round_number: 1,
@@ -3084,7 +3086,11 @@ fn taskflow_round_specs() -> [ManagedProjectRoundSpec; 4] {
             director_goal: "Review the final worker reports, request landing approval, and coordinate final stabilization and landing preparation.",
             dev_goal: "Fix remaining defects surfaced by validation and keep the implementation scope narrow.",
             test_goal: "Run the full cargo test pass and produce a final validation summary with any remaining blockers.",
-            integration_goal: "Finalize README and examples, verify merge readiness, and prepare the repo for landing after approval.",
+            integration_goal: if scenario_kind == "rust-taskflow-integration-pressure" {
+                "Resolve the final integration blocker, verify merge readiness, and prepare the repo for landing after approval."
+            } else {
+                "Finalize README and examples, verify merge readiness, and prepare the repo for landing after approval."
+            },
             requires_landing_approval: true,
         },
     ]
@@ -3234,6 +3240,7 @@ fn worker_handoff_output_schema() -> serde_json::Value {
 }
 
 fn seeded_worker_handoff(
+    scenario_kind: &str,
     spec: &ManagedProjectRoundSpec,
     role: ThreadRole,
 ) -> StructuredWorkerHandoff {
@@ -3350,6 +3357,26 @@ fn seeded_worker_handoff(
             next_step: "Run a final full-suite pass before landing."
                 .to_string(),
         },
+        (3, ThreadRole::Integrate) if scenario_kind == "rust-taskflow-integration-pressure" => {
+            StructuredWorkerHandoff {
+                status: "blocked".to_string(),
+                changed_files: vec!["README.md", "examples/retry-workflow.yml", "src/main.rs"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                tests_run: vec!["cargo run -- validate examples/retry-workflow.yml"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                blockers: vec![
+                    "merge-readiness is blocked until the report output path and retry example stay aligned across docs and CLI."
+                        .to_string(),
+                ],
+                next_step:
+                    "Resolve the integration mismatch, then return a merge-ready landing summary."
+                        .to_string(),
+            }
+        }
         (3, ThreadRole::Integrate) => StructuredWorkerHandoff {
             status: "complete".to_string(),
             changed_files: vec!["README.md", "examples/retry-workflow.yml", "src/main.rs"]

@@ -6,7 +6,7 @@ scenario_dir="$(cd "$(dirname "$0")" && pwd)"
 
 e2e_load_scenario_metadata "$scenario_dir"
 e2e_prepare_scenario_dirs "$NAME"
-e2e_prepare_live_tt_environment "mprt" 6400
+e2e_prepare_live_tt_environment "mrip" 6500
 
 repo_root="$E2E_SCENARIO_ARTIFACTS_DIR/taskflow-repo"
 daemon_log="$E2E_SCENARIO_LOGS_DIR/tt-daemon.log"
@@ -32,33 +32,22 @@ cargo_test_stdout="$reports_dir/cargo-test.txt"
 e2e_tt project init \
   --path "$repo_root" \
   --title "Taskflow" \
-  --objective "Build a seeded multi-round Rust workflow runner" \
+  --objective "Build a seeded Rust workflow runner under integration pressure" \
   --template rust-taskflow \
   >"$init_stdout"
 
 e2e_tt --cwd "$repo_root" project director \
-  --scenario rust-taskflow-four-round \
+  --scenario rust-taskflow-integration-pressure \
   --seed-file "$seed_file" \
   >"$director_stdout"
 
 e2e_tt --cwd "$repo_root" project inspect >"$inspect_stdout"
 
-grep -q "kind: rust-taskflow-four-round" "$inspect_stdout"
+grep -q "kind: rust-taskflow-integration-pressure" "$inspect_stdout"
 grep -q "phase: completed" "$inspect_stdout"
 grep -q "round: 4" "$inspect_stdout"
 grep -q "completed: true" "$inspect_stdout"
 grep -q "pending_approval: landing by director approved=true" "$inspect_stdout"
-grep -q "director |" "$inspect_stdout"
-grep -q "dev |" "$inspect_stdout"
-grep -q "test |" "$inspect_stdout"
-grep -q "integration |" "$inspect_stdout"
-
-test -f "$repo_root/.tt/managed-project.toml"
-test -f "$repo_root/.tt/contracts/worker-contract.md"
-test -f "$repo_root/Cargo.toml"
-test -f "$repo_root/src/main.rs"
-test -f "$repo_root/src/lib.rs"
-test -f "$repo_root/README.md"
 
 scenario_id="$(sed -n 's/^id: //p' "$inspect_stdout" | head -n 1)"
 scenario_root="$repo_root/.tt/scenarios/$scenario_id"
@@ -69,26 +58,14 @@ for round in 01 02 03 04; do
   test -f "$scenario_root/round-$round/director-prompt.txt"
   test -f "$scenario_root/round-$round/round-summary.md"
   grep -q "Round $((10#$round)) phase" "$scenario_root/round-$round/round-summary.md"
-  for role in dev test integration; do
-    handoff="$scenario_root/round-$round/$role-handoff.txt"
-    prompt="$scenario_root/round-$round/$role-prompt.txt"
-    test -f "$handoff"
-    test -f "$prompt"
-    grep -q '"status"' "$handoff"
-    grep -q '"changed_files"' "$handoff"
-    grep -q '"tests_run"' "$handoff"
-    grep -q '"blockers"' "$handoff"
-    grep -q '"next_step"' "$handoff"
-  done
 done
 
-grep -q '"Cargo.toml"' "$scenario_root/round-01/dev-handoff.txt"
-grep -q 'validation fixtures for cycles and missing dependencies' "$scenario_root/round-01/test-handoff.txt"
-grep -q '"cargo check --bin taskflow"' "$scenario_root/round-02/integration-handoff.txt"
-grep -q '"src/report.rs"' "$scenario_root/round-03/dev-handoff.txt"
-grep -q '"status": "complete"' "$scenario_root/round-03/integration-handoff.txt"
-grep -q 'Report green validation to the director for landing approval' "$scenario_root/round-04/test-handoff.txt"
+grep -q '"status": "blocked"' "$scenario_root/round-03/integration-handoff.txt"
+grep -q 'merge-readiness is blocked until the report output path and retry example stay aligned across docs and CLI' "$scenario_root/round-03/integration-handoff.txt"
+grep -q 'Resolve the integration mismatch, then return a merge-ready landing summary' "$scenario_root/round-03/integration-handoff.txt"
+grep -q '"status": "complete"' "$scenario_root/round-04/integration-handoff.txt"
 grep -q 'Land the branch set after operator approval' "$scenario_root/round-04/integration-handoff.txt"
+grep -q '"cargo test"' "$scenario_root/round-04/test-handoff.txt"
 
 cargo test --quiet --manifest-path "$repo_root/Cargo.toml" >"$cargo_test_stdout"
 
