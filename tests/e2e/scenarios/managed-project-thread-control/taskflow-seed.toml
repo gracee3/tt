@@ -1,0 +1,16 @@
+operator_seed = """
+Build a Rust CLI called taskflow.
+
+Requirements:
+- Read a YAML workflow file describing tasks with ids, commands, dependencies, and retry counts.
+- Validate dependency graphs and reject cycles or missing dependencies.
+- Execute tasks in topological order.
+- Retry failed tasks up to the configured retry count.
+- Write a JSON report summarizing task results, retries, execution order, and overall outcome.
+- Expose:
+  - taskflow validate <workflow.yml>
+  - taskflow run <workflow.yml> --report <report.json>
+- Include unit tests, integration tests, example workflows, and a README.
+"""
+
+landing_approval = "Approved. Proceed with final integration and landing if validation is green."

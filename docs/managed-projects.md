@@ -89,6 +89,7 @@ Example:
 ```bash
 tt project init --path /tmp/taskflow --template rust-taskflow
 tt project open --cwd /path/to/repo
+tt project control --cwd /path/to/repo --role dev --mode manual_next_turn
 tt project inspect --cwd /path/to/repo
 tt project status --cwd /path/to/repo
 tt project director --cwd /path/to/repo
