@@ -2168,10 +2168,7 @@ fn render_agent_file(
         project_config.soft_silence_seconds,
         project_config.hard_ceiling_seconds
     ));
-    output.push_str(&format!(
-        "Plan status: {}\n",
-        plan.status
-    ));
+    output.push_str(&format!("Plan status: {}\n", plan.status));
     output.push_str("Project protocol:\n");
     output.push_str("- The operator talks to the director.\n");
     output.push_str("- The director is the only coordinator and speaks to the operator on behalf of the project.\n");
@@ -2627,6 +2624,21 @@ fn default_managed_project_plan(
             status: "planned".to_string(),
         })
         .collect();
+    let mut open_questions = vec![
+        format!(
+            "What exact scope and non-goals should the director enforce for `{}`?",
+            project.slug
+        ),
+        "Which validation commands are required before the director can mark the plan ready to dispatch?"
+            .to_string(),
+        "What repo-specific pitfalls or exceptions should the director carry forward during execution?"
+            .to_string(),
+    ];
+    if config.require_operator_merge_approval {
+        open_questions.push(
+            "What operator approval or landing gate must be satisfied before merge?".to_string(),
+        );
+    }
     ManagedProjectPlan {
         schema: "tt-managed-project-plan-v1".to_string(),
         status: "draft".to_string(),
@@ -2637,7 +2649,7 @@ fn default_managed_project_plan(
         notes: ManagedProjectPlanNotes {
             risks: Vec::new(),
             pitfalls: config.pitfalls.clone(),
-            open_questions: Vec::new(),
+            open_questions,
             operator_constraints: config.exceptions.clone(),
         },
     }
@@ -4095,12 +4107,48 @@ fn build_director_round_prompt(
             )
         })
         .unwrap_or_default();
+    let planning_agenda = if spec.phase == "plan" {
+        let open_questions = if bootstrap.plan.notes.open_questions.is_empty() {
+            "  - none recorded yet".to_string()
+        } else {
+            bootstrap
+                .plan
+                .notes
+                .open_questions
+                .iter()
+                .map(|question| format!("  - {}", question))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let validation_commands = if bootstrap
+            .project_config
+            .default_validation_commands
+            .is_empty()
+        {
+            "  - none configured".to_string()
+        } else {
+            bootstrap
+                .project_config
+                .default_validation_commands
+                .iter()
+                .map(|command| format!("  - {}", command))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        format!(
+            "Planning agenda:\n- Confirm scope and explicit non-goals.\n- Resolve validation and merge criteria.\n- Capture repo-specific risks, pitfalls, and operator constraints.\n- Update the plan artifact before dispatch.\nCurrent open questions:\n{}\nValidation commands:\n{}\n",
+            open_questions, validation_commands
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "Managed project round {} phase `{}` for project `{}`.\n{}\nOperator seed:\n{}\n\nPrior worker handoffs:\n{}\n\nWrite a concrete project update for this round. Include: plan, todo, dispatch decisions, blockers, and next step.",
+        "Managed project round {} phase `{}` for project `{}`.\n{}{}\nOperator seed:\n{}\n\nPrior worker handoffs:\n{}\n\nWrite a concrete project update for this round. If this is a planning round, resolve the agenda first and record the resulting plan decisions before dispatch. Include: plan, todo, dispatch decisions, blockers, and next step.",
         spec.round_number,
         spec.phase,
         bootstrap.project.slug,
         approval_text,
+        planning_agenda,
         operator_seed,
         if prior_handoffs.trim().is_empty() {
             "<none yet>"
@@ -5278,6 +5326,59 @@ mod tests {
     }
 
     #[test]
+    fn default_managed_project_plan_seeds_planning_questions() {
+        let project = Project {
+            id: "p-plan".into(),
+            slug: "alpha".into(),
+            title: "Alpha".into(),
+            objective: "Ship".into(),
+            status: ProjectStatus::Active,
+            created_at: ts(),
+            updated_at: ts(),
+        };
+        let config = ManagedProjectProjectConfig {
+            schema: "tt-managed-project-config-v1".into(),
+            title: "Alpha".into(),
+            objective: "Ship".into(),
+            base_branch: "main".into(),
+            branch_prefix: "tt".into(),
+            plan_first: true,
+            commit_policy: "checkpoint-enforced".into(),
+            require_operator_merge_approval: true,
+            expected_long_build: false,
+            require_progress_updates: true,
+            soft_silence_seconds: 900,
+            hard_ceiling_seconds: 7200,
+            default_validation_commands: vec!["cargo test".into()],
+            smoke_validation_commands: vec!["cargo check".into()],
+            checkpoint_triggers: vec!["after_plan".into(), "before_merge".into()],
+            pitfalls: vec!["slow clean builds".into()],
+            hints: vec!["run cargo test".into()],
+            exceptions: vec!["merge approval required".into()],
+        };
+        let plan = default_managed_project_plan(&project, &config, &[]);
+        assert_eq!(plan.status, "draft");
+        assert!(
+            plan.notes
+                .open_questions
+                .iter()
+                .any(|question| question.contains("scope and non-goals"))
+        );
+        assert!(
+            plan.notes
+                .open_questions
+                .iter()
+                .any(|question| question.contains("validation commands"))
+        );
+        assert!(
+            plan.notes
+                .open_questions
+                .iter()
+                .any(|question| question.contains("merge"))
+        );
+    }
+
+    #[test]
     fn managed_project_manifest_round_trips_thread_bindings() {
         let dir = tempdir().expect("tempdir");
         let project = Project {
@@ -5365,6 +5466,81 @@ mod tests {
             loaded_role.workspace_binding_id.as_deref(),
             Some("alpha:dev")
         );
+    }
+
+    #[test]
+    fn director_round_prompt_includes_planning_agenda() {
+        let bootstrap = ManagedProjectBootstrap {
+            project: Project {
+                id: "p-prompt".into(),
+                slug: "alpha".into(),
+                title: "Alpha".into(),
+                objective: "Ship".into(),
+                status: ProjectStatus::Active,
+                created_at: ts(),
+                updated_at: ts(),
+            },
+            repo_root: PathBuf::from("/repo"),
+            base_branch: "main".into(),
+            worktree_root: PathBuf::from("/repo/.tt-worktrees/alpha"),
+            manifest_path: PathBuf::from("/repo/.tt/managed-project.toml"),
+            project_config_path: PathBuf::from("/repo/.tt/project.toml"),
+            plan_path: PathBuf::from("/repo/.tt/plan.toml"),
+            contract_path: PathBuf::from("/repo/.tt/contracts/worker-contract.md"),
+            codex_config_path: PathBuf::from("/repo/.codex/config.toml"),
+            project_config: ManagedProjectProjectConfig {
+                schema: "tt-managed-project-config-v1".into(),
+                title: "Alpha".into(),
+                objective: "Ship".into(),
+                base_branch: "main".into(),
+                branch_prefix: "tt".into(),
+                plan_first: true,
+                commit_policy: "checkpoint-enforced".into(),
+                require_operator_merge_approval: true,
+                expected_long_build: false,
+                require_progress_updates: true,
+                soft_silence_seconds: 900,
+                hard_ceiling_seconds: 7200,
+                default_validation_commands: vec!["cargo test".into()],
+                smoke_validation_commands: vec!["cargo check".into()],
+                checkpoint_triggers: vec!["after_plan".into(), "before_merge".into()],
+                pitfalls: vec!["slow clean builds".into()],
+                hints: vec!["run cargo test".into()],
+                exceptions: vec!["merge approval required".into()],
+            },
+            plan: ManagedProjectPlan {
+                schema: "tt-managed-project-plan-v1".into(),
+                status: "draft".into(),
+                objective: "Ship".into(),
+                updated_at: ts().to_rfc3339(),
+                milestones: vec![],
+                work_items: vec![],
+                notes: ManagedProjectPlanNotes {
+                    risks: vec!["slow CI".into()],
+                    pitfalls: vec!["clean builds are expensive".into()],
+                    open_questions: vec!["what is out of scope?".into()],
+                    operator_constraints: vec!["wait for approval".into()],
+                },
+            },
+            scenario: None,
+            roles: vec![],
+        };
+        let spec = ManagedProjectRoundSpec {
+            round_number: 1,
+            phase: "plan",
+            director_goal: "Plan the work.",
+            dev_goal: "Implement the work.",
+            test_goal: "Validate the work.",
+            integration_goal: "Prepare landing.",
+            requires_landing_approval: false,
+        };
+        let prompt = build_director_round_prompt(&bootstrap, &spec, "operator seed", "", None);
+        assert!(prompt.contains("Planning agenda:"));
+        assert!(prompt.contains("Current open questions:"));
+        assert!(prompt.contains("what is out of scope?"));
+        assert!(prompt.contains("Validation commands:"));
+        assert!(prompt.contains("cargo test"));
+        assert!(prompt.contains("resolve the agenda first"));
     }
 
     #[test]

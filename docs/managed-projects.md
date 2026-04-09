@@ -51,8 +51,10 @@ escalations flow through the director.
   current managed-project state.
 - `tt project director` creates or reuses the scaffold, chooses the role
   topology, activates the selected roles in one shot, and can optionally run a
-  built-in seeded scenario. The director now plan-checks against `.tt/plan.toml`
-  before it dispatches workers.
+  built-in seeded scenario. The director plan-checks against `.tt/plan.toml`
+  before it dispatches workers and uses the first planning round to resolve
+  scope, validation, merge policy, and repo-specific constraints before
+  dispatch.
 - `tt project spawn` starts live Codex threads for the selected roles and
   records the resulting thread ids in `.tt/managed-project.toml`.
 - `tt project attach` binds existing Codex thread ids to the corresponding
@@ -66,6 +68,10 @@ The director owns the phase flow:
 - `test` validates the change
 - `integrate` prepares landing
 - `merge` pauses for operator approval before final land or cleanup
+
+The planning round is intentionally explicit. The director records the repo
+local plan questions, risks, and constraints in `.tt/plan.toml` before workers
+are dispatched so later rounds can reuse the same project-specific decisions.
 
 Example:
 

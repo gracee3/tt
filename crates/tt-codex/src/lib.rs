@@ -1268,8 +1268,8 @@ pub fn codex_session_index_path(codex_home: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::time::Duration;
+    use tempfile::tempdir;
 
     fn watchdog_snapshot(
         thread_updated_at: i64,
