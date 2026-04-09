@@ -1,3 +1,5 @@
 /target
 .DS_Store
 .tt/overlay.db
+.tt/runtime/
+.tt/scenarios/

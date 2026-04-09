@@ -2,83 +2,55 @@
 
 # TT
 
-_Open Reasoning Context & Agent Supervisor_
+TT is a local supervisor for Codex-driven development. It keeps project state,
+thread coordination, and workspace policy close to the checkout so operators
+can inspect and steer work without losing the runtime context.
 
-TT is a local Rust supervisor layer built around Codex app-server.
+## What It Does
 
-## What This Repo Is
+- `tt-daemon` owns the local API boundary and the durable overlay state.
+- `tt-cli` is the thin command-line client over the daemon.
+- `tt-tui` is the interactive operator surface.
+- `.tt/` stores repo-local project policy, plans, and managed-project state.
+- `tt-git` handles repo/worktree and merge-readiness inspection.
 
-This repository is the TT v2 workbench.
+The repo is set up for local development of TT itself. The checked-in
+`.tt/project.toml` pins the preferred dev entrypoint to `./target/debug/tt-cli`.
 
-The current direction is:
+## Reference `.tt/`
 
-- `tt-daemon` as the local API boundary
-- `tt-tui` as the primary operator surface
-- `tt-cli` as a thin client over the daemon
-- `.tt` as the TT-owned overlay for orchestration metadata, including repo-local
-  project policy and director plans
-- `tt-git` as the repo/worktree authority for merge readiness and checkout inspection
+This checkout keeps a reference managed-project scaffold in `.tt/`:
 
-The design stays local first. State lives on the machine, operators inspect it directly, and merge/cleanup decisions stay visible instead of hidden behind a remote service.
+- `.tt/project.toml` for repo-local policy overrides
+- `.tt/plan.toml` for the current director plan
+- `.tt/managed-project.toml` for managed-project topology
+- `.tt/contracts/worker-contract.md` for the worker contract
 
-## Core Shape
+Runtime-only state such as `.tt/overlay.db` stays ignored.
 
-TT is built for the point where one agent thread is no longer enough.
-
-The system keeps the control plane close:
-
-- durable local workflow state
-- explicit workstreams, work units, assignments, threads, turns, reports, and supervisor decisions
-- daemon-backed snapshots and event streams
-- workspace and merge semantics that stay tied to the local checkout
-
-That separation matters because it keeps the operator view coherent even when the work branches across multiple threads or worktrees.
-
-## Current Focus
-
-The v2 line is centered on these responsibilities:
-
-- Codex remains the runtime/source of truth for threads, turns, rollouts, sandboxing, and app-server transport
-- TT owns the overlay/orchestration layer around `.tt`, workspace bindings, and operator workflows
-- `tt-daemon` exposes the local boundary and keeps runtime state in one place
-- `tt-tui` is the main place to inspect and operate the system
-- `tt-cli` stays narrow and delegates behavior to the daemon
-
-The intent is not to build a remote platform first. The intent is to make the local supervisor stack simpler, clearer, and easier to operate.
-
-## Build And Test
+## Development
 
 ```bash
-cargo fmt
-cargo check
-cargo test
-make test
+cargo build -p tt-cli -p tt-daemon
+./target/debug/tt-cli project inspect
+./target/debug/tt-cli codex app-servers
 ```
 
-End-to-end operator workflows live under `tests/e2e/`:
+Useful checks:
 
-- `make test-e2e`
-- `make test-e2e-live`
-- `make test-e2e-long`
-- `make test-e2e SCENARIO=<name>`
-- `make clean-e2e`
+- `cargo fmt`
+- `cargo check`
+- `cargo test`
 
-## Working Notes
+Live and scenario workflows live under `tests/e2e/`.
 
-- `make test` runs the standard Rust test suite.
-- `make test-e2e` is the normal deterministic E2E lane.
-- `TT_HOME` can point TT at an isolated config/state/log root.
-- `state/get` is the merged daemon snapshot.
-- `authority/hierarchy/get` is the canonical authority query for planning hierarchy and tracked-thread metadata.
-
-## More Docs
+## Docs
 
 - [TT v2 Architecture](docs/tt_v2_architecture.md)
+- [Managed Projects](docs/managed-projects.md)
+- [TT / Codex Runtime Contract](docs/tt_codex_runtime_contract.md)
 - [Phase 2 Plan](docs/PHASE2_EXECUTION_PLAN.md)
-- [Next Milestones](docs/NEXT_MILESTONES.md)
-- [Workstream Todo](docs/WORKSTREAM_TODO.md)
-- [Workspace Lifecycle](docs/workspace-lifecycle.md)
 
 ## License
 
-Licensed under Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).
