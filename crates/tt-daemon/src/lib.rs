@@ -46,6 +46,9 @@ const LIVE_TURN_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
+    pub repo_root: Option<PathBuf>,
+    pub project_initialized: bool,
+    pub project_state: Option<String>,
     pub codex_home: Option<PathBuf>,
     pub codex_state_db: Option<PathBuf>,
     pub codex_session_index: Option<PathBuf>,
@@ -1444,9 +1447,18 @@ impl DaemonService {
     }
 
     pub fn status(&self, cwd: impl AsRef<Path>) -> Result<DaemonStatus> {
+        let cwd = cwd.as_ref();
         let codex_doctor = self.codex_doctor_with_listen_check(cwd);
         let codex_home = self.codex_home.as_ref();
+        let repo_root = managed_project_repo_root(cwd)?;
+        let (project_initialized, project_state) = match &repo_root {
+            Some(repo_root) => managed_project_status_for_repo(repo_root)?,
+            None => (false, None),
+        };
         Ok(DaemonStatus {
+            repo_root,
+            project_initialized,
+            project_state,
             codex_home: codex_home.map(|home| home.root().to_path_buf()),
             codex_state_db: codex_home.map(|home| home.state_db_path()),
             codex_session_index: codex_home.map(|home| home.session_index_path()),
@@ -4621,6 +4633,34 @@ fn require_initialized_managed_project(repo_root: &Path) -> Result<PathBuf> {
     }
 
     Ok(manifest_path)
+}
+
+fn managed_project_status_for_repo(repo_root: &Path) -> Result<(bool, Option<String>)> {
+    let tt_root = repo_root.join(".tt");
+    if !tt_root.is_dir() {
+        return Ok((false, None));
+    }
+
+    let manifest_path = tt_root.join("state.toml");
+    if !manifest_path.exists() {
+        return Ok((false, None));
+    }
+
+    let manifest = load_managed_project_manifest(&manifest_path)?;
+    let total_roles = manifest.roles.len();
+    let attached_roles = manifest
+        .roles
+        .values()
+        .filter(|role| role.thread_id.is_some())
+        .count();
+    let state = if attached_roles == 0 {
+        format!("scaffolded ({attached_roles}/{total_roles})")
+    } else if attached_roles == total_roles {
+        format!("attached ({attached_roles}/{total_roles})")
+    } else {
+        format!("partial ({attached_roles}/{total_roles})")
+    };
+    Ok((true, Some(state)))
 }
 
 fn default_worktree_root(repo_root: &Path, project_slug: &str) -> PathBuf {

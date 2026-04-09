@@ -1022,7 +1022,14 @@ fn render_response(response: &DaemonResponse) -> String {
             report.error.as_deref().unwrap_or("<none>")
         ),
         DaemonResponse::Status(status) => format!(
-            "status\ncodex_contract_ok: {}\ncodex_runtime: {}\ncodex_listen_url: {}\ncodex_runtime_error: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
+            "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\ncodex_contract_ok: {}\ncodex_runtime: {}\ncodex_listen_url: {}\ncodex_runtime_error: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
+            status
+                .repo_root
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            status.project_initialized,
+            status.project_state.as_deref().unwrap_or("<none>"),
             status.codex_contract_ok,
             status
                 .codex_runtime_reachable
@@ -2451,6 +2458,9 @@ mod tests {
     #[test]
     fn renders_status_with_codex_runtime_health() {
         let text = render_response(&DaemonResponse::Status(tt_daemon::DaemonStatus {
+            repo_root: Some("/repo".into()),
+            project_initialized: true,
+            project_state: Some("attached (4/4)".into()),
             codex_home: Some("/home/me/.codex".into()),
             codex_state_db: Some("/home/me/.codex/state.db".into()),
             codex_session_index: Some("/home/me/.codex/session_index.json".into()),
@@ -2464,6 +2474,9 @@ mod tests {
             ready_workspace_count: 3,
         }));
 
+        assert!(text.contains("repo_root: /repo"));
+        assert!(text.contains("project_initialized: true"));
+        assert!(text.contains("project_state: attached (4/4)"));
         assert!(text.contains("codex_contract_ok: true"));
         assert!(text.contains("codex_runtime: unreachable"));
         assert!(text.contains("codex_listen_url: ws://127.0.0.1:4500"));
