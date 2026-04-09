@@ -54,6 +54,8 @@ Auth file:
 - Codex auth: `~/.codex/auth.json`
 
 TT should keep its own config and state separate from Codex config and state.
+For repo-local development checkouts, TT may also load `<repo>/.tt/settings.env`
+as a lightweight env overlay for TT/Codex path defaults. Shell env still wins.
 
 ## Binary Discovery
 

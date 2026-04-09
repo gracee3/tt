@@ -3,12 +3,15 @@
 //! This crate owns Codex home discovery and lightweight catalog access for
 //! TT. It does not reimplement Codex runtime behavior.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -52,6 +55,160 @@ const TURN_HARD_CEILING_SECS_ENV: &str = "TT_CODEX_TURN_HARD_CEILING_SECS";
 const DEFAULT_TURN_SOFT_SILENCE_SECS: u64 = 900;
 const DEFAULT_TURN_HARD_CEILING_SECS: u64 = 7_200;
 
+#[derive(Debug, Default)]
+struct RepoSettingsEnv {
+    values: BTreeMap<String, String>,
+}
+
+static REPO_SETTINGS_ENV: OnceLock<StdMutex<RepoSettingsEnv>> = OnceLock::new();
+
+fn repo_settings_env() -> &'static StdMutex<RepoSettingsEnv> {
+    REPO_SETTINGS_ENV.get_or_init(|| StdMutex::new(RepoSettingsEnv::default()))
+}
+
+pub fn load_repo_settings_env(cwd: impl AsRef<Path>) -> Result<()> {
+    let cwd = cwd.as_ref();
+    let settings_path = cwd
+        .ancestors()
+        .map(|ancestor| ancestor.join(".tt").join("settings.env"))
+        .find(|path| path.is_file());
+
+    let mut overlay = RepoSettingsEnv::default();
+    if let Some(path) = settings_path {
+        let repo_root = path
+            .parent()
+            .and_then(|parent| parent.parent())
+            .context("invalid TT settings.env path")?;
+        overlay.values = parse_repo_settings_env(&path, repo_root)?;
+    }
+
+    *repo_settings_env().lock().expect("repo settings env mutex") = overlay;
+    Ok(())
+}
+
+pub fn repo_env_var_os(key: &str) -> Option<OsString> {
+    merge_repo_env_value(
+        env::var_os(key),
+        repo_settings_env()
+            .lock()
+            .expect("repo settings env mutex")
+            .values
+            .get(key)
+            .map(String::as_str),
+    )
+}
+
+pub fn repo_env_var(key: &str) -> Option<String> {
+    repo_env_var_os(key).and_then(|value| value.into_string().ok())
+}
+
+pub fn apply_repo_settings_env(command: &mut Command) {
+    let overlay = repo_settings_env()
+        .lock()
+        .expect("repo settings env mutex")
+        .values
+        .clone();
+    for (key, value) in overlay {
+        if env::var_os(&key).is_none() {
+            command.env(key, value);
+        }
+    }
+}
+
+fn merge_repo_env_value(current: Option<OsString>, overlay: Option<&str>) -> Option<OsString> {
+    current.or_else(|| overlay.map(OsString::from))
+}
+
+fn parse_repo_settings_env(path: &Path, repo_root: &Path) -> Result<BTreeMap<String, String>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("read TT settings env {}", path.display()))?;
+    let mut values = BTreeMap::new();
+    for (line_number, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, raw_value)) = trimmed.split_once('=') else {
+            anyhow::bail!(
+                "invalid TT settings env line {} in {}: expected KEY=VALUE",
+                line_number + 1,
+                path.display()
+            );
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            anyhow::bail!(
+                "invalid TT settings env line {} in {}: empty key",
+                line_number + 1,
+                path.display()
+            );
+        }
+        let value = normalize_repo_settings_env_value(repo_root, key, raw_value.trim())?;
+        values.insert(key.to_string(), value);
+    }
+    Ok(values)
+}
+
+fn normalize_repo_settings_env_value(repo_root: &Path, key: &str, value: &str) -> Result<String> {
+    let unquoted = strip_matching_quotes(value);
+    if key == "HOME" || !is_path_like_repo_settings_key(key) {
+        return Ok(unquoted.to_string());
+    }
+
+    if let Some(expanded) = expand_home_dir(unquoted) {
+        return Ok(expanded);
+    }
+
+    let path = Path::new(unquoted);
+    if path.is_absolute() {
+        return Ok(path.display().to_string());
+    }
+    if is_path_like_literal(unquoted) {
+        return Ok(repo_root.join(path).display().to_string());
+    }
+    Ok(unquoted.to_string())
+}
+
+fn is_path_like_repo_settings_key(key: &str) -> bool {
+    key == "TT_RUNTIME_BIN"
+        || key.ends_with("_BIN")
+        || key.ends_with("_PATH")
+        || key.ends_with("_FILE")
+}
+
+fn is_path_like_literal(value: &str) -> bool {
+    value.starts_with("./")
+        || value.starts_with("../")
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+}
+
+fn expand_home_dir(value: &str) -> Option<String> {
+    if value == "~" || value.starts_with("~/") {
+        let home = dirs::home_dir()?;
+        let suffix = value.strip_prefix("~/").unwrap_or("");
+        return Some(home.join(suffix).display().to_string());
+    }
+    None
+}
+
+fn strip_matching_quotes(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == 34 && bytes[bytes.len() - 1] == 34)
+            || (bytes[0] == 39 && bytes[bytes.len() - 1] == 39))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexRuntimeContract {
     codex_bin: PathBuf,
@@ -80,11 +237,13 @@ pub struct CodexHome {
 
 impl CodexHome {
     pub fn discover() -> Result<Self> {
+        load_repo_settings_env(env::current_dir()?)?;
         validate_runtime_contract()?;
-        Self::discover_from(env::var_os(CODEX_HOME_ENV), dirs::home_dir())
+        Self::discover_from(repo_env_var_os(CODEX_HOME_ENV), dirs::home_dir())
     }
 
     pub fn discover_in(cwd: impl AsRef<Path>) -> Result<Self> {
+        load_repo_settings_env(cwd.as_ref())?;
         validate_runtime_contract()?;
         let codex_dir = cwd.as_ref().join(".codex");
         if codex_dir.is_dir() {
@@ -1118,9 +1277,8 @@ fn jsonrpc_notification_from_client_notification(
 }
 
 fn resolve_app_server_listen_url() -> String {
-    std::env::var(CODEX_APP_SERVER_LISTEN_URL_ENV)
-        .or_else(|_| std::env::var("TT_APP_SERVER_LISTEN_URL"))
-        .ok()
+    repo_env_var(CODEX_APP_SERVER_LISTEN_URL_ENV)
+        .or_else(|| repo_env_var("TT_APP_SERVER_LISTEN_URL"))
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_APP_SERVER_LISTEN_URL.to_string())
 }
@@ -1130,7 +1288,7 @@ pub fn configured_app_server_listen_url() -> String {
 }
 
 fn resolve_required_binary(env_key: &str, binary_name: &str, label: &str) -> Result<PathBuf> {
-    let path = if let Some(value) = env::var_os(env_key) {
+    let path = if let Some(value) = repo_env_var_os(env_key) {
         PathBuf::from(value)
     } else {
         expected_local_user_bin(binary_name)?
@@ -1234,7 +1392,10 @@ fn validate_runtime_contract_paths(
 }
 
 fn resolve_canonical_auth_json_path() -> Result<PathBuf> {
-    let home_dir = dirs::home_dir().context("could not resolve a home directory for Codex auth")?;
+    let home_dir = repo_env_var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .context("could not resolve a home directory for Codex auth")?;
     Ok(home_dir.join(".codex").join(CODEX_AUTH_FILE_NAME))
 }
 
@@ -1268,8 +1429,11 @@ pub fn codex_session_index_path(codex_home: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    static SETTINGS_ENV_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn watchdog_snapshot(
         thread_updated_at: i64,
@@ -1300,6 +1464,92 @@ mod tests {
         .expect("discover codex home");
 
         assert_eq!(discovered.root(), dir.path());
+    }
+
+    #[test]
+    fn repo_settings_env_loads_and_resolves_paths() {
+        let _guard = SETTINGS_ENV_TEST_LOCK.lock().expect("settings env lock");
+        let repo = tempdir().expect("tempdir");
+        let tt_bin = repo.path().join("./target/debug/codex");
+        let app_server_bin = repo.path().join("./target/debug/codex-app-server");
+        std::fs::create_dir_all(tt_bin.parent().expect("tt bin parent"))
+            .expect("create tt bin dir");
+        std::fs::write(&tt_bin, "#!/bin/sh\n").expect("write tt bin");
+        std::fs::write(&app_server_bin, "#!/bin/sh\n").expect("write app-server bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&tt_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod tt bin");
+            std::fs::set_permissions(&app_server_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod app-server bin");
+        }
+        std::fs::create_dir_all(repo.path().join(".tt")).expect("create tt dir");
+        std::fs::write(
+            repo.path().join(".tt/settings.env"),
+            format!(
+                "TT_RUNTIME_BIN=./target/debug/tt-cli\nTT_CODEX_BIN=./target/debug/codex\nTT_CODEX_APP_SERVER_BIN=./target/debug/codex-app-server\nTT_REPO_SETTINGS_SENTINEL=loaded\n",
+            ),
+        )
+        .expect("write settings env");
+
+        load_repo_settings_env(repo.path()).expect("load settings env");
+        let tt_runtime_bin = repo.path().join("./target/debug/tt-cli");
+        let tt_bin_str = tt_bin.to_string_lossy().to_string();
+        let app_server_bin_str = app_server_bin.to_string_lossy().to_string();
+        let tt_runtime_bin_str = tt_runtime_bin.to_string_lossy().to_string();
+
+        assert_eq!(
+            repo_env_var("TT_CODEX_BIN").as_deref(),
+            Some(tt_bin_str.as_str())
+        );
+        assert_eq!(
+            repo_env_var("TT_CODEX_APP_SERVER_BIN").as_deref(),
+            Some(app_server_bin_str.as_str())
+        );
+        assert_eq!(
+            repo_env_var("TT_RUNTIME_BIN").as_deref(),
+            Some(tt_runtime_bin_str.as_str())
+        );
+        assert_eq!(
+            repo_env_var("TT_REPO_SETTINGS_SENTINEL").as_deref(),
+            Some("loaded")
+        );
+    }
+
+    #[test]
+    fn repo_settings_env_injects_child_commands() {
+        let _guard = SETTINGS_ENV_TEST_LOCK.lock().expect("settings env lock");
+        let repo = tempdir().expect("tempdir");
+        std::fs::create_dir_all(repo.path().join(".tt")).expect("create tt dir");
+        std::fs::write(
+            repo.path().join(".tt/settings.env"),
+            "TT_REPO_SETTINGS_SENTINEL=loaded\n",
+        )
+        .expect("write settings env");
+
+        load_repo_settings_env(repo.path()).expect("load settings env");
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf %s \"$TT_REPO_SETTINGS_SENTINEL\""]);
+        apply_repo_settings_env(&mut command);
+        let output = command.output().expect("run child");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "loaded");
+    }
+
+    #[test]
+    fn repo_settings_env_overlay_does_not_override_shell_env() {
+        assert_eq!(
+            merge_repo_env_value(Some(OsString::from("shell")), Some("overlay"))
+                .and_then(|value| value.into_string().ok()),
+            Some("shell".to_string())
+        );
+        assert_eq!(
+            merge_repo_env_value(None, Some("overlay")).and_then(|value| value.into_string().ok()),
+            Some("overlay".to_string())
+        );
     }
 
     #[test]

@@ -23,8 +23,8 @@ use codex_app_server_protocol as protocol;
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use tt_codex::{
-    CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, configured_app_server_listen_url,
-    validate_runtime_contract,
+    CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, apply_repo_settings_env,
+    configured_app_server_listen_url, repo_env_var, repo_env_var_os, validate_runtime_contract,
 };
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
@@ -2606,8 +2606,7 @@ fn managed_project_progress_guidance() -> &'static str {
 
 fn managed_project_liveness_policy_from_env() -> ManagedProjectLivenessPolicy {
     fn parse_bool_env(key: &str, default: bool) -> bool {
-        std::env::var(key)
-            .ok()
+        repo_env_var(key)
             .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
                 "true" | "1" | "yes" => Some(true),
                 "false" | "0" | "no" => Some(false),
@@ -2617,8 +2616,7 @@ fn managed_project_liveness_policy_from_env() -> ManagedProjectLivenessPolicy {
     }
 
     fn parse_u64_env(key: &str, default: u64) -> u64 {
-        std::env::var(key)
-            .ok()
+        repo_env_var(key)
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(default)
@@ -2642,12 +2640,14 @@ fn default_managed_project_project_config(
     base_branch: &str,
 ) -> ManagedProjectProjectConfig {
     let liveness = managed_project_liveness_policy_from_env();
-    let tt_runtime_bin = repo_root
-        .join("target")
-        .join("debug")
-        .join("tt-cli")
-        .exists()
-        .then_some("./target/debug/tt-cli".to_string());
+    let tt_runtime_bin = repo_env_var("TT_RUNTIME_BIN").or_else(|| {
+        repo_root
+            .join("target")
+            .join("debug")
+            .join("tt-cli")
+            .exists()
+            .then_some("./target/debug/tt-cli".to_string())
+    });
     ManagedProjectProjectConfig {
         schema: "tt-managed-project-config-v1".to_string(),
         title: project_title.to_string(),
@@ -2705,6 +2705,7 @@ fn load_or_seed_managed_project_config(
     objective: &str,
     base_branch: &str,
 ) -> Result<ManagedProjectProjectConfig> {
+    tt_codex::load_repo_settings_env(repo_root)?;
     if path.exists() {
         return load_managed_project_project_config(path);
     }
@@ -4539,7 +4540,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let status = Command::new(program).current_dir(cwd).args(args).status()?;
+    let mut command = Command::new(program);
+    command.current_dir(cwd).args(args);
+    apply_repo_settings_env(&mut command);
+    let status = command.status()?;
     if status.success() {
         Ok(())
     } else {
@@ -5516,6 +5520,7 @@ fn doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> DoctorReport {
 
 fn codex_app_server_summary_for_cwd(cwd: impl AsRef<Path>) -> CodexAppServerSummary {
     let cwd = cwd.as_ref().to_path_buf();
+    let _ = tt_codex::load_repo_settings_env(&cwd);
     let daemon_socket_path = socket_path_for(&cwd);
     let daemon_socket_exists = daemon_socket_path.exists();
     let daemon_socket_reachable = DaemonClient::connect(&daemon_socket_path).is_ok();
@@ -5524,9 +5529,9 @@ fn codex_app_server_summary_for_cwd(cwd: impl AsRef<Path>) -> CodexAppServerSumm
         Ok(reachable) => (reachable, None),
         Err(error) => (false, Some(format!("{error:#}"))),
     };
-    let source = if std::env::var_os("CODEX_APP_SERVER_LISTEN_URL").is_some() {
+    let source = if repo_env_var_os("CODEX_APP_SERVER_LISTEN_URL").is_some() {
         "CODEX_APP_SERVER_LISTEN_URL"
-    } else if std::env::var_os("TT_APP_SERVER_LISTEN_URL").is_some() {
+    } else if repo_env_var_os("TT_APP_SERVER_LISTEN_URL").is_some() {
         "TT_APP_SERVER_LISTEN_URL"
     } else {
         "default"
@@ -5554,6 +5559,7 @@ fn codex_app_server_summary_for_cwd(cwd: impl AsRef<Path>) -> CodexAppServerSumm
 }
 
 fn codex_doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> CodexDoctorReport {
+    let _ = tt_codex::load_repo_settings_env(cwd.as_ref());
     let configured_listen_url = configured_app_server_listen_url();
     let (listen_reachable, listen_error) = if check_listen {
         match check_listen_reachability(&configured_listen_url) {
@@ -5596,7 +5602,7 @@ fn codex_doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> CodexDocto
 }
 
 fn canonical_codex_auth_json_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex").join("auth.json"))
+    repo_env_var_os("HOME").map(|home| PathBuf::from(home).join(".codex").join("auth.json"))
 }
 
 fn check_listen_reachability(listen_url: &str) -> Result<bool> {
@@ -6172,6 +6178,31 @@ mod tests {
             config.tt_runtime_bin.as_deref(),
             Some("./target/debug/tt-cli")
         );
+    }
+
+    #[test]
+    fn default_managed_project_project_config_uses_repo_settings_env_overrides() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".tt")).expect("create tt dir");
+        std::fs::write(
+            dir.path().join(".tt/settings.env"),
+            "TT_MANAGED_PROJECT_EXPECTED_LONG_BUILD=true\nTT_MANAGED_PROJECT_REQUIRES_PROGRESS_UPDATES=false\nTT_MANAGED_PROJECT_SOFT_SILENCE_SECONDS=123\nTT_MANAGED_PROJECT_HARD_CEILING_SECONDS=456\n",
+        )
+        .expect("write settings env");
+        let tt_bin = dir.path().join("target").join("debug").join("tt-cli");
+        std::fs::create_dir_all(tt_bin.parent().expect("parent")).expect("create target dir");
+        std::fs::write(&tt_bin, "").expect("write tt-cli placeholder");
+        tt_codex::load_repo_settings_env(dir.path()).expect("load settings env");
+
+        let config = default_managed_project_project_config(dir.path(), "Alpha", "Ship", "main");
+        assert_eq!(
+            config.tt_runtime_bin.as_deref(),
+            Some("./target/debug/tt-cli")
+        );
+        assert!(config.expected_long_build);
+        assert!(!config.require_progress_updates);
+        assert_eq!(config.soft_silence_seconds, 123);
+        assert_eq!(config.hard_ceiling_seconds, 456);
     }
 
     #[test]

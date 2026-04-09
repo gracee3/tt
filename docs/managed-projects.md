@@ -24,6 +24,7 @@ can see what the director and subagents are doing while a run is live.
 - `.tt/plan.toml` with the director's current plan and checkpoints
 - `.tt/contracts/worker-contract.md`
 - `.tt/state.toml`
+- `.tt/settings.env` with repo-local env defaults such as `TT_CODEX_BIN` and `TT_CODEX_APP_SERVER_BIN`
 - `.tt/scenarios/<scenario-id>/progress.jsonl` for live director/subagent progress
 - one worktree each for `dev`, `test`, and `integration`
 
@@ -52,6 +53,7 @@ can inspect what the director and subagents are doing while a run is live.
   managed-project scaffold for a supported template.
 - `tt project open` writes the manifest, contract, and agent files.
 - `tt project open` writes the repo-local project policy and plan sidecars.
+- `tt project open` respects an existing repo-local `settings.env` overlay when present.
 - `tt project inspect` / `tt project status` reads back the manifest, role
   bindings, worktrees, repository state, and effective project plan without
   changing anything.
