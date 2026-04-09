@@ -23,7 +23,7 @@ This checkout keeps a reference managed-project scaffold in `.tt/`:
 
 - `.tt/project.toml` for repo-local policy overrides
 - `.tt/plan.toml` for the current director plan
-- `.tt/managed-project.toml` for managed-project topology
+- `.tt/state.toml` for managed-project runtime state
 - `.tt/contracts/worker-contract.md` for the worker contract
 
 Runtime-only state such as `.tt/overlay.db` stays ignored.

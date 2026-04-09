@@ -23,7 +23,7 @@ can see what the director and subagents are doing while a run is live.
   - optional `tt_runtime_bin` can pin the preferred repo-local `tt-cli` path for development checkouts such as `./target/debug/tt-cli`
 - `.tt/plan.toml` with the director's current plan and checkpoints
 - `.tt/contracts/worker-contract.md`
-- `.tt/managed-project.toml`
+- `.tt/state.toml`
 - `.tt/scenarios/<scenario-id>/progress.jsonl` for live director/subagent progress
 - one worktree each for `dev`, `test`, and `integration`
 
@@ -68,7 +68,7 @@ can inspect what the director and subagents are doing while a run is live.
   scope, validation, merge policy, and repo-specific constraints before
   dispatch.
 - `tt project spawn` starts live Codex threads for the selected roles and
-  records the resulting thread ids in `.tt/managed-project.toml`.
+  records the resulting thread ids in `.tt/state.toml`.
 - `tt project attach` binds existing Codex thread ids to the corresponding
   managed-project roles.
 
@@ -110,9 +110,9 @@ tt project attach --cwd /path/to/repo \
 - `dev`, `test`, and `integration` get sibling worktrees under
   `.tt-worktrees/<project-slug>/`
 - Branch names default to `tt/<project-slug>/<role>`
-- The managed-project manifest records the role/worktree/thread layout plus the
-  director-managed attachment state so the project can move from scaffolded to
-  partially or fully attached without regenerating the workspace layout
+- The managed-project state file records the role/worktree/thread layout plus
+  the director-managed attachment state so the project can move from scaffolded
+  to partially or fully attached without regenerating the workspace layout
 - `--director_model`, `--dev_model`, `--test_model`, and `--integration_model`
   override the default model string for that role while keeping reasoning
   effort at `medium`
@@ -149,7 +149,7 @@ relying on hidden state.
 ## Seeded Scenarios
 
 The built-in seeded scenarios use real Codex threads and a TT-owned round state
-record in the managed-project manifest.
+record in the managed-project state file.
 
 - `rust-taskflow-four-round`
   - seeds the director with an initial operator prompt

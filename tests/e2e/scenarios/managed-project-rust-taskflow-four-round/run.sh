@@ -70,7 +70,7 @@ grep -q "Plan file: $repo_root/.tt/plan.toml" "$plan_stdout"
 grep -q "Work items:" "$plan_stdout"
 grep -q "managed project" "$plan_refresh_stdout"
 
-test -f "$repo_root/.tt/managed-project.toml"
+test -f "$repo_root/.tt/state.toml"
 test -f "$repo_root/.tt/project.toml"
 test -f "$repo_root/.tt/plan.toml"
 test -f "$repo_root/.tt/contracts/worker-contract.md"

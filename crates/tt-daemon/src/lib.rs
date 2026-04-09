@@ -1510,10 +1510,10 @@ impl DaemonService {
         let Some(repo_root) = managed_project_repo_root(cwd)? else {
             anyhow::bail!("managed project inspect requires a git repository");
         };
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         if !manifest_path.exists() {
             anyhow::bail!(
-                "managed project manifest not found at {}",
+                "managed project state not found at {}",
                 manifest_path.display()
             );
         }
@@ -1540,10 +1540,10 @@ impl DaemonService {
         let Some(repo_root) = managed_project_repo_root(cwd)? else {
             anyhow::bail!("managed project plan refresh requires a git repository");
         };
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         if !manifest_path.exists() {
             anyhow::bail!(
-                "managed project manifest not found at {}",
+                "managed project state not found at {}",
                 manifest_path.display()
             );
         }
@@ -1565,10 +1565,10 @@ impl DaemonService {
         let Some(repo_root) = managed_project_repo_root(cwd)? else {
             anyhow::bail!("managed project control requires a git repository");
         };
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         if !manifest_path.exists() {
             anyhow::bail!(
-                "managed project manifest not found at {}",
+                "managed project state not found at {}",
                 manifest_path.display()
             );
         }
@@ -1712,7 +1712,7 @@ impl DaemonService {
             &[&director_role, &dev_role, &test_role, &integration_role],
         )?;
 
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         let manifest = build_managed_project_manifest(
             &project,
             &repo_root,
@@ -3081,7 +3081,7 @@ impl DaemonService {
         };
         let repository = GitRepository::discover(&repo_root)?
             .ok_or_else(|| anyhow::anyhow!("managed project spawn requires a git repository"))?;
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         let manifest = load_managed_project_manifest(&manifest_path)?;
         let mut bootstrap =
             self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
@@ -3132,7 +3132,7 @@ impl DaemonService {
         };
         let repository = GitRepository::discover(&repo_root)?
             .ok_or_else(|| anyhow::anyhow!("managed project director requires a git repository"))?;
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         let mut bootstrap = if manifest_path.exists() {
             let manifest = load_managed_project_manifest(&manifest_path)?;
             self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?
@@ -3224,7 +3224,7 @@ impl DaemonService {
         };
         let repository = GitRepository::discover(&repo_root)?
             .ok_or_else(|| anyhow::anyhow!("managed project attach requires a git repository"))?;
-        let manifest_path = repo_root.join(".tt").join("managed-project.toml");
+        let manifest_path = repo_root.join(".tt").join("state.toml");
         let manifest = load_managed_project_manifest(&manifest_path)?;
         let mut bootstrap =
             self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
@@ -6234,7 +6234,7 @@ mod tests {
             None,
             &[&role],
         );
-        let path = dir.path().join("managed-project.toml");
+        let path = dir.path().join("state.toml");
         save_managed_project_manifest(&path, &manifest).expect("save manifest");
         let loaded = load_managed_project_manifest(&path).expect("load manifest");
         let loaded_role = loaded.roles.get("dev").expect("dev role");
@@ -6263,7 +6263,7 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             base_branch: "main".into(),
             worktree_root: PathBuf::from("/repo/.tt-worktrees/alpha"),
-            manifest_path: PathBuf::from("/repo/.tt/managed-project.toml"),
+            manifest_path: PathBuf::from("/repo/.tt/state.toml"),
             project_config_path: PathBuf::from("/repo/.tt/project.toml"),
             plan_path: PathBuf::from("/repo/.tt/plan.toml"),
             contract_path: PathBuf::from("/repo/.tt/contracts/worker-contract.md"),

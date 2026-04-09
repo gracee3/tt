@@ -74,7 +74,7 @@ grep -q "test |" "$inspect_resume_stdout"
 grep -q "control=director" "$inspect_resume_stdout"
 grep -q "state: partial" "$inspect_resume_stdout"
 
-test -f "$repo_root/.tt/managed-project.toml"
+test -f "$repo_root/.tt/state.toml"
 test -f "$repo_root/.tt/project.toml"
 test -f "$repo_root/.tt/plan.toml"
 test -f "$repo_root/.tt/contracts/worker-contract.md"

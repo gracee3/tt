@@ -88,7 +88,7 @@ for round in 01 02 03 04; do
   done
 done
 
-test -f "$repo_root/.tt/managed-project.toml"
+test -f "$repo_root/.tt/state.toml"
 test -f "$repo_root/.tt/project.toml"
 test -f "$repo_root/.tt/plan.toml"
 

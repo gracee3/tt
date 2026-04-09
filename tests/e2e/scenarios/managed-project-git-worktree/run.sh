@@ -49,7 +49,7 @@ e2e_tt --cwd "$worktree_path" project open \
   >"$open_stdout"
 
 project_root="$repo_root"
-if [ -f "$worktree_path/.tt/managed-project.toml" ]; then
+if [ -f "$worktree_path/.tt/state.toml" ]; then
   project_root="$worktree_path"
 fi
 
