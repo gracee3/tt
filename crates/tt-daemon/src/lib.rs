@@ -1597,7 +1597,9 @@ fn role_title(role: ThreadRole) -> &'static str {
 fn role_task(role: ThreadRole, project_title: &str) -> String {
     match role {
         ThreadRole::Director => {
-            format!("Coordinate workers, branch strategy, and handoffs for {project_title}")
+            format!(
+                "Coordinate the operator, workers, branch strategy, and handoffs for {project_title}"
+            )
         }
         ThreadRole::Develop => {
             format!("Implement the assigned feature slice for {project_title}")
@@ -1617,7 +1619,9 @@ fn role_task(role: ThreadRole, project_title: &str) -> String {
 
 fn role_description(role: ThreadRole) -> &'static str {
     match role {
-        ThreadRole::Director => "Coordinates TT-managed workers, branch strategy, and handoffs.",
+        ThreadRole::Director => {
+            "Coordinates the operator, branch strategy, worker assignments, and handoffs."
+        }
         ThreadRole::Develop => "Implementation worker focused on the assigned code slice.",
         ThreadRole::Test => "Validation worker that reports exact failures and test results.",
         ThreadRole::Integrate => "Landing worker that prepares merge readiness and cleanup.",
@@ -1650,6 +1654,7 @@ fn render_agent_file(
     project_title: &str,
     project_objective: &str,
 ) -> String {
+    let role_roster = managed_project_role_roster();
     let mut output = String::new();
     output.push_str(&format!("name = {:?}\n", role_slug(role)));
     output.push_str(&format!("description = {:?}\n", role_description(role)));
@@ -1663,24 +1668,49 @@ fn render_agent_file(
         role_slug(role)
     ));
     output.push_str(&format!("Project objective: {project_objective}\n"));
-    output
-        .push_str("Follow .tt/contracts/worker-contract.md and stay inside your assigned scope.\n");
+    output.push_str("Project protocol:\n");
+    output.push_str("- The operator talks to the director.\n");
+    output.push_str("- The director is the only coordinator and speaks to the operator on behalf of the project.\n");
+    output.push_str(
+        "- Workers do not coordinate directly with each other; all assignments and escalations go through the director.\n",
+    );
+    output.push_str(
+        "- Use the shared contract in .tt/contracts/worker-contract.md as the source of truth.\n",
+    );
+    output.push_str("Role roster:\n");
+    for line in role_roster.lines() {
+        output.push_str("- ");
+        output.push_str(line);
+        output.push('\n');
+    }
     match role {
         ThreadRole::Director => {
-            output.push_str("Own branch strategy, worker assignment, handoffs, and readiness.\n");
+            output.push_str("Your job is to turn operator intent into a plan, todo list, and dispatch decisions.\n");
+            output.push_str(
+                "Own branch strategy, worker assignment, phase transitions, and readiness.\n",
+            );
+            output.push_str("Keep the operator informed, request approval for merges or destructive cleanup, and summarize outcomes after each phase.\n");
             output.push_str("Do not implement product code unless explicitly instructed.\n");
         }
         ThreadRole::Develop => {
             output.push_str("Implement only the assigned slice in the provided worktree.\n");
+            output.push_str("You report to the director, not to other workers or the operator.\n");
+            output.push_str("Treat test as the validator and integration as the landing worker.\n");
             output.push_str("Report changed files, tests run, blockers, and next step.\n");
         }
         ThreadRole::Test => {
             output.push_str("Validate the assigned changes and report exact failures.\n");
+            output.push_str("You report to the director, not to other workers or the operator.\n");
+            output.push_str("Assume dev produced the change and integration will handle landing if tests pass.\n");
             output.push_str("Do not widen scope or rewrite implementation code.\n");
         }
         ThreadRole::Integrate => {
             output
                 .push_str("Own merge prep, landing checks, and cleanup for the managed project.\n");
+            output.push_str("You report to the director, not to other workers or the operator.\n");
+            output.push_str(
+                "Assume dev implemented the slice and test validated it before landing.\n",
+            );
             output.push_str("Keep the landing path narrow and evidence-driven.\n");
         }
         ThreadRole::Review => {
@@ -1707,27 +1737,44 @@ fn render_agent_file(
 }
 
 fn render_worker_contract(repo_root: &Path, project_slug: &str, base_branch: &str) -> String {
+    let role_roster = managed_project_role_roster();
     format!(
-        "# TT Worker Contract\n\n\
+        "# TT Managed Project Contract\n\n\
 Project: `{project_slug}`\n\
 Repository root: `{}`\n\
 Base branch: `{base_branch}`\n\n\
+## Coordination Model\n\
+- The operator talks to the director.\n\
+- The director plans, dispatches, and arbitrates for the project.\n\
+- Workers only communicate with the director.\n\
+- Peer-to-peer worker coordination is out of scope.\n\n\
 ## Roles\n\
-- `director`: assigns work, manages branching, and approves handoffs.\n\
-- `dev`: implements the assigned slice only.\n\
-- `test`: validates the branch and reports failures exactly.\n\
-- `integration`: prepares landing and merge readiness.\n\n\
+{role_roster}\n\n\
+## Phase Vocabulary\n\
+- `plan`: turn operator intent into scope and milestones.\n\
+- `todo`: capture actionable items and traceability.\n\
+- `dispatch`: assign work to a role and a worktree.\n\
+- `develop`: implement the assigned slice.\n\
+- `test`: validate the change set.\n\
+- `integrate`: prepare merge readiness and landing.\n\
+- `docs`: update project documentation and handoff notes.\n\
+- `merge`: request approval and land the project.\n\n\
 ## Handoff Format\n\
 - `status`: `blocked`, `needs-review`, or `complete`\n\
 - `changed_files`: list of paths\n\
 - `tests_run`: list of commands\n\
 - `blockers`: list of blockers or `[]`\n\
 - `next_step`: the next concrete action\n\n\
+## Escalation Rules\n\
+- Workers escalate questions and blockers to the director.\n\
+- The director escalates merge/landing approval to the operator when needed.\n\
+- Workers do not change branch strategy or project topology on their own.\n\n\
 ## Rules\n\
 - Stay inside the assigned worktree and scope.\n\
 - Do not widen scope without director approval.\n\
 - Keep evidence in the handoff, not in prose alone.\n",
-        repo_root.display()
+        repo_root.display(),
+        role_roster = role_roster
     )
 }
 
@@ -1823,6 +1870,16 @@ fn default_managed_project_roles() -> Vec<ThreadRole> {
         ThreadRole::Test,
         ThreadRole::Integrate,
     ]
+}
+
+fn managed_project_role_roster() -> String {
+    [
+        "director: coordinates the operator, plans the project, dispatches work, and owns handoffs.",
+        "dev: implements the assigned code slice only and reports concrete changes.",
+        "test: validates the assigned changes and reports exact failures.",
+        "integration: prepares landing, merge readiness, and cleanup.",
+    ]
+    .join("\n")
 }
 
 fn managed_project_thread_binding_id(project_slug: &str, role: ThreadRole) -> String {
@@ -2849,6 +2906,38 @@ mod tests {
             loaded_role.workspace_binding_id.as_deref(),
             Some("alpha:dev")
         );
+    }
+
+    #[test]
+    fn managed_project_contract_mentions_director_and_workers() {
+        let contract = render_worker_contract(Path::new("/repo"), "alpha", "main");
+        assert!(contract.contains("TT Managed Project Contract"));
+        assert!(contract.contains("Coordination Model"));
+        assert!(contract.contains("The operator talks to the director."));
+        assert!(contract.contains("## Roles"));
+        assert!(contract.contains("plan"));
+        assert!(contract.contains("merge"));
+    }
+
+    #[test]
+    fn director_agent_instructions_include_operator_and_roster() {
+        let instructions = render_agent_file(
+            ThreadRole::Director,
+            Some("gpt-5.4"),
+            "Alpha",
+            "Ship the alpha slice",
+        );
+        assert!(instructions.contains("You are the director agent for Alpha."));
+        assert!(instructions.contains("The operator talks to the director."));
+        assert!(instructions.contains(
+            "Workers do not coordinate directly with each other; all assignments and escalations go through the director."
+        ));
+        assert!(instructions.contains("Role roster:"));
+        assert!(
+            instructions
+                .contains("turn operator intent into a plan, todo list, and dispatch decisions")
+        );
+        assert!(instructions.contains("request approval for merges or destructive cleanup"));
     }
 
     #[test]

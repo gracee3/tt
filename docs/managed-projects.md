@@ -1,11 +1,11 @@
 # Managed Projects
 
-`tt project open --cwd <repo-root>` bootstraps a TT-managed repo for the
-director/dev/test/integration workflow.
+`tt project open --cwd <repo-root>` bootstraps a TT-managed repo for a
+director-led project workflow.
 
 This writes the project contract and agent definitions so Codex can spawn the
-roles directly. Live threads are started separately with `tt project spawn` or
-bound later with `tt project attach`.
+roles directly. The director is the operator-facing coordinator, and the
+workers report only to the director.
 
 ## What It Creates
 
@@ -20,10 +20,13 @@ bound later with `tt project attach`.
 
 ## Role Model
 
-- `director`: coordinates the project, assigns work, and manages handoffs
+- `director`: speaks with the operator, turns intent into a plan, and dispatches workers
 - `dev`: implements the assigned slice only
 - `test`: validates the assigned branch and reports failures exactly
 - `integration`: prepares landing and merge readiness
+
+Workers do not coordinate peer-to-peer. All assignments, clarifications, and
+escalations flow through the director.
 
 ## Lifecycle
 
@@ -36,6 +39,15 @@ bound later with `tt project attach`.
   records the resulting thread ids in `.tt/managed-project.toml`.
 - `tt project attach` binds existing Codex thread ids to the corresponding
   managed-project roles.
+
+The director owns the phase flow:
+
+- `plan` and `todo` turn operator intent into bounded work
+- `dispatch` assigns roles and worktrees
+- `develop` implements the assigned slice
+- `test` validates the change
+- `integrate` prepares landing
+- `merge` pauses for operator approval before final land or cleanup
 
 Example:
 
@@ -59,9 +71,9 @@ tt project attach --cwd /path/to/repo \
 - `dev`, `test`, and `integration` get sibling worktrees under
   `.tt-worktrees/<project-slug>/`
 - Branch names default to `tt/<project-slug>/<role>`
-- The managed-project manifest records the role/worktree/thread layout so the
-  director can move a project from scaffolded to partially or fully attached
-  without regenerating the workspace layout
+- The managed-project manifest records the role/worktree/thread layout plus the
+  director-managed attachment state so the project can move from scaffolded to
+  partially or fully attached without regenerating the workspace layout
 
 ## Contract
 
