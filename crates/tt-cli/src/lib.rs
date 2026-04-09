@@ -107,7 +107,7 @@ pub enum ProjectFlowCommand {
     },
     Init {
         #[arg(long)]
-        path: PathBuf,
+        path: Option<PathBuf>,
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
@@ -358,7 +358,10 @@ fn request_cwd_for_command(cwd: &Path, command: &Command) -> PathBuf {
     match command {
         Command::Project {
             command: ProjectFlowCommand::Init { path, .. },
-        } => resolve_cli_path(cwd, path.clone()),
+        } => path
+            .as_ref()
+            .map(|path| resolve_cli_path(cwd, path.clone()))
+            .unwrap_or_else(|| cwd.to_path_buf()),
         _ => cwd.to_path_buf(),
     }
 }
@@ -409,7 +412,9 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
                 test_model,
                 integration_model,
             } => DaemonRequest::InitManagedProject {
-                path: resolve_cli_path(cwd, path),
+                path: path
+                    .map(|path| resolve_cli_path(cwd, path))
+                    .unwrap_or_else(|| cwd.to_path_buf()),
                 title,
                 objective,
                 template,
@@ -1472,6 +1477,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_project_init_command_without_path() {
+        let cli = Cli::parse_from(["tt", "project", "init", "--title", "Alpha"]);
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectFlowCommand::Init {
+                    path: None,
+                    title: Some(ref title),
+                    ..
+                }
+            } if title == "Alpha"
+        ));
+    }
+
+    #[test]
     fn parses_project_status_alias_for_inspect_command() {
         let cli = Cli::parse_from(["tt", "project", "status"]);
         assert!(matches!(
@@ -1525,6 +1545,37 @@ mod tests {
                 command: ProjectFlowCommand::Director { ref role, ref binding, .. }
             } if role == &vec!["dev".to_string()] && binding == &vec!["director=thread-1".to_string()]
         ));
+    }
+
+    #[test]
+    fn project_init_without_path_uses_cwd() {
+        let cwd = Path::new("/repo");
+        let request = command_to_request(
+            Command::Project {
+                command: ProjectFlowCommand::Init {
+                    path: None,
+                    title: Some("Alpha".into()),
+                    objective: None,
+                    template: None,
+                    base_branch: None,
+                    worktree_root: None,
+                    director_model: None,
+                    dev_model: None,
+                    test_model: None,
+                    integration_model: None,
+                },
+            },
+            cwd,
+        )
+        .expect("request");
+
+        match request {
+            DaemonRequest::InitManagedProject { path, title, .. } => {
+                assert_eq!(path, PathBuf::from("/repo"));
+                assert_eq!(title.as_deref(), Some("Alpha"));
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
     }
 
     #[test]
