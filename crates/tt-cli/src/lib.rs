@@ -996,6 +996,27 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
                 watchdog.state,
                 watchdog.last_signal.as_deref().unwrap_or("<none>")
             ));
+            output.push_str(&format!(
+                "watchdog_detail: elapsed={}s status={} items={} log_size={} last_observed={} last_progress={}\n",
+                watchdog.elapsed_seconds,
+                watchdog.turn_status.as_deref().unwrap_or("<unknown>"),
+                watchdog.turn_items,
+                watchdog
+                    .app_server_log_size
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                watchdog
+                    .last_observed_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                watchdog
+                    .last_progress_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ));
+            if let Some(note) = watchdog.note.as_deref() {
+                output.push_str(&format!("watchdog_note: {}\n", note));
+            }
         }
         let fallback_rounds = scenario
             .rounds
@@ -1429,7 +1450,12 @@ mod tests {
                     role: Some("dev".into()),
                     round: Some(4),
                     turn_id: Some("turn-dev".into()),
+                    elapsed_seconds: 42,
                     silence_seconds: 0,
+                    turn_status: Some("InProgress".into()),
+                    turn_items: 8,
+                    app_server_log_modified_at: Some(123),
+                    app_server_log_size: Some(456),
                     note: Some("progress is moving".into()),
                 }),
                 operator_seed: "build taskflow".into(),
@@ -1515,6 +1541,8 @@ mod tests {
         assert!(text.contains("liveness_policy: expected_long_build=false"));
         assert!(text.contains("watchdog: state=healthy"));
         assert!(text.contains("watchdog_summary: healthy"));
+        assert!(text.contains("watchdog_detail: elapsed=42s status=InProgress items=8 log_size=456"));
+        assert!(text.contains("watchdog_note: progress is moving"));
         assert!(text.contains("fallback_handoffs: 1"));
         assert!(text.contains("strict_extraction_ready: false"));
         assert!(text.contains("latest_round_summary: round 4 merge"));

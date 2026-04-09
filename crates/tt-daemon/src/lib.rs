@@ -405,7 +405,12 @@ pub struct ManagedProjectWatchdogState {
     pub role: Option<String>,
     pub round: Option<usize>,
     pub turn_id: Option<String>,
+    pub elapsed_seconds: u64,
     pub silence_seconds: u64,
+    pub turn_status: Option<String>,
+    pub turn_items: usize,
+    pub app_server_log_modified_at: Option<i64>,
+    pub app_server_log_size: Option<u64>,
     pub note: Option<String>,
 }
 
@@ -2691,7 +2696,12 @@ impl DaemonService {
                 role: None,
                 round: None,
                 turn_id: None,
+                elapsed_seconds: 0,
                 silence_seconds: 0,
+                turn_status: None,
+                turn_items: 0,
+                app_server_log_modified_at: None,
+                app_server_log_size: None,
                 note: Some("waiting for the first director turn".to_string()),
             }),
             pending_approval: None,
@@ -2959,7 +2969,12 @@ impl DaemonService {
             role: Some(role_slug(role_bootstrap.role).to_string()),
             round: Some(round_number),
             turn_id: None,
+            elapsed_seconds: 0,
             silence_seconds: 0,
+            turn_status: None,
+            turn_items: 0,
+            app_server_log_modified_at: None,
+            app_server_log_size: None,
             note: Some("waiting for the first turn observation".to_string()),
         });
 
@@ -2996,12 +3011,24 @@ impl DaemonService {
                             state: format!("{:?}", observation.state).to_lowercase(),
                             last_signal: observation.progress_signal.clone(),
                             last_observed_at: Some(Utc::now()),
-                            last_progress_at: (observation.silent_seconds == 0)
-                                .then_some(Utc::now()),
+                            last_progress_at: observation
+                                .progress_signal
+                                .as_ref()
+                                .map(|_| Utc::now())
+                                .or_else(|| {
+                                    latest_watchdog
+                                        .as_ref()
+                                        .and_then(|state| state.last_progress_at)
+                                }),
                             role: Some(role_slug(role_bootstrap.role).to_string()),
                             round: Some(round_number),
                             turn_id: Some(turn.id.clone()),
+                            elapsed_seconds: observation.elapsed_seconds,
                             silence_seconds: observation.silent_seconds,
+                            turn_status: observation.turn_status.clone(),
+                            turn_items: observation.turn_items,
+                            app_server_log_modified_at: observation.app_server_log_modified_at,
+                            app_server_log_size: observation.app_server_log_size,
                             note: Some(format!(
                                 "thread_updated_at={} turn_count={} status={} items={} app_server_log_mtime={:?}",
                                 observation.thread_updated_at,
@@ -3013,6 +3040,27 @@ impl DaemonService {
                         };
                         latest_watchdog = Some(watchdog_state);
                         if let Some(watchdog_state) = latest_watchdog.as_ref() {
+                            eprintln!(
+                                "tt watchdog role={} round={} state={} elapsed={}s silence={}s status={} items={} signal={} log_size={}",
+                                role_slug(role_bootstrap.role),
+                                round_number,
+                                watchdog_state.state,
+                                watchdog_state.elapsed_seconds,
+                                watchdog_state.silence_seconds,
+                                watchdog_state
+                                    .turn_status
+                                    .as_deref()
+                                    .unwrap_or("<unknown>"),
+                                watchdog_state.turn_items,
+                                watchdog_state
+                                    .last_signal
+                                    .as_deref()
+                                    .unwrap_or("<none>"),
+                                watchdog_state
+                                    .app_server_log_size
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_else(|| "<none>".to_string()),
+                            );
                             let _ = write_scenario_artifact(
                                 bootstrap,
                                 scenario_id,
@@ -4134,8 +4182,9 @@ fn render_attempt_log(attempts: &[ManagedProjectTurnAttempt]) -> String {
 
 fn render_watchdog_state(state: &ManagedProjectWatchdogState) -> String {
     format!(
-        "state: {}\nlast_signal: {}\nlast_observed_at: {}\nlast_progress_at: {}\nrole: {}\nround: {}\nturn_id: {}\nsilence_seconds: {}\nnote: {}\n",
+        "state: {}\nelapsed_seconds: {}\nlast_signal: {}\nlast_observed_at: {}\nlast_progress_at: {}\nrole: {}\nround: {}\nturn_id: {}\nsilence_seconds: {}\nturn_status: {}\nturn_items: {}\napp_server_log_modified_at: {}\napp_server_log_size: {}\nnote: {}\n",
         state.state,
+        state.elapsed_seconds,
         state.last_signal.as_deref().unwrap_or("<none>"),
         state
             .last_observed_at
@@ -4152,6 +4201,16 @@ fn render_watchdog_state(state: &ManagedProjectWatchdogState) -> String {
             .unwrap_or_else(|| "<none>".to_string()),
         state.turn_id.as_deref().unwrap_or("<none>"),
         state.silence_seconds,
+        state.turn_status.as_deref().unwrap_or("<none>"),
+        state.turn_items,
+        state
+            .app_server_log_modified_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        state
+            .app_server_log_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
         state.note.as_deref().unwrap_or("<none>")
     )
 }
