@@ -559,6 +559,15 @@ max_output_tokens = $supervisor_max_output_tokens
 auto_create_on_report_recorded = false
 EOF
 
+  if [[ -z "${TT_CODEX_BIN:-}" ]]; then
+    local codex_bin
+    codex_bin="$(command -v codex || true)"
+    [[ -n "$codex_bin" ]] && export TT_CODEX_BIN="$codex_bin"
+  fi
+  if [[ -z "${TT_CODEX_APP_SERVER_BIN:-}" ]]; then
+    export TT_CODEX_APP_SERVER_BIN
+    TT_CODEX_APP_SERVER_BIN="$(e2e_resolve_codex_app_server_bin "$E2E_SCENARIO_LOGS_DIR/codex-app-server.log")"
+  fi
   export TT_RUNTIME_LISTEN_URL="$listen_url"
   export TT_APP_SERVER_LISTEN_URL="$listen_url"
   export CODEX_APP_SERVER_LISTEN_URL="$listen_url"

@@ -895,7 +895,11 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
         output.push_str(&format!("fallback_handoffs: {}\n", fallback_rounds));
         output.push_str(&format!(
             "strict_extraction_ready: {}\n",
-            if fallback_rounds == 0 { "true" } else { "false" }
+            if fallback_rounds == 0 {
+                "true"
+            } else {
+                "false"
+            }
         ));
         if let Some(round) = scenario.rounds.last() {
             output.push_str(&format!(

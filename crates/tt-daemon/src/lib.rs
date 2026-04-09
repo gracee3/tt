@@ -4,8 +4,8 @@
 //! It owns the local request/response API used by the TUI and CLI.
 
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{
@@ -476,11 +476,8 @@ impl DaemonRuntime {
     pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref().to_path_buf();
         let store = OverlayStore::open_in_dir(&cwd)?;
-        let codex_home = CodexHome::discover_in(&cwd).ok();
-        let service = match codex_home.clone() {
-            Some(home) => DaemonService::with_codex_home(store, home),
-            None => DaemonService::new(store),
-        };
+        let codex_home = CodexHome::discover_in(&cwd)?;
+        let service = DaemonService::with_codex_home(store, codex_home);
         Ok(Self { cwd, service })
     }
 
@@ -2065,8 +2062,8 @@ fn load_managed_project_manifest(path: &Path) -> Result<ManagedProjectManifest> 
 
 fn load_managed_project_seed(path: Option<&Path>) -> Result<ManagedProjectScenarioSeed> {
     if let Some(path) = path {
-        let contents =
-            fs::read_to_string(path).with_context(|| format!("read scenario seed {}", path.display()))?;
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("read scenario seed {}", path.display()))?;
         return toml::from_str(&contents)
             .with_context(|| format!("parse scenario seed {}", path.display()));
     }
@@ -2186,13 +2183,9 @@ fn parse_managed_project_sandbox_mode(raw: &str) -> Result<protocol::SandboxMode
 }
 
 fn parse_managed_project_reasoning_effort(raw: &str) -> Result<ReasoningEffort> {
-    raw.trim().parse::<ReasoningEffort>().map_err(|error| {
-        anyhow::anyhow!(
-            "unknown reasoning effort `{}`: {}",
-            raw.trim(),
-            error
-        )
-    })
+    raw.trim()
+        .parse::<ReasoningEffort>()
+        .map_err(|error| anyhow::anyhow!("unknown reasoning effort `{}`: {}", raw.trim(), error))
 }
 
 fn load_managed_agent_file(path: &Path) -> Result<ManagedAgentFile> {
@@ -2424,11 +2417,8 @@ impl DaemonService {
         self.save_managed_project_bootstrap(&bootstrap)?;
         if let Some(scenario_kind) = scenario.as_deref() {
             let seed = load_managed_project_seed(seed_file.as_deref())?;
-            let scenario_state = self.run_managed_project_scenario(
-                &mut bootstrap,
-                scenario_kind,
-                &seed,
-            )?;
+            let scenario_state =
+                self.run_managed_project_scenario(&mut bootstrap, scenario_kind, &seed)?;
             bootstrap.scenario = Some(scenario_state);
         }
         self.save_managed_project_bootstrap(&bootstrap)?;
@@ -2582,7 +2572,10 @@ impl DaemonService {
 
             for role in [&dev, &test, &integration] {
                 let thread_id = role.thread_id.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("managed project role `{}` is not attached", role_slug(role.role))
+                    anyhow::anyhow!(
+                        "managed project role `{}` is not attached",
+                        role_slug(role.role)
+                    )
                 })?;
                 eprintln!(
                     "tt director scenario {} round {} dispatching {} on thread {}",
@@ -2722,10 +2715,7 @@ impl DaemonService {
         thread_id: &str,
         prompt: &str,
     ) -> Result<ManagedProjectTurnOutcome> {
-        let cwd = role_bootstrap
-            .worktree_path
-            .as_deref()
-            .unwrap_or(repo_root);
+        let cwd = role_bootstrap.worktree_path.as_deref().unwrap_or(repo_root);
         eprintln!(
             "tt director prompting role {} thread {} cwd {}",
             role_slug(role_bootstrap.role),
@@ -3089,10 +3079,7 @@ fn scaffold_managed_project_template(path: &Path, template: Option<&str>) -> Res
                 &path.join("src").join("lib.rs"),
                 "pub fn project_name() -> &'static str {\n    \"taskflow\"\n}\n",
             )?;
-            write_managed_file(
-                &path.join(".gitignore"),
-                "/target\n/.tt\n/.codex\n*.log\n",
-            )?;
+            write_managed_file(&path.join(".gitignore"), "/target\n/.tt\n/.codex\n*.log\n")?;
             if !path.join("tests").exists() {
                 fs::create_dir_all(path.join("tests"))?;
             }
@@ -3293,7 +3280,8 @@ fn summarize_turn_items(items: &[protocol::ThreadItem]) -> String {
     let mut chunks = Vec::new();
     for item in items {
         match item {
-            protocol::ThreadItem::AgentMessage { text, .. } | protocol::ThreadItem::Plan { text, .. } => {
+            protocol::ThreadItem::AgentMessage { text, .. }
+            | protocol::ThreadItem::Plan { text, .. } => {
                 if !text.trim().is_empty() {
                     chunks.push(text.trim().to_string());
                 }
@@ -3309,7 +3297,8 @@ fn summarize_turn_items(items: &[protocol::ThreadItem]) -> String {
 }
 
 fn worker_handoff_text_candidates(items: &[protocol::ThreadItem]) -> Vec<String> {
-    items.iter()
+    items
+        .iter()
         .filter_map(|item| match item {
             protocol::ThreadItem::AgentMessage { text, .. } => {
                 let trimmed = text.trim();
@@ -3437,7 +3426,8 @@ fn extract_worker_handoff(items: &[protocol::ThreadItem]) -> WorkerHandoffExtrac
         handoff: None,
         raw_text: last_raw,
         source: WorkerHandoffSource::SeededFallback,
-        parse_error: last_error.or_else(|| Some("no parseable worker handoff JSON found".to_string())),
+        parse_error: last_error
+            .or_else(|| Some("no parseable worker handoff JSON found".to_string())),
     }
 }
 

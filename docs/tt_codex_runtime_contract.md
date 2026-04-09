@@ -64,6 +64,13 @@ Recommended env vars:
 - `TT_CODEX_BIN`
 - `TT_CODEX_APP_SERVER_BIN`
 
+Current TT enforcement is stricter than the longer-term discovery model:
+- if `TT_CODEX_BIN` / `TT_CODEX_APP_SERVER_BIN` are set, TT uses them
+- otherwise TT requires:
+  - `~/.local/bin/codex`
+  - `~/.local/bin/codex-app-server`
+- TT now fails fast when that contract is not met
+
 Current app-server listen URL overrides used by TT:
 - `CODEX_APP_SERVER_LISTEN_URL`
 - `TT_APP_SERVER_LISTEN_URL`

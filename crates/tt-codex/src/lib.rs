@@ -30,6 +30,10 @@ use url::Url;
 
 pub const CODEX_HOME_ENV: &str = "CODEX_HOME";
 pub const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
+pub const TT_CODEX_BIN_ENV: &str = "TT_CODEX_BIN";
+pub const TT_CODEX_APP_SERVER_BIN_ENV: &str = "TT_CODEX_APP_SERVER_BIN";
+pub const CODEX_BIN_FILENAME: &str = "codex";
+pub const CODEX_APP_SERVER_BIN_FILENAME: &str = "codex-app-server";
 pub const SESSION_INDEX_FILE: &str = "session_index.jsonl";
 pub const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 pub const CODEX_LOGS_DB_FILENAME: &str = "logs_1.sqlite";
@@ -43,16 +47,34 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TURN_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexRuntimeContract {
+    codex_bin: PathBuf,
+    app_server_bin: PathBuf,
+}
+
+impl CodexRuntimeContract {
+    pub fn codex_bin(&self) -> &Path {
+        &self.codex_bin
+    }
+
+    pub fn app_server_bin(&self) -> &Path {
+        &self.app_server_bin
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexHome {
     root: PathBuf,
 }
 
 impl CodexHome {
     pub fn discover() -> Result<Self> {
+        validate_runtime_contract()?;
         Self::discover_from(env::var_os(CODEX_HOME_ENV), dirs::home_dir())
     }
 
     pub fn discover_in(cwd: impl AsRef<Path>) -> Result<Self> {
+        validate_runtime_contract()?;
         let codex_dir = cwd.as_ref().join(".codex");
         if codex_dir.is_dir() {
             return Ok(Self::from_path(codex_dir));
@@ -222,6 +244,7 @@ pub struct CodexRuntimeClient {
 
 impl CodexRuntimeClient {
     pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
+        validate_runtime_contract()?;
         let codex_home = CodexHome::discover_in(cwd.as_ref())?;
         let runtime = Runtime::new().context("create tokio runtime for Codex client")?;
         let listen_url = resolve_app_server_listen_url();
@@ -850,6 +873,51 @@ fn resolve_app_server_listen_url() -> String {
         .unwrap_or_else(|| DEFAULT_APP_SERVER_LISTEN_URL.to_string())
 }
 
+fn resolve_required_binary(env_key: &str, binary_name: &str, label: &str) -> Result<PathBuf> {
+    let path = if let Some(value) = env::var_os(env_key) {
+        PathBuf::from(value)
+    } else {
+        expected_local_user_bin(binary_name)?
+    };
+    ensure_executable_file(&path, label)
+}
+
+fn expected_local_user_bin(binary_name: &str) -> Result<PathBuf> {
+    let Some(home_dir) = dirs::home_dir() else {
+        anyhow::bail!(
+            "could not resolve a home directory while validating the TT/Codex runtime contract"
+        );
+    };
+    Ok(home_dir.join(".local").join("bin").join(binary_name))
+}
+
+fn ensure_executable_file(path: &Path, label: &str) -> Result<PathBuf> {
+    let metadata = std::fs::metadata(path).with_context(|| {
+        format!(
+            "{label} is required by the TT/Codex runtime contract but was not found at {}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "{label} is required by the TT/Codex runtime contract but {} is not a file",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o111 == 0 {
+            anyhow::bail!(
+                "{label} is required by the TT/Codex runtime contract but {} is not executable",
+                path.display()
+            );
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
 fn connect_backoff_delay(attempt: usize) -> Duration {
     let millis = 100_u64.saturating_mul(2_u64.saturating_pow((attempt.saturating_sub(1)) as u32));
     Duration::from_millis(millis.min(2_000))
@@ -882,6 +950,28 @@ fn format_thread_status(status: &protocol::ThreadStatus) -> String {
 
 pub fn discover_codex_home() -> Result<CodexHome> {
     CodexHome::discover()
+}
+
+pub fn validate_runtime_contract() -> Result<CodexRuntimeContract> {
+    let codex_bin = resolve_required_binary(TT_CODEX_BIN_ENV, CODEX_BIN_FILENAME, "Codex CLI")?;
+    let app_server_bin = resolve_required_binary(
+        TT_CODEX_APP_SERVER_BIN_ENV,
+        CODEX_APP_SERVER_BIN_FILENAME,
+        "Codex app-server",
+    )?;
+    validate_runtime_contract_paths(codex_bin, app_server_bin)
+}
+
+fn validate_runtime_contract_paths(
+    codex_bin: PathBuf,
+    app_server_bin: PathBuf,
+) -> Result<CodexRuntimeContract> {
+    let codex_bin = ensure_executable_file(&codex_bin, "Codex CLI")?;
+    let app_server_bin = ensure_executable_file(&app_server_bin, "Codex app-server")?;
+    Ok(CodexRuntimeContract {
+        codex_bin,
+        app_server_bin,
+    })
 }
 
 pub fn codex_state_db_path(codex_home: &Path) -> PathBuf {
@@ -936,5 +1026,51 @@ mod tests {
             Some("alpha")
         );
         assert!(catalog.find_thread_by_name("alpha").is_some());
+    }
+
+    #[test]
+    fn runtime_contract_accepts_env_override_bins() {
+        let dir = tempdir().expect("tempdir");
+        let codex_bin = dir.path().join(CODEX_BIN_FILENAME);
+        let app_server_bin = dir.path().join(CODEX_APP_SERVER_BIN_FILENAME);
+        std::fs::write(&codex_bin, "#!/bin/sh\n").expect("write codex bin");
+        std::fs::write(&app_server_bin, "#!/bin/sh\n").expect("write app-server bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&codex_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod codex");
+            std::fs::set_permissions(&app_server_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod app-server");
+        }
+
+        let contract = validate_runtime_contract_paths(codex_bin.clone(), app_server_bin.clone())
+            .expect("validate contract");
+
+        assert_eq!(contract.codex_bin(), codex_bin.as_path());
+        assert_eq!(contract.app_server_bin(), app_server_bin.as_path());
+    }
+
+    #[test]
+    fn runtime_contract_reports_missing_binary() {
+        let dir = tempdir().expect("tempdir");
+        let codex_bin = dir.path().join(CODEX_BIN_FILENAME);
+        let missing_app_server = dir.path().join(CODEX_APP_SERVER_BIN_FILENAME);
+        std::fs::write(&codex_bin, "#!/bin/sh\n").expect("write codex bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&codex_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod codex");
+        }
+
+        let error = validate_runtime_contract_paths(codex_bin.clone(), missing_app_server.clone())
+            .expect_err("contract should fail");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Codex app-server"));
+        assert!(message.contains(&missing_app_server.display().to_string()));
     }
 }
