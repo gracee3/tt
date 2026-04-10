@@ -11,18 +11,19 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
-use tt_codex::{
-    TT_CODEX_LOGIN_MODE_ENV, load_repo_settings_env, managed_project_codex_home, repo_env_var,
-};
+use tt_codex::{CodexHome, managed_project_codex_home};
+#[cfg(test)]
+use tt_codex::{TT_CODEX_LOGIN_MODE_ENV, load_repo_settings_env, repo_env_var};
 use tt_daemon::{
-    DaemonRequest, DaemonResponse, ManagedProjectThreadAttachment, ManagedProjectThreadControlMode,
-    request_for_cwd,
+    DaemonRequest, DaemonResponse, ManagedProjectDirectorState, ManagedProjectThreadAttachment,
+    ManagedProjectThreadControlMode, request_for_cwd,
 };
 use tt_domain as _;
 use tt_domain::ThreadRole;
 
 pub const TT_CLI_GENERATION: &str = "v2";
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexLoginMode {
     Auto,
@@ -189,7 +190,6 @@ pub fn run() -> Result<()> {
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     if is_open_command {
         ensure_project_initialized_for_open(&cwd)?;
-        ensure_repo_codex_auth_for_open(&cwd)?;
     }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -868,12 +868,28 @@ fn render_status_response(
     } else {
         runtime_label.to_string()
     };
+    let director_label = match status.director_state {
+        ManagedProjectDirectorState::Ready => "Ready",
+        ManagedProjectDirectorState::Stale => "Stale",
+        ManagedProjectDirectorState::Missing => "Missing",
+    };
+    let director_value = if colorize {
+        match status.director_state {
+            ManagedProjectDirectorState::Ready => "\u{1b}[1;32mReady\u{1b}[0m".to_string(),
+            ManagedProjectDirectorState::Stale => "\u{1b}[1;33mStale\u{1b}[0m".to_string(),
+            ManagedProjectDirectorState::Missing => "\u{1b}[1;31mMissing\u{1b}[0m".to_string(),
+        }
+    } else {
+        director_label.to_string()
+    };
     let repo_value = if colorize {
         format!("\u{1b}[1;37m{repo_value}\u{1b}[0m")
     } else {
         repo_value
     };
-    format!("project={project_value} runtime={runtime_value} repo={repo_value}\n",)
+    format!(
+        "project={project_value} runtime={runtime_value} director={director_value} repo={repo_value}\n",
+    )
 }
 
 fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_state: RuntimeState) -> String {
@@ -883,6 +899,11 @@ fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_state: RuntimeSt
             RuntimeState::Ready => "Ready",
             RuntimeState::NeedsAuth => "NeedsAuth",
             RuntimeState::Unreachable => "Unreachable",
+        },
+        "director": match status.director_state {
+            ManagedProjectDirectorState::Ready => "Ready",
+            ManagedProjectDirectorState::Stale => "Stale",
+            ManagedProjectDirectorState::Missing => "Missing",
         },
         "repo": status
             .repo_root
@@ -1282,6 +1303,7 @@ fn should_launch_codex_tui() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+#[cfg(test)]
 impl CodexLoginMode {
     fn parse(value: &str) -> Result<Self> {
         match value {
@@ -1298,6 +1320,7 @@ impl CodexLoginMode {
     }
 }
 
+#[cfg(test)]
 fn codex_login_mode_for_cwd(cwd: &Path) -> Result<CodexLoginMode> {
     load_repo_settings_env(cwd)?;
     repo_env_var(TT_CODEX_LOGIN_MODE_ENV)
@@ -1307,15 +1330,7 @@ fn codex_login_mode_for_cwd(cwd: &Path) -> Result<CodexLoginMode> {
         .map(|mode| mode.unwrap_or(CodexLoginMode::Auto))
 }
 
-fn should_launch_codex_login(mode: CodexLoginMode, interactive_terminal: bool) -> bool {
-    match mode {
-        CodexLoginMode::Auto => interactive_terminal,
-        CodexLoginMode::Interactive => interactive_terminal,
-        CodexLoginMode::DeviceAuth => interactive_terminal,
-        CodexLoginMode::Manual => false,
-    }
-}
-
+#[cfg(test)]
 fn codex_login_args(mode: CodexLoginMode, interactive_terminal: bool) -> Vec<&'static str> {
     match mode {
         CodexLoginMode::Auto => {
@@ -1337,6 +1352,7 @@ fn codex_login_args(mode: CodexLoginMode, interactive_terminal: bool) -> Vec<&'s
     }
 }
 
+#[cfg(test)]
 fn render_codex_login_command(codex_home: &Path, codex_bin: &Path, args: &[&str]) -> String {
     let suffix = if args.is_empty() {
         String::new()
@@ -1372,25 +1388,31 @@ fn launch_codex_tui_for_director(
     let codex_bin = codex_doctor
         .codex_bin
         .ok_or_else(|| anyhow::anyhow!("Codex CLI binary is unavailable"))?;
-    let listen_url = codex_doctor.configured_listen_url;
-    if !codex_doctor.listen_reachable.unwrap_or(false) {
-        anyhow::bail!(
-            "cannot open TT project in {} because the project app-server is unreachable at {}",
-            cwd.display(),
-            listen_url
-        );
-    }
-
-    let mut command = build_codex_resume_command(
-        &codex_bin,
-        &bootstrap.repo_root,
+    let codex_home = managed_project_codex_home(&bootstrap.repo_root);
+    let resume_thread_id = match director_thread_id_in_session_catalog(
+        &codex_home,
         director_thread_id,
-        &listen_url,
-    );
-    command.env(
-        "CODEX_HOME",
-        managed_project_codex_home(&bootstrap.repo_root),
-    );
+    ) {
+        Ok(true) => Some(director_thread_id),
+        Ok(false) => {
+            eprintln!(
+                "Warning: saved director session {} is not present in {}; opening Codex session picker instead",
+                director_thread_id,
+                codex_home.display()
+            );
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "Warning: could not inspect Codex session catalog at {}: {error}; opening Codex session picker instead",
+                codex_home.display()
+            );
+            None
+        }
+    };
+    let mut command =
+        build_codex_resume_command(&codex_bin, &bootstrap.repo_root, resume_thread_id);
+    command.env("CODEX_HOME", codex_home);
 
     #[cfg(unix)]
     {
@@ -1423,18 +1445,19 @@ fn launch_codex_tui_for_director(
 fn build_codex_resume_command(
     codex_bin: &Path,
     repo_root: &Path,
-    thread_id: &str,
-    listen_url: &str,
+    thread_id: Option<&str>,
 ) -> ProcessCommand {
     let mut command = ProcessCommand::new(codex_bin);
+    command.arg("--cd").arg(repo_root).arg("resume");
+    if let Some(thread_id) = thread_id {
+        command.arg(thread_id);
+    }
     command
-        .arg("--cd")
-        .arg(repo_root)
-        .arg("resume")
-        .arg(thread_id)
-        .arg("--remote")
-        .arg(listen_url);
-    command
+}
+
+fn director_thread_id_in_session_catalog(codex_home: &Path, thread_id: &str) -> Result<bool> {
+    let catalog = CodexHome::from_path(codex_home).session_catalog()?;
+    Ok(catalog.find_thread_by_id(thread_id).is_some())
 }
 
 fn role_name(role: ThreadRole) -> &'static str {
@@ -1503,7 +1526,6 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     if is_open_command {
         ensure_project_initialized_for_open(&cwd)?;
-        ensure_repo_codex_auth_for_open(&cwd)?;
     }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -1527,57 +1549,6 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
         (_, response) => serde_json::to_string_pretty(&response)?,
     };
     println!("{output}");
-    Ok(())
-}
-
-fn ensure_repo_codex_auth_for_open(cwd: &Path) -> Result<()> {
-    let codex_doctor = codex_doctor_for_cwd(cwd, false)
-        .ok_or_else(|| anyhow::anyhow!("could not resolve Codex runtime metadata"))?;
-    if !codex_doctor.contract_ok {
-        anyhow::bail!(
-            "cannot open TT project in {} because the Codex runtime contract is not satisfied",
-            cwd.display()
-        );
-    }
-    if codex_doctor.auth_present == Some(true) {
-        return Ok(());
-    }
-
-    let codex_bin = codex_doctor
-        .codex_bin
-        .ok_or_else(|| anyhow::anyhow!("Codex CLI binary is unavailable"))?;
-    let codex_home = managed_project_codex_home(cwd);
-    fs::create_dir_all(&codex_home)
-        .with_context(|| format!("create Codex home {}", codex_home.display()))?;
-    let interactive_terminal = should_launch_codex_tui();
-    let login_mode = codex_login_mode_for_cwd(cwd)?;
-    let login_args = codex_login_args(login_mode, interactive_terminal);
-    let login_command = render_codex_login_command(&codex_home, &codex_bin, &login_args);
-
-    if !should_launch_codex_login(login_mode, interactive_terminal) {
-        anyhow::bail!(
-            "cannot open TT project in {} because repo-local Codex auth is missing at {}.\nRun `{}` and retry.",
-            cwd.display(),
-            codex_home.join("auth.json").display(),
-            login_command
-        );
-    }
-
-    let mut command = ProcessCommand::new(&codex_bin);
-    command.current_dir(cwd).env("CODEX_HOME", &codex_home);
-    for arg in &login_args {
-        command.arg(arg);
-    }
-    let status = command
-        .status()
-        .with_context(|| format!("launch Codex login `{}`", codex_bin.display()))?;
-    if !status.success() {
-        anyhow::bail!(
-            "cannot open TT project in {} because repo-local Codex login did not complete successfully",
-            cwd.display()
-        );
-    }
-
     Ok(())
 }
 
@@ -2236,6 +2207,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("attached (4/4)".into()),
+                director_state: tt_daemon::ManagedProjectDirectorState::Ready,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2245,7 +2217,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(text, "project=Initialized runtime=Ready repo=/repo\n");
+        assert_eq!(
+            text,
+            "project=Initialized runtime=Ready director=Ready repo=/repo\n"
+        );
     }
 
     #[test]
@@ -2255,6 +2230,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("attached (4/4)".into()),
+                director_state: tt_daemon::ManagedProjectDirectorState::Ready,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2264,7 +2240,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(text, "project=Initialized runtime=Unreachable repo=/repo\n");
+        assert_eq!(
+            text,
+            "project=Initialized runtime=Unreachable director=Ready repo=/repo\n"
+        );
     }
 
     #[test]
@@ -2274,6 +2253,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("attached (4/4)".into()),
+                director_state: tt_daemon::ManagedProjectDirectorState::Ready,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2283,7 +2263,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(text, "project=Initialized runtime=NeedsAuth repo=/repo\n");
+        assert_eq!(
+            text,
+            "project=Initialized runtime=NeedsAuth director=Ready repo=/repo\n"
+        );
     }
 
     #[test]
@@ -2292,13 +2275,17 @@ mod tests {
             repo_root: Some("/repo".into()),
             project_initialized: true,
             project_state: Some("attached (4/4)".into()),
+            director_state: tt_daemon::ManagedProjectDirectorState::Ready,
             project_count: 2,
             work_unit_count: 6,
             bound_thread_count: 4,
             ready_workspace_count: 3,
         }));
 
-        assert_eq!(text, "project=Initialized runtime=Unreachable repo=/repo\n");
+        assert_eq!(
+            text,
+            "project=Initialized runtime=Unreachable director=Ready repo=/repo\n"
+        );
     }
 
     #[test]
@@ -2308,6 +2295,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("scaffolded (0/4)".into()),
+                director_state: tt_daemon::ManagedProjectDirectorState::Missing,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2318,7 +2306,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\"\n}"
+            "{\n  \"director\": \"Missing\",\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\"\n}"
         );
     }
 
@@ -2329,6 +2317,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("scaffolded (0/4)".into()),
+                director_state: tt_daemon::ManagedProjectDirectorState::Stale,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2339,7 +2328,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"NeedsAuth\"\n}"
+            "{\n  \"director\": \"Stale\",\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"NeedsAuth\"\n}"
         );
     }
 
@@ -2409,8 +2398,7 @@ mod tests {
         let command = build_codex_resume_command(
             Path::new("/usr/local/bin/codex"),
             Path::new("/repo"),
-            "thread-123",
-            "ws://127.0.0.1:4500",
+            Some("thread-123"),
         );
         let args: Vec<String> = command
             .get_args()
@@ -2424,10 +2412,53 @@ mod tests {
                 "/repo".to_string(),
                 "resume".to_string(),
                 "thread-123".to_string(),
-                "--remote".to_string(),
-                "ws://127.0.0.1:4500".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn builds_codex_resume_command_without_thread_id_for_picker() {
+        let command =
+            build_codex_resume_command(Path::new("/usr/local/bin/codex"), Path::new("/repo"), None);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(command.get_program(), Path::new("/usr/local/bin/codex"));
+        assert_eq!(
+            args,
+            vec![
+                "--cd".to_string(),
+                "/repo".to_string(),
+                "resume".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn director_thread_id_lookup_matches_local_session_catalog() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "tt-cli-session-catalog-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&codex_home);
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::write(
+            codex_home.join(tt_codex::SESSION_INDEX_FILE),
+            concat!(
+                "{\"id\":\"present\",\"thread_name\":\"director\",\"updated_at\":\"2026-04-10T12:00:00Z\"}\n",
+            ),
+        )
+        .expect("write session index");
+
+        assert!(
+            director_thread_id_in_session_catalog(&codex_home, "present").expect("inspect catalog")
+        );
+        assert!(
+            !director_thread_id_in_session_catalog(&codex_home, "missing")
+                .expect("inspect catalog")
+        );
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -395,6 +395,41 @@ impl CodexSessionCatalog {
     pub fn all_threads(&self) -> &[CodexThreadRecord] {
         &self.threads
     }
+}
+
+pub fn upsert_session_index_entry(
+    codex_home: impl AsRef<Path>,
+    thread_id: &str,
+    thread_name: Option<&str>,
+) -> Result<()> {
+    let codex_home = CodexHome::from_path(codex_home.as_ref());
+    let mut entries = Vec::new();
+    if let Ok(catalog) = codex_home.session_catalog() {
+        entries.extend(catalog.threads.into_iter().filter_map(|record| {
+            (record.thread_id != thread_id).then(|| SessionIndexEntry {
+                id: record.thread_id,
+                thread_name: record.thread_name.unwrap_or_default(),
+                updated_at: record.updated_at.unwrap_or_else(Utc::now).to_rfc3339(),
+            })
+        }));
+    }
+
+    entries.push(SessionIndexEntry {
+        id: thread_id.to_string(),
+        thread_name: thread_name.unwrap_or("").to_string(),
+        updated_at: Utc::now().to_rfc3339(),
+    });
+
+    let path = codex_home.session_index_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = File::create(&path)
+        .with_context(|| format!("write Codex session index {}", path.display()))?;
+    for entry in entries {
+        writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

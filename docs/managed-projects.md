@@ -9,9 +9,9 @@ TT now exposes a minimal public operator flow:
 
 `tt init` bootstraps the current repo as a managed project. `tt open` resumes the
 director-led workflow for that repo. In an interactive terminal, `tt open`
-hands off to the installed Codex TUI on the director thread. When output is
-redirected, `tt open` keeps the current summary-style output for scripts and
-e2e.
+hands off to the installed Codex TUI on the director thread. The Codex TUI
+owns any login flow it needs. When output is redirected, `tt open` keeps the
+current summary-style output for scripts and e2e.
 
 ## Public Workflow
 

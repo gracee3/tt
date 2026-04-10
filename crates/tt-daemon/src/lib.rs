@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 use tt_codex::{
     CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, apply_repo_settings_env,
     configured_app_server_listen_url, managed_project_auth_is_present,
-    managed_project_auth_json_path, repo_env_var, repo_env_var_os, validate_runtime_contract,
+    managed_project_auth_json_path, managed_project_codex_home, repo_env_var, repo_env_var_os,
+    upsert_session_index_entry, validate_runtime_contract,
 };
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
@@ -53,10 +54,25 @@ pub struct DaemonStatus {
     pub repo_root: Option<PathBuf>,
     pub project_initialized: bool,
     pub project_state: Option<String>,
+    pub director_state: ManagedProjectDirectorState,
     pub project_count: usize,
     pub work_unit_count: usize,
     pub bound_thread_count: usize,
     pub ready_workspace_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ManagedProjectDirectorState {
+    Ready,
+    Stale,
+    Missing,
+}
+
+impl Default for ManagedProjectDirectorState {
+    fn default() -> Self {
+        Self::Missing
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1163,40 +1179,53 @@ impl DaemonService {
                     .or_insert_with(|| binding.branch_name.clone());
             }
         }
+        let registered_worktrees = repository.list_worktrees()?;
 
         if !force {
             for worktree_path in worktree_targets.keys() {
-                let Some(inspection) = tt_git::GitRepository::inspect(&worktree_path)? else {
-                    anyhow::bail!(
-                        "workspace binding `{}` has no inspectable git repository; pass --all to clean",
-                        worktree_path.display()
-                    );
-                };
-                if inspection.dirty {
-                    anyhow::bail!(
-                        "workspace binding `{}` has dirty changes; pass --all to clean",
-                        worktree_path.display()
-                    );
+                if !worktree_path.exists() {
+                    continue;
+                }
+                let is_registered = registered_worktrees
+                    .iter()
+                    .any(|entry| entry.worktree_path == *worktree_path);
+                if is_registered {
+                    let Some(inspection) = tt_git::GitRepository::inspect(&worktree_path)? else {
+                        anyhow::bail!(
+                            "workspace binding `{}` has no inspectable git repository; pass --all to clean",
+                            worktree_path.display()
+                        );
+                    };
+                    if inspection.dirty {
+                        anyhow::bail!(
+                            "workspace binding `{}` has dirty changes; pass --all to clean",
+                            worktree_path.display()
+                        );
+                    }
                 }
             }
         }
-
         let mut removed = 0usize;
         for (worktree_path, branch_name) in &worktree_targets {
-            if repository.prune_worktree(worktree_path)? {
-                removed += 1;
-            } else if !force {
-                anyhow::bail!(
-                    "failed to prune worktree {}; pass --all to force cleanup",
-                    worktree_path.display()
-                );
+            let is_registered = registered_worktrees
+                .iter()
+                .any(|entry| entry.worktree_path == *worktree_path);
+            if is_registered {
+                if repository.prune_worktree(worktree_path)? {
+                    removed += 1;
+                } else if !force {
+                    anyhow::bail!(
+                        "failed to prune worktree {}; pass --all to force cleanup",
+                        worktree_path.display()
+                    );
+                }
+            } else if worktree_path.exists() {
+                removed += remove_if_exists(worktree_path.to_path_buf())?;
             }
             if let Some(branch_name) = branch_name.as_deref() {
                 let branch_deleted = repository.delete_branch(branch_name)?;
                 if branch_deleted {
                     removed += 1;
-                } else if !force {
-                    anyhow::bail!("failed to delete branch {}", branch_name);
                 }
             }
         }
@@ -1551,10 +1580,15 @@ impl DaemonService {
             Some(repo_root) => managed_project_status_for_repo(repo_root)?,
             None => (false, None),
         };
+        let director_state = match &repo_root {
+            Some(repo_root) => managed_project_director_state_for_repo(self, repo_root)?,
+            None => ManagedProjectDirectorState::Missing,
+        };
         Ok(DaemonStatus {
             repo_root,
             project_initialized,
             project_state,
+            director_state,
             project_count: self.store.count_projects()?,
             work_unit_count: self.store.count_work_units()?,
             bound_thread_count: self.store.count_bound_threads()?,
@@ -1712,8 +1746,12 @@ impl DaemonService {
         let objective = objective
             .unwrap_or_else(|| format!("Coordinate dev, test, and integration work for {title}"));
         let now = Utc::now();
+        if self.get_project(&slug)?.is_some() {
+            self.delete_project(&slug)?;
+        }
+        let project_id = uuid::Uuid::now_v7().to_string();
         let project = Project {
-            id: uuid::Uuid::now_v7().to_string(),
+            id: project_id,
             slug: slug.clone(),
             title: title.clone(),
             objective: objective.clone(),
@@ -1741,18 +1779,25 @@ impl DaemonService {
             &base_branch,
         )?;
         let initial_plan = default_managed_project_plan(&project, &project_config, &[]);
-        write_managed_file(
-            &codex_config_path,
-            &render_codex_config(
-                DEFAULT_AGENT_CONFIG_MAX_THREADS,
-                DEFAULT_AGENT_CONFIG_MAX_DEPTH,
-            ),
-        )?;
+        if let Some(parent) = codex_config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if !codex_config_path.exists() {
+            fs::write(
+                &codex_config_path,
+                render_codex_config(
+                    DEFAULT_AGENT_CONFIG_MAX_THREADS,
+                    DEFAULT_AGENT_CONFIG_MAX_DEPTH,
+                ),
+            )?;
+        }
         write_managed_file(
             &contract_path,
             &render_worker_contract(&repo_root, &slug, &base_branch, &project_config),
         )?;
-        write_managed_file(&settings_env_path, &render_default_settings_env())?;
+        if !settings_env_path.exists() {
+            fs::write(&settings_env_path, render_default_settings_env())?;
+        }
 
         let director_role = self.build_role_bootstrap(
             &repository,
@@ -1805,27 +1850,12 @@ impl DaemonService {
             &[&director_role, &dev_role, &test_role, &integration_role],
         )?;
 
-        let manifest_path = repo_root.join(".tt").join("state.toml");
-        let manifest = build_managed_project_manifest(
-            &project,
-            &repo_root,
-            &base_branch,
-            &worktree_root,
-            &project_config_path,
-            &plan_path,
-            &contract_path,
-            &codex_config_path,
-            None,
-            &[&director_role, &dev_role, &test_role, &integration_role],
-        )?;
-        save_managed_project_manifest(&manifest_path, &manifest)?;
-
-        Ok(ManagedProjectBootstrap {
+        let mut bootstrap = ManagedProjectBootstrap {
             project,
-            repo_root,
-            base_branch,
+            repo_root: repo_root.clone(),
+            base_branch: base_branch.clone(),
             worktree_root,
-            manifest_path,
+            manifest_path: repo_root.join(".tt").join("state.toml"),
             project_config_path,
             plan_path,
             contract_path,
@@ -1834,7 +1864,24 @@ impl DaemonService {
             plan,
             scenario: None,
             roles: vec![director_role, dev_role, test_role, integration_role],
-        })
+        };
+        self.spawn_managed_project_role(&repository, &mut bootstrap, ThreadRole::Director)?;
+
+        let manifest = build_managed_project_manifest(
+            &bootstrap.project,
+            &bootstrap.repo_root,
+            &bootstrap.base_branch,
+            &bootstrap.worktree_root,
+            &bootstrap.project_config_path,
+            &bootstrap.plan_path,
+            &bootstrap.contract_path,
+            &bootstrap.codex_config_path,
+            None,
+            &bootstrap.roles.iter().collect::<Vec<_>>(),
+        )?;
+        save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
+
+        Ok(bootstrap)
     }
 
     fn build_role_bootstrap(
@@ -4490,6 +4537,11 @@ impl DaemonService {
             &workspace_binding_id,
         )?;
         self.upsert_workspace_binding(&workspace_binding)?;
+        upsert_session_index_entry(
+            managed_project_codex_home(&bootstrap.repo_root),
+            &snapshot.thread_id,
+            snapshot.thread_name.as_deref(),
+        )?;
 
         Ok(ManagedProjectRoleBootstrap {
             thread_id: Some(snapshot.thread_id.clone()),
@@ -4756,6 +4808,47 @@ fn managed_project_status_for_repo(repo_root: &Path) -> Result<(bool, Option<Str
         format!("partial ({attached_roles}/{total_roles})")
     };
     Ok((true, Some(state)))
+}
+
+fn managed_project_director_state_for_repo(
+    service: &DaemonService,
+    repo_root: &Path,
+) -> Result<ManagedProjectDirectorState> {
+    let tt_root = repo_root.join(".tt");
+    if !tt_root.is_dir() {
+        return Ok(ManagedProjectDirectorState::Missing);
+    }
+
+    let manifest_path = tt_root.join("state.toml");
+    if !manifest_path.exists() {
+        return Ok(ManagedProjectDirectorState::Missing);
+    }
+
+    let manifest = load_managed_project_manifest(&manifest_path)?;
+    let Some(director_thread_id) = manifest
+        .roles
+        .get("director")
+        .and_then(|role| role.thread_id.as_deref())
+    else {
+        return Ok(ManagedProjectDirectorState::Missing);
+    };
+
+    let codex_home = service
+        .codex_home
+        .clone()
+        .or_else(|| CodexHome::discover_in(repo_root).ok());
+    let Some(codex_home) = codex_home.as_ref() else {
+        return Ok(ManagedProjectDirectorState::Stale);
+    };
+    let catalog = match codex_home.session_catalog() {
+        Ok(catalog) => catalog,
+        Err(_) => return Ok(ManagedProjectDirectorState::Stale),
+    };
+    if catalog.find_thread_by_id(director_thread_id).is_some() {
+        Ok(ManagedProjectDirectorState::Ready)
+    } else {
+        Ok(ManagedProjectDirectorState::Stale)
+    }
 }
 
 fn default_worktree_root(repo_root: &Path, _project_slug: &str) -> PathBuf {
@@ -5817,6 +5910,7 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
     use tempfile::tempdir;
+    use tt_codex::CodexSessionCatalog;
     use tt_domain::{
         ProjectStatus, ThreadBindingStatus, ThreadRole, WorkUnitStatus, WorkspaceCleanupPolicy,
         WorkspaceStatus, WorkspaceStrategy, WorkspaceSyncPolicy,
@@ -5857,6 +5951,12 @@ mod tests {
         run_git(&repo, &["config", "user.name", "TT Test"]);
         run_git(&repo, &["config", "user.email", "tt@example.com"]);
         std::fs::write(repo.join("README.md"), "tt\n").expect("write file");
+        std::fs::create_dir_all(repo.join(".tt")).expect("create tt dir");
+        std::fs::write(
+            repo.join(".tt/settings.env"),
+            "TT_CODEX_BIN=~/.local/bin/codex\nTT_CODEX_APP_SERVER_BIN=~/openai/codex/codex-rs/target/debug/codex-app-server\n",
+        )
+        .expect("write settings env");
         run_git(&repo, &["add", "README.md"]);
         run_git(&repo, &["commit", "-m", "initial"]);
         run_git(
@@ -6073,7 +6173,6 @@ mod tests {
             .expect_err("director should require initialized project state");
         let message = error.to_string();
         assert!(message.contains("no project initialized in"));
-        assert!(message.contains(".tt/ not found"));
     }
 
     #[test]
@@ -6245,6 +6344,83 @@ mod tests {
     }
 
     #[test]
+    fn clean_managed_project_skips_missing_worktree_directories() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        let dev_worktree = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Develop)
+            .and_then(|role| role.worktree_path.clone())
+            .expect("dev worktree");
+        std::fs::remove_dir_all(&dev_worktree).expect("remove dev worktree");
+
+        let removed = service
+            .clean_managed_project(&repo, false)
+            .expect("clean managed project");
+        assert!(removed > 0);
+        assert!(!bootstrap.manifest_path.exists());
+        assert!(!dev_worktree.exists());
+    }
+
+    #[test]
+    fn clean_managed_project_removes_orphaned_worktree_directories() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        let dev_worktree = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Develop)
+            .and_then(|role| role.worktree_path.clone())
+            .expect("dev worktree");
+        let repository = GitRepository::discover(&repo)
+            .expect("discover repo")
+            .expect("repo");
+        repository
+            .prune_worktree(&dev_worktree)
+            .expect("remove registered worktree");
+        fs::create_dir_all(&dev_worktree).expect("recreate orphaned worktree dir");
+        fs::write(dev_worktree.join("sentinel.txt"), "orphan").expect("write sentinel");
+
+        let removed = service
+            .clean_managed_project(&repo, false)
+            .expect("clean managed project");
+        assert!(removed > 0);
+        assert!(!bootstrap.manifest_path.exists());
+        assert!(!dev_worktree.exists());
+    }
+
+    #[test]
     fn runtime_supports_request_api_and_repo_summary() {
         let (repo, worktree) = setup_repo();
         let dir = tempdir().expect("tempdir");
@@ -6341,6 +6517,20 @@ mod tests {
         assert_eq!(director_role.reasoning_effort.as_deref(), Some("medium"));
         assert!(director_role.branch_name.is_none());
         assert!(director_role.worktree_path.is_none());
+        assert!(director_role.thread_id.is_some());
+        assert!(director_role.workspace_binding_id.is_some());
+        let codex_home = managed_project_codex_home(&repo);
+        let catalog = CodexSessionCatalog::load(&codex_home).expect("load catalog");
+        assert!(
+            catalog
+                .find_thread_by_id(
+                    director_role
+                        .thread_id
+                        .as_deref()
+                        .expect("director thread id")
+                )
+                .is_some()
+        );
 
         let dev_role = bootstrap
             .roles
@@ -6381,6 +6571,117 @@ mod tests {
             .inspect_repository()
             .expect("inspect repo");
         assert!(inspection.worktrees.len() >= 4);
+    }
+
+    #[test]
+    fn status_reports_director_state_from_codex_session_catalog() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+
+        let missing = service.status(&repo).expect("status");
+        assert!(matches!(
+            missing.director_state,
+            ManagedProjectDirectorState::Missing
+        ));
+
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+        let ready = service.status(&repo).expect("status");
+        assert!(matches!(
+            ready.director_state,
+            ManagedProjectDirectorState::Ready
+        ));
+
+        std::fs::remove_file(managed_project_codex_home(&repo).join("session_index.jsonl"))
+            .expect("remove session index");
+        let stale = service.status(&repo).expect("status");
+        assert!(matches!(
+            stale.director_state,
+            ManagedProjectDirectorState::Stale
+        ));
+
+        assert!(bootstrap.manifest_path.exists());
+    }
+
+    #[test]
+    fn open_managed_project_reuses_existing_project_slug() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let existing = Project {
+            id: "019dffff-0000-7000-8000-000000000001".to_string(),
+            slug: "alpha".to_string(),
+            title: "Alpha".to_string(),
+            objective: "Ship the alpha slice".to_string(),
+            status: ProjectStatus::Active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        service.upsert_project(&existing).expect("seed project");
+
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        assert_ne!(bootstrap.project.id, existing.id);
+        assert_eq!(bootstrap.project.slug, existing.slug);
+        let projects = service.list_projects().expect("list projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, bootstrap.project.id);
+    }
+
+    #[test]
+    fn open_managed_project_preserves_existing_codex_config() {
+        let (repo, _worktree) = setup_repo();
+        let codex_config_path = repo.join(".codex/config.toml");
+        std::fs::create_dir_all(codex_config_path.parent().expect("codex parent"))
+            .expect("create codex dir");
+        std::fs::write(&codex_config_path, "# local codex config\n").expect("seed config");
+
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        assert_eq!(
+            std::fs::read_to_string(&codex_config_path).expect("read config"),
+            "# local codex config\n"
+        );
+        assert_eq!(bootstrap.codex_config_path, codex_config_path);
     }
 
     #[test]
@@ -6919,6 +7220,12 @@ mod tests {
     fn init_managed_project_scaffold_is_workspace_isolated() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("taskflow");
+        fs::create_dir_all(root.join(".tt")).expect("create tt dir");
+        fs::write(
+            root.join(".tt/settings.env"),
+            "TT_CODEX_BIN=~/.local/bin/codex\nTT_CODEX_APP_SERVER_BIN=~/openai/codex/codex-rs/target/debug/codex-app-server\n",
+        )
+        .expect("seed settings env");
         let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
         let bootstrap = service
             .init_managed_project(
@@ -6938,5 +7245,40 @@ mod tests {
             fs::read_to_string(bootstrap.repo_root.join("Cargo.toml")).expect("read Cargo.toml");
         assert!(cargo_toml.contains("[workspace]"));
         assert!(cargo_toml.contains("name = \"taskflow\""));
+    }
+
+    #[test]
+    fn init_managed_project_preserves_existing_settings_env() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("taskflow");
+        fs::create_dir_all(root.join(".tt")).expect("create tt dir");
+        fs::write(
+            root.join(".tt/settings.env"),
+            "TT_CODEX_BIN=~/.local/bin/codex\nTT_CODEX_APP_SERVER_BIN=~/openai/codex/codex-rs/target/debug/codex-app-server\n",
+        )
+        .expect("seed settings env");
+
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let bootstrap = service
+            .init_managed_project(
+                &root,
+                Some("Taskflow".into()),
+                Some("Ship".into()),
+                Some("rust-taskflow".into()),
+                Some("main".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("init managed project");
+
+        let settings_env = fs::read_to_string(bootstrap.repo_root.join(".tt/settings.env"))
+            .expect("read settings env");
+        assert!(settings_env.contains("TT_CODEX_BIN=~/.local/bin/codex"));
+        assert!(settings_env.contains(
+            "TT_CODEX_APP_SERVER_BIN=~/openai/codex/codex-rs/target/debug/codex-app-server"
+        ));
     }
 }

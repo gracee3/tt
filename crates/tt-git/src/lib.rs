@@ -209,6 +209,9 @@ impl GitRepository {
     }
 
     pub fn delete_branch(&self, branch_name: &str) -> Result<bool> {
+        if !branch_exists(&self.repository_root, branch_name)? {
+            return Ok(false);
+        }
         git_status(&self.repository_root, &["branch", "-D", branch_name])
     }
 }
@@ -277,6 +280,13 @@ fn git_status(cwd: &Path, args: &[&str]) -> Result<bool> {
         .status()
         .with_context(|| format!("failed to invoke git in {}", cwd.display()))?;
     Ok(status.success())
+}
+
+fn branch_exists(cwd: &Path, branch_name: &str) -> Result<bool> {
+    let Some(stdout) = git_stdout(cwd, &["branch", "--list", branch_name])? else {
+        return Ok(false);
+    };
+    Ok(!stdout.trim().is_empty())
 }
 
 fn normalize_non_empty(value: String) -> Option<String> {
@@ -412,6 +422,19 @@ mod tests {
             worktrees
                 .iter()
                 .any(|entry| entry.worktree_path == worktree)
+        );
+    }
+
+    #[test]
+    fn delete_branch_is_idempotent_for_missing_branch() {
+        let (_, worktree, _) = setup_repo();
+        let repository = GitRepository::discover(&worktree)
+            .expect("discover")
+            .expect("repo");
+        assert!(
+            !repository
+                .delete_branch("tt/missing")
+                .expect("delete branch")
         );
     }
 }

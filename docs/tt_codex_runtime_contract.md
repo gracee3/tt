@@ -89,8 +89,8 @@ Current app-server listen URL overrides used by TT:
 
 Current Codex auth requirement enforced by TT:
 - TT-managed runs use `CODEX_HOME=<repo>/.codex`
-- `tt open` launches repo-local Codex login automatically when `<repo>/.codex/auth.json` is missing in an interactive terminal
-- in headless or non-interactive flows, TT emits the exact repo-local login command and defaults to `codex login --device-auth`
+- `tt open` hands off to the installed Codex TUI with `CODEX_HOME=<repo>/.codex`; the Codex TUI owns any required login flow
+- if you want to authenticate manually, use the Codex CLI login flow directly
 - live e2e app-server launches seed `<repo>/.codex/auth.json` from `~/.codex/auth.json` only as test bootstrap
 
 Cleanup behavior:

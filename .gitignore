@@ -14,3 +14,11 @@
 .codex/archived_sessions/
 .codex/*.sqlite
 .codex/logs/
+.codex/tmp/
+.codex/.tmp/
+.codex/plugins/cache/
+.codex/skills/.system/
+.codex/models_cache.json
+.codex/version.json
+.codex/log/
+.codex/.personality_migration
