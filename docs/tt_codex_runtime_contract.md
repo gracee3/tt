@@ -180,8 +180,8 @@ Current repo-scoped runtime inspection:
 - it does not enumerate host-wide processes or listening ports
 - `tt open` uses the same runtime contract to start or connect to the project
   runtime, then resumes the director thread; in an interactive terminal it
-  hands off to the installed Codex TUI directly and passes
-  `CODEX_HOME=$HOME/.codex` so Codex resolves the canonical user auth file
+  hands off to the installed Codex TUI directly while preserving the normal
+  repo-local `.codex` discovery and the user-home auth file lookup
 
 ## CI Expectations
 

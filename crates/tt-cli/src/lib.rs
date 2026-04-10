@@ -1256,12 +1256,6 @@ fn launch_codex_tui_for_director(
     let codex_bin = codex_doctor
         .codex_bin
         .ok_or_else(|| anyhow::anyhow!("Codex CLI binary is unavailable"))?;
-    let codex_home = codex_home_from_auth_json_path(
-        codex_doctor
-            .auth_json
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Codex auth file path is unavailable"))?,
-    )?;
     let listen_url = codex_doctor.configured_listen_url;
     if !codex_doctor.listen_reachable.unwrap_or(false) {
         anyhow::bail!(
@@ -1277,7 +1271,6 @@ fn launch_codex_tui_for_director(
         director_thread_id,
         &listen_url,
     );
-    command.env("CODEX_HOME", &codex_home);
 
     #[cfg(unix)]
     {
@@ -1305,13 +1298,6 @@ fn launch_codex_tui_for_director(
             );
         }
     }
-}
-
-fn codex_home_from_auth_json_path(auth_json: &Path) -> Result<PathBuf> {
-    auth_json
-        .parent()
-        .map(Path::to_path_buf)
-        .context("resolve Codex home from auth.json path")
 }
 
 fn build_codex_resume_command(
@@ -2203,13 +2189,6 @@ mod tests {
                 "ws://127.0.0.1:4500".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn derives_codex_home_from_auth_json_path() {
-        let codex_home =
-            codex_home_from_auth_json_path(Path::new("/home/emmy/.codex/auth.json")).expect("home");
-        assert_eq!(codex_home, Path::new("/home/emmy/.codex"));
     }
 
     #[test]
