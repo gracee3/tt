@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{
@@ -48,6 +48,7 @@ const DEFAULT_AGENT_CONFIG_MAX_THREADS: usize = 6;
 const DEFAULT_AGENT_CONFIG_MAX_DEPTH: usize = 1;
 const DOCTOR_LISTEN_TIMEOUT_MS: u64 = 1500;
 const LIVE_TURN_MAX_ATTEMPTS: usize = 3;
+const DAEMON_SPAWN_WAIT_MS: u64 = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonStatus {
@@ -1869,7 +1870,7 @@ impl DaemonService {
                 ),
             )?;
         }
-        write_managed_file(
+        write_or_replace_managed_file(
             &contract_path,
             &render_worker_contract(&repo_root, &slug, &base_branch, &project_config),
         )?;
@@ -2002,7 +2003,7 @@ impl DaemonService {
             .join(".codex")
             .join("agents")
             .join(format!("{role_slug}.toml"));
-        write_managed_file(
+        write_or_replace_managed_file(
             &agent_path,
             &render_agent_file(
                 role,
@@ -4974,6 +4975,19 @@ fn write_managed_file(path: &Path, contents: &str) -> Result<()> {
     }
 }
 
+fn write_or_replace_managed_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::read_to_string(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        Ok(_) | Err(_) => {
+            fs::write(path, contents)?;
+            Ok(())
+        }
+    }
+}
+
 fn prune_repo_codex_runtime_artifacts(codex_root: &Path) -> Result<usize> {
     let mut removed = 0usize;
     removed += remove_if_exists(codex_root.join("auth.json"))?;
@@ -6161,7 +6175,70 @@ pub fn request_for_cwd(cwd: impl AsRef<Path>, request: DaemonRequest) -> Result<
             return Ok(response);
         }
     }
+    if should_auto_spawn_daemon_for_request(&request) {
+        if let Ok(client) = spawn_repo_daemon_and_connect(cwd) {
+            if let Ok(response) = client.request(request.clone()) {
+                return Ok(response);
+            }
+        }
+    }
     DaemonRuntime::open(cwd)?.request(request)
+}
+
+fn should_auto_spawn_daemon_for_request(request: &DaemonRequest) -> bool {
+    !matches!(
+        request,
+        DaemonRequest::Doctor { .. } | DaemonRequest::DoctorCodex { .. }
+    )
+}
+
+fn spawn_repo_daemon_and_connect(cwd: &Path) -> Result<DaemonClient> {
+    let socket_path = socket_path_for(cwd);
+    if let Ok(client) = DaemonClient::connect(&socket_path) {
+        return Ok(client);
+    }
+    let daemon_bin = resolve_daemon_binary()?;
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Command::new(&daemon_bin)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn TT daemon `{}`", daemon_bin.display()))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DAEMON_SPAWN_WAIT_MS);
+    loop {
+        if let Ok(client) = DaemonClient::connect(&socket_path) {
+            return Ok(client);
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for TT daemon socket {} after spawning {}",
+                socket_path.display(),
+                daemon_bin.display()
+            );
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn resolve_daemon_binary() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TT_DAEMON_BIN") {
+        return Ok(PathBuf::from(path));
+    }
+    let current_exe = std::env::current_exe().context("resolve current executable for TT daemon spawn")?;
+    if let Some(file_name) = current_exe.file_name().and_then(|value| value.to_str()) {
+        if file_name.contains("tt-cli") {
+            return Ok(current_exe.with_file_name(file_name.replace("tt-cli", "tt-daemon")));
+        }
+        if file_name == "tt" {
+            return Ok(current_exe.with_file_name("tt-daemon"));
+        }
+    }
+    Ok(current_exe.with_file_name("tt-daemon"))
 }
 
 fn send_request(stream: &mut UnixStream, request: &DaemonRequest) -> Result<()> {
