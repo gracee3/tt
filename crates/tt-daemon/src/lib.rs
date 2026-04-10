@@ -27,7 +27,8 @@ use tt_codex::{
     CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, apply_repo_settings_env,
     configured_app_server_listen_url, managed_project_auth_is_present,
     managed_project_auth_json_path, managed_project_codex_home, repo_env_var, repo_env_var_os,
-    upsert_session_index_entry, validate_runtime_contract,
+    stop_managed_project_app_server, upsert_session_index_entry, validate_runtime_contract,
+    TT_CODEX_APP_SERVER_PID_FILE,
 };
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
@@ -904,6 +905,7 @@ impl DaemonClient {
         if !socket_path.exists() {
             anyhow::bail!("daemon socket {} does not exist", socket_path.display());
         }
+        UnixStream::connect(&socket_path)?;
         Ok(Self { socket_path })
     }
 
@@ -1350,10 +1352,23 @@ impl DaemonService {
         removed += remove_if_exists(repo_root.join(".tt").join("state.toml"))?;
         removed += remove_if_exists(repo_root.join(".tt").join(TT_EVENTS_FILE_NAME))?;
         removed += remove_if_exists(repo_root.join(".tt").join(TT_DAEMON_SOCKET_NAME))?;
+        if stop_managed_project_app_server(
+            &repo_root,
+            &configured_app_server_listen_url(),
+        )
+        .unwrap_or(false)
+        {
+            removed += 1;
+        }
         removed += remove_if_exists(
             repo_root
                 .join(".tt")
                 .join(TT_CODEX_APP_SERVER_LOG_FILE_NAME),
+        )?;
+        removed += remove_if_exists(
+            repo_root
+                .join(".tt")
+                .join(TT_CODEX_APP_SERVER_PID_FILE),
         )?;
         removed += remove_if_exists(repo_root.join(".tt").join("runtime"))?;
         removed += remove_if_exists(repo_root.join(".tt").join("contracts"))?;
@@ -6826,11 +6841,8 @@ pub fn request_for_cwd(cwd: impl AsRef<Path>, request: DaemonRequest) -> Result<
         }
     }
     if should_auto_spawn_daemon_for_request(&request) {
-        if let Ok(client) = spawn_repo_daemon_and_connect(cwd) {
-            if let Ok(response) = client.request(request.clone()) {
-                return Ok(response);
-            }
-        }
+        let client = spawn_repo_daemon_and_connect(cwd)?;
+        return client.request(request);
     }
     DaemonRuntime::open(cwd)?.request(request)
 }

@@ -46,6 +46,7 @@ pub const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 pub const CODEX_LOGS_DB_FILENAME: &str = "logs_1.sqlite";
 pub const CODEX_APP_SERVER_LISTEN_URL_ENV: &str = "CODEX_APP_SERVER_LISTEN_URL";
 pub const DEFAULT_APP_SERVER_LISTEN_URL: &str = "ws://127.0.0.1:4500";
+pub const TT_CODEX_APP_SERVER_PID_FILE: &str = "codex-app-server.pid";
 const APP_SERVER_CONNECT_ATTEMPTS: usize = 5;
 const APP_SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const APP_SERVER_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1467,15 +1468,45 @@ fn start_codex_app_server_if_needed(
     contract: &CodexRuntimeContract,
     listen_url: &str,
 ) -> Result<()> {
-    if codex_app_server_is_reachable(listen_url)? {
-        return Ok(());
-    }
-
     let repo_root = cwd
         .ancestors()
         .find(|ancestor| ancestor.join(".tt").is_dir())
         .unwrap_or(cwd);
     let log_path = repo_root.join(".tt").join("codex-app-server.log");
+    let legacy_log_path = repo_root.join(".tt").join("runtime").join("codex-app-server.log");
+    let pid_path = repo_root.join(".tt").join(TT_CODEX_APP_SERVER_PID_FILE);
+    let codex_home = managed_project_codex_home(repo_root);
+
+    if codex_app_server_is_reachable(listen_url)? {
+        match running_app_server_status(listen_url, &pid_path, &codex_home)? {
+            RunningAppServerStatus::Matches => return Ok(()),
+            RunningAppServerStatus::MismatchedOwned { pid, codex_home: actual } => {
+                stop_process(pid).with_context(|| {
+                    format!(
+                        "stop stale TT-owned Codex app-server pid={} using CODEX_HOME `{}`",
+                        pid,
+                        actual.display()
+                    )
+                })?;
+                let _ = fs::remove_file(&pid_path);
+            }
+            RunningAppServerStatus::MismatchedExternal { pid, codex_home: actual } => {
+                anyhow::bail!(
+                    "Codex app-server `{listen_url}` is already running in pid {} with CODEX_HOME `{}`; expected `{}`",
+                    pid,
+                    actual.display(),
+                    codex_home.display()
+                );
+            }
+            RunningAppServerStatus::Unknown => {
+                anyhow::bail!(
+                    "Codex app-server `{listen_url}` is already reachable but TT could not verify it belongs to repo `{}`",
+                    repo_root.display()
+                );
+            }
+        }
+    }
+
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -1493,7 +1524,6 @@ fn start_codex_app_server_if_needed(
         .try_clone()
         .with_context(|| format!("clone Codex app-server log {}", log_path.display()))?;
 
-    let codex_home = managed_project_codex_home(repo_root);
     fs::create_dir_all(&codex_home)
         .with_context(|| format!("create Codex home {}", codex_home.display()))?;
 
@@ -1510,14 +1540,46 @@ fn start_codex_app_server_if_needed(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr));
 
-    command.spawn().with_context(|| {
+    let child = command.spawn().with_context(|| {
         format!(
             "start Codex app-server `{}`",
             contract.app_server_bin().display()
         )
     })?;
+    fs::write(&pid_path, format!("{}\n", child.id()))
+        .with_context(|| format!("write Codex app-server pid file {}", pid_path.display()))?;
+    let _ = fs::remove_file(legacy_log_path);
 
     Ok(())
+}
+
+pub fn stop_managed_project_app_server(cwd: &Path, listen_url: &str) -> Result<bool> {
+    let repo_root = cwd
+        .ancestors()
+        .find(|ancestor| ancestor.join(".tt").is_dir())
+        .unwrap_or(cwd);
+    let pid_path = repo_root.join(".tt").join(TT_CODEX_APP_SERVER_PID_FILE);
+    let codex_home = managed_project_codex_home(repo_root);
+    let status = running_app_server_status(listen_url, &pid_path, &codex_home)?;
+    let stopped = match status {
+        RunningAppServerStatus::Matches => {
+            if let Some(pid) = read_pid_file(&pid_path)? {
+                stop_process(pid)?;
+                true
+            } else {
+                false
+            }
+        }
+        RunningAppServerStatus::MismatchedOwned { pid, .. } => {
+            stop_process(pid)?;
+            true
+        }
+        RunningAppServerStatus::MismatchedExternal { .. } | RunningAppServerStatus::Unknown => {
+            false
+        }
+    };
+    let _ = fs::remove_file(pid_path);
+    Ok(stopped)
 }
 
 fn codex_app_server_is_reachable(listen_url: &str) -> Result<bool> {
@@ -1536,6 +1598,130 @@ fn codex_app_server_is_reachable(listen_url: &str) -> Result<bool> {
         anyhow::bail!("no socket addresses resolved for `{listen_url}`");
     };
     Ok(std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_millis(250)).is_ok())
+}
+
+#[derive(Debug)]
+enum RunningAppServerStatus {
+    Matches,
+    MismatchedOwned { pid: u32, codex_home: PathBuf },
+    MismatchedExternal { pid: u32, codex_home: PathBuf },
+    Unknown,
+}
+
+fn running_app_server_status(
+    listen_url: &str,
+    pid_path: &Path,
+    expected_codex_home: &Path,
+) -> Result<RunningAppServerStatus> {
+    let Some(pid) = discover_app_server_pid(listen_url, pid_path)? else {
+        return Ok(RunningAppServerStatus::Unknown);
+    };
+    let Some(actual_codex_home) = read_process_env_path(pid, CODEX_HOME_ENV)? else {
+        return Ok(RunningAppServerStatus::Unknown);
+    };
+    if actual_codex_home == expected_codex_home {
+        return Ok(RunningAppServerStatus::Matches);
+    }
+    if pid_path.exists() || process_is_tt_owned(pid, pid_path.parent().unwrap_or(Path::new(".")))? {
+        Ok(RunningAppServerStatus::MismatchedOwned {
+            pid,
+            codex_home: actual_codex_home,
+        })
+    } else {
+        Ok(RunningAppServerStatus::MismatchedExternal {
+            pid,
+            codex_home: actual_codex_home,
+        })
+    }
+}
+
+fn discover_app_server_pid(listen_url: &str, pid_path: &Path) -> Result<Option<u32>> {
+    if let Some(pid) = read_pid_file(pid_path)? {
+        if process_exists(pid) {
+            return Ok(Some(pid));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return pid_listening_on(listen_url);
+    }
+    #[allow(unreachable_code)]
+    Ok(None)
+}
+
+fn read_pid_file(path: &Path) -> Result<Option<u32>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents.trim().parse::<u32>().ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn process_exists(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+fn read_process_env_path(pid: u32, key: &str) -> Result<Option<PathBuf>> {
+    let environ_path = Path::new("/proc").join(pid.to_string()).join("environ");
+    let Ok(bytes) = fs::read(&environ_path) else {
+        return Ok(None);
+    };
+    for entry in bytes.split(|byte| *byte == 0) {
+        if let Some(value) = entry.strip_prefix(format!("{key}=").as_bytes()) {
+            return Ok(Some(PathBuf::from(String::from_utf8_lossy(value).to_string())));
+        }
+    }
+    Ok(None)
+}
+
+fn process_is_tt_owned(pid: u32, repo_tt_root: &Path) -> Result<bool> {
+    let log_env = read_process_env_path(pid, "TT_CODEX_APP_SERVER_LOG_PATH")?;
+    if let Some(path) = log_env {
+        return Ok(path.starts_with(repo_tt_root));
+    }
+    Ok(false)
+}
+
+fn stop_process(pid: u32) -> Result<()> {
+    let status = Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .with_context(|| format!("send SIGTERM to pid {}", pid))?;
+    if !status.success() {
+        anyhow::bail!("SIGTERM to pid {} exited with status {}", pid, status);
+    }
+    for _ in 0..20 {
+        if !process_exists(pid) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!("pid {} did not exit after SIGTERM", pid)
+}
+
+#[cfg(target_os = "linux")]
+fn pid_listening_on(listen_url: &str) -> Result<Option<u32>> {
+    let url = Url::parse(listen_url)
+        .with_context(|| format!("invalid Codex app-server URL `{listen_url}`"))?;
+    let Some(port) = url.port_or_known_default() else {
+        anyhow::bail!("Codex app-server URL `{listen_url}` has no port");
+    };
+    let output = Command::new("ss")
+        .args(["-ltnp", &format!("( sport = :{port} )")])
+        .output()
+        .with_context(|| format!("inspect listening process for port {}", port))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(rest) = line.split("pid=").nth(1) {
+            if let Some(pid) = rest.split(',').next().and_then(|value| value.parse::<u32>().ok()) {
+                return Ok(Some(pid));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn ensure_auth_file(path: PathBuf) -> Result<PathBuf> {
