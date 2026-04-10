@@ -656,6 +656,7 @@ pub struct ManagedProjectProgressEvent {
 pub enum ManagedProjectEventKind {
     PromptSent,
     ResponseReceived,
+    ParseFailed,
     TurnFailed,
     PhaseChanged,
     SystemNote,
@@ -4873,7 +4874,35 @@ impl DaemonService {
 
             let outcome =
                 self.run_managed_project_startup_turn(bootstrap, &role_bootstrap, &startup_prompt)?;
-            let report = parse_bootstrap_worker_report(&outcome.summary, &outcome.extraction)?;
+            let report = match parse_bootstrap_worker_report(&outcome.summary, &outcome.extraction)
+            {
+                Ok(report) => report,
+                Err(error) => {
+                    let raw_text = outcome
+                        .extraction
+                        .raw_text
+                        .clone()
+                        .unwrap_or_else(|| outcome.summary.clone());
+                    let _ = append_managed_project_event(
+                        &bootstrap.repo_root,
+                        &ManagedProjectEvent {
+                            ts: Utc::now(),
+                            project_id: bootstrap.project.id.clone(),
+                            phase: managed_project_startup_phase_slug(bootstrap.startup.phase)
+                                .to_string(),
+                            kind: ManagedProjectEventKind::ParseFailed,
+                            role: Some(role_key.clone()),
+                            counterparty_role: Some("director".to_string()),
+                            thread_id: role_bootstrap.thread_id.clone(),
+                            turn_id: Some(outcome.turn_id.clone()),
+                            text: raw_text,
+                            status: Some("parse_failed".to_string()),
+                            error: Some(error.to_string()),
+                        },
+                    );
+                    return Err(error);
+                }
+            };
             let blocked = report.status.eq_ignore_ascii_case("blocked")
                 || report
                     .blocker
@@ -4977,8 +5006,37 @@ impl DaemonService {
         );
         let director_outcome =
             self.run_managed_project_startup_turn(bootstrap, &director, &director_prompt)?;
-        let ack =
-            parse_bootstrap_director_ack(&director_outcome.summary, &director_outcome.extraction)?;
+        let ack = match parse_bootstrap_director_ack(
+            &director_outcome.summary,
+            &director_outcome.extraction,
+        ) {
+            Ok(ack) => ack,
+            Err(error) => {
+                let raw_text = director_outcome
+                    .extraction
+                    .raw_text
+                    .clone()
+                    .unwrap_or_else(|| director_outcome.summary.clone());
+                let _ = append_managed_project_event(
+                    &bootstrap.repo_root,
+                    &ManagedProjectEvent {
+                        ts: Utc::now(),
+                        project_id: bootstrap.project.id.clone(),
+                        phase: managed_project_startup_phase_slug(bootstrap.startup.phase)
+                            .to_string(),
+                        kind: ManagedProjectEventKind::ParseFailed,
+                        role: Some("director".to_string()),
+                        counterparty_role: Some("operator".to_string()),
+                        thread_id: director.thread_id.clone(),
+                        turn_id: Some(director_outcome.turn_id.clone()),
+                        text: raw_text,
+                        status: Some("parse_failed".to_string()),
+                        error: Some(error.to_string()),
+                    },
+                );
+                return Err(error);
+            }
+        };
         let _ = append_managed_project_event(
             &bootstrap.repo_root,
             &ManagedProjectEvent {

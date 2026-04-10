@@ -381,6 +381,10 @@ fn event_body_text(event: &ManagedProjectEvent) -> String {
         ManagedProjectEventKind::PromptSent | ManagedProjectEventKind::ResponseReceived => {
             event.text.clone()
         }
+        ManagedProjectEventKind::ParseFailed => {
+            let error = event.error.as_deref().unwrap_or("<unknown parse error>");
+            format!("{}\n\nParse error: {}", event.text, error)
+        }
         ManagedProjectEventKind::TurnFailed => {
             let error = event.error.as_deref().unwrap_or("<unknown error>");
             format!("{}\n\nError: {}", event.text, error)
@@ -2687,5 +2691,25 @@ mod tests {
         assert!(text.contains("Dev"));
         assert!(text.contains("this is an example prompt"));
         assert!(text.contains("this is an example response"));
+    }
+
+    #[test]
+    fn renders_parse_failed_event_with_raw_output() {
+        let event = tt_daemon::ManagedProjectEvent {
+            ts: ts(),
+            project_id: "p1".into(),
+            phase: "worker_reports_pending".into(),
+            kind: tt_daemon::ManagedProjectEventKind::ParseFailed,
+            role: Some("test".into()),
+            counterparty_role: Some("director".into()),
+            thread_id: Some("thread-3".into()),
+            turn_id: Some("turn-3".into()),
+            text: "{\"role\":\"test\",\"status\":\"ready\"}".into(),
+            status: Some("parse_failed".into()),
+            error: Some("expected value at line 1 column 1".into()),
+        };
+        let text = render_events_chat(&[event]);
+        assert!(text.contains("Parse error: expected value at line 1 column 1"));
+        assert!(text.contains("{\"role\":\"test\",\"status\":\"ready\"}"));
     }
 }
