@@ -4,9 +4,9 @@
 //! than a second application layer.
 
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
@@ -170,6 +170,9 @@ pub fn run() -> Result<()> {
     let is_status_command = matches!(&cli.command, Command::Status { .. });
     let status_json = matches!(&cli.command, Command::Status { json: true });
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
+    if is_open_command {
+        ensure_project_initialized_for_open(&cwd)?;
+    }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
         .map_err(|error| rewrite_open_runtime_error(&cwd, is_open_command, error))?;
@@ -378,7 +381,7 @@ fn rewrite_open_runtime_error(
         return error;
     }
     anyhow::anyhow!(
-        "cannot open TT project in {} because the project runtime is unreachable.\nRun `tt status` for the persisted project snapshot; the hidden internal runtime probe is available to e2e/debug.\n\nOriginal error:\n{error_text}",
+        "cannot open TT project in {} because the project runtime could not be started.\nRun `tt status` for the persisted project snapshot.\n\nOriginal error:\n{error_text}",
         cwd.display()
     )
 }
@@ -799,9 +802,7 @@ fn render_status_response(
     } else {
         repo_value
     };
-    format!(
-        "project={project_value} runtime={runtime_value} repo={repo_value}\n",
-    )
+    format!("project={project_value} runtime={runtime_value} repo={repo_value}\n",)
 }
 
 fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> String {
@@ -815,6 +816,25 @@ fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> 
             .unwrap_or_else(|| "<none>".to_string()),
     }))
     .expect("serialize status")
+}
+
+fn ensure_project_initialized_for_open(cwd: &Path) -> Result<()> {
+    let response = request_for_cwd(
+        cwd,
+        DaemonRequest::Status {
+            cwd: cwd.to_path_buf(),
+        },
+    )?;
+    let DaemonResponse::Status(status) = response else {
+        anyhow::bail!("unexpected daemon response while checking project initialization");
+    };
+    if status.project_initialized {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "fatal: not a TT project (or any of the parent directories): .tt\nRun `tt init` to initialize this repository."
+        )
+    }
 }
 
 fn render_managed_project_plan(inspection: &tt_daemon::ManagedProjectInspection) -> String {
@@ -1247,6 +1267,9 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
     let is_status_command = matches!(&cli.command, Command::Status { .. });
     let status_json = matches!(&cli.command, Command::Status { json: true });
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
+    if is_open_command {
+        ensure_project_initialized_for_open(&cwd)?;
+    }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
         .map_err(|error| rewrite_open_runtime_error(&cwd, is_open_command, error))?;
@@ -1918,10 +1941,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(
-            text,
-            "project=Initialized runtime=Ready repo=/repo\n"
-        );
+        assert_eq!(text, "project=Initialized runtime=Ready repo=/repo\n");
     }
 
     #[test]
@@ -1940,10 +1960,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(
-            text,
-            "project=Initialized runtime=Unreachable repo=/repo\n"
-        );
+        assert_eq!(text, "project=Initialized runtime=Unreachable repo=/repo\n");
     }
 
     #[test]
@@ -1958,10 +1975,7 @@ mod tests {
             ready_workspace_count: 3,
         }));
 
-        assert_eq!(
-            text,
-            "project=Initialized runtime=Unreachable repo=/repo\n"
-        );
+        assert_eq!(text, "project=Initialized runtime=Unreachable repo=/repo\n");
     }
 
     #[test]
@@ -1993,9 +2007,19 @@ mod tests {
         let rewritten = rewrite_open_runtime_error(Path::new("/repo"), true, error);
         let text = format!("{rewritten:#}");
         assert!(text.contains(
-            "cannot open TT project in /repo because the project runtime is unreachable"
+            "cannot open TT project in /repo because the project runtime could not be started"
         ));
-        assert!(text.contains("hidden internal runtime probe"));
+        assert!(text.contains("Run `tt status` for the persisted project snapshot."));
+    }
+
+    #[test]
+    fn open_requires_initialized_project_with_git_like_error() {
+        let error = anyhow::anyhow!(
+            "fatal: not a TT project (or any of the parent directories): .tt\nRun `tt init` to initialize this repository."
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("fatal: not a TT project"));
+        assert!(text.contains("Run `tt init`"));
     }
 
     #[test]

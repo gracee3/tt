@@ -6,10 +6,11 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::SystemTime;
@@ -523,12 +524,20 @@ impl TurnWatchdogSnapshot {
 
 impl CodexRuntimeClient {
     pub fn open(cwd: impl AsRef<Path>) -> Result<Self> {
-        validate_runtime_contract()?;
-        let codex_home = CodexHome::discover_in(cwd.as_ref())?;
+        let cwd = cwd.as_ref();
+        let contract = validate_runtime_contract()?;
+        let codex_home = CodexHome::discover_in(cwd)?;
         let runtime = Runtime::new().context("create tokio runtime for Codex client")?;
         let listen_url = resolve_app_server_listen_url();
-        let connection =
-            runtime.block_on(async { CodexAppServerConnection::connect(&listen_url).await })?;
+        let connection = match runtime
+            .block_on(async { CodexAppServerConnection::connect(&listen_url).await })
+        {
+            Ok(connection) => connection,
+            Err(_first_error) => {
+                start_codex_app_server_if_needed(cwd, &contract, &listen_url)?;
+                runtime.block_on(async { CodexAppServerConnection::connect(&listen_url).await })?
+            }
+        };
         Ok(Self {
             runtime,
             connection: Arc::new(Mutex::new(connection)),
@@ -1402,6 +1411,83 @@ fn resolve_canonical_auth_json_path() -> Result<PathBuf> {
 fn validate_canonical_auth_json() -> Result<PathBuf> {
     let path = resolve_canonical_auth_json_path()?;
     ensure_auth_file(path)
+}
+
+fn start_codex_app_server_if_needed(
+    cwd: &Path,
+    contract: &CodexRuntimeContract,
+    listen_url: &str,
+) -> Result<()> {
+    if codex_app_server_is_reachable(listen_url)? {
+        return Ok(());
+    }
+
+    let repo_root = cwd
+        .ancestors()
+        .find(|ancestor| ancestor.join(".tt").is_dir())
+        .unwrap_or(cwd);
+    let runtime_dir = repo_root.join(".tt").join("runtime");
+    fs::create_dir_all(&runtime_dir).with_context(|| {
+        format!(
+            "create Codex app-server runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    let log_path = runtime_dir.join("codex-app-server.log");
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("open Codex app-server log {}", log_path.display()))?;
+    let stderr = log_file
+        .try_clone()
+        .with_context(|| format!("clone Codex app-server log {}", log_path.display()))?;
+
+    let codex_home = contract
+        .auth_json()
+        .parent()
+        .and_then(|path| path.parent())
+        .context("resolve Codex home for app-server startup")?;
+
+    let mut command = Command::new(contract.app_server_bin());
+    command
+        .arg("--listen")
+        .arg(listen_url)
+        .env("CODEX_HOME", codex_home)
+        .env("TT_RUNTIME_LISTEN_URL", listen_url)
+        .env("TT_APP_SERVER_LISTEN_URL", listen_url)
+        .env("CODEX_APP_SERVER_LISTEN_URL", listen_url)
+        .env("TT_CODEX_APP_SERVER_LOG_PATH", &log_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(stderr));
+
+    command.spawn().with_context(|| {
+        format!(
+            "start Codex app-server `{}`",
+            contract.app_server_bin().display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn codex_app_server_is_reachable(listen_url: &str) -> Result<bool> {
+    let url = Url::parse(listen_url)
+        .with_context(|| format!("invalid Codex app-server URL `{listen_url}`"))?;
+    let Some(host) = url.host_str() else {
+        anyhow::bail!("Codex app-server URL `{listen_url}` has no host");
+    };
+    let Some(port) = url.port_or_known_default() else {
+        anyhow::bail!("Codex app-server URL `{listen_url}` has no port");
+    };
+    let socket_addr = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+        .with_context(|| format!("resolve `{host}:{port}` for `{listen_url}`"))?
+        .next();
+    let Some(socket_addr) = socket_addr else {
+        anyhow::bail!("no socket addresses resolved for `{listen_url}`");
+    };
+    Ok(std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_millis(250)).is_ok())
 }
 
 fn ensure_auth_file(path: PathBuf) -> Result<PathBuf> {
