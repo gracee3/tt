@@ -2962,7 +2962,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "serde",
  "serde_json",
  "tt-daemon",
  "tt-domain",

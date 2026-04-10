@@ -73,8 +73,6 @@ Legacy low-level commands were removed from the public CLI. TT still keeps a
 hidden internal surface for e2e and debugging:
 
 - `tt internal project ...`
-- `tt internal workspace ...`
-- `tt internal records ...`
 - `tt internal repo`
 
 Those commands are intentionally excluded from normal help and from the
