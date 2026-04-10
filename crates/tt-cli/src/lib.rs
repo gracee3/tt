@@ -76,7 +76,10 @@ pub enum Command {
         #[command(subcommand)]
         command: DocsCommand,
     },
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Internal {
         #[command(subcommand)]
@@ -164,7 +167,8 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
     let is_open_command = matches!(&cli.command, Command::Open { .. });
-    let is_status_command = matches!(&cli.command, Command::Status);
+    let is_status_command = matches!(&cli.command, Command::Status { .. });
+    let status_json = matches!(&cli.command, Command::Status { json: true });
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -183,7 +187,11 @@ pub fn run() -> Result<()> {
                 _ => None,
             })
             .unwrap_or(false);
-            render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+            if status_json {
+                render_status_json(&status, runtime_ready)
+            } else {
+                render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+            }
         }
         (_, response) => render_response(&response),
     };
@@ -281,7 +289,7 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             seed_file: None,
         },
         Command::Docs { .. } => anyhow::bail!("docs commands are handled locally"),
-        Command::Status => DaemonRequest::Status {
+        Command::Status { .. } => DaemonRequest::Status {
             cwd: cwd.to_path_buf(),
         },
         Command::Internal { command } => match command {
@@ -753,34 +761,78 @@ fn render_status_response(
     runtime_ready: bool,
     colorize: bool,
 ) -> String {
-    let runtime_label = if colorize {
-        if runtime_ready {
-            "\u{1b}[32mready\u{1b}[0m"
-        } else {
-            "\u{1b}[31munreachable\u{1b}[0m"
-        }
-    } else if runtime_ready {
-        "ready"
+    let project_label = if status.project_initialized {
+        "Initialized"
     } else {
-        "unreachable"
+        "Uninitialized"
     };
-    let runtime_key = if colorize {
-        "\u{1b}[1mruntime\u{1b}[0m"
+    let runtime_label = if runtime_ready {
+        "Ready"
     } else {
-        "runtime"
+        "Unreachable"
+    };
+    let repo_value = status
+        .repo_root
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    let state_value = status
+        .project_state
+        .as_deref()
+        .map(title_case_status_value)
+        .unwrap_or_else(|| "Unknown".to_string());
+    let project_value = if colorize {
+        if status.project_initialized {
+            "\u{1b}[1;32mInitialized\u{1b}[0m".to_string()
+        } else {
+            "\u{1b}[1;31mUninitialized\u{1b}[0m".to_string()
+        }
+    } else {
+        project_label.to_string()
+    };
+    let runtime_value = if colorize {
+        if runtime_ready {
+            "\u{1b}[1;32mReady\u{1b}[0m".to_string()
+        } else {
+            "\u{1b}[1;31mUnreachable\u{1b}[0m".to_string()
+        }
+    } else {
+        runtime_label.to_string()
+    };
+    let repo_value = if colorize {
+        format!("\u{1b}[1;37m{repo_value}\u{1b}[0m")
+    } else {
+        repo_value
     };
     format!(
-        "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\n{}: {}\n",
-        status
+        "status\nproject={project_value} runtime={runtime_value} repo={repo_value} state={state_value}\n",
+    )
+}
+
+fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "project": if status.project_initialized { "Initialized" } else { "Uninitialized" },
+        "runtime": if runtime_ready { "Ready" } else { "Unreachable" },
+        "repo": status
             .repo_root
             .as_deref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<none>".to_string()),
-        status.project_initialized,
-        status.project_state.as_deref().unwrap_or("<none>"),
-        runtime_key,
-        runtime_label,
-    )
+        "state": status
+            .project_state
+            .as_deref()
+            .map(title_case_status_value)
+            .unwrap_or_else(|| "Unknown".to_string()),
+    }))
+    .expect("serialize status")
+}
+
+fn title_case_status_value(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 fn render_managed_project_plan(inspection: &tt_daemon::ManagedProjectInspection) -> String {
@@ -1210,7 +1262,8 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
         return Ok(());
     }
     let is_open_command = matches!(&cli.command, Command::Open { .. });
-    let is_status_command = matches!(&cli.command, Command::Status);
+    let is_status_command = matches!(&cli.command, Command::Status { .. });
+    let status_json = matches!(&cli.command, Command::Status { json: true });
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -1229,7 +1282,11 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
                 _ => None,
             })
             .unwrap_or(false);
-            render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+            if status_json {
+                render_status_json(&status, runtime_ready)
+            } else {
+                render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+            }
         }
         (_, response) => serde_json::to_string_pretty(&response)?,
     };
@@ -1402,7 +1459,7 @@ mod tests {
     #[test]
     fn parses_cwd_flag() {
         let cli = Cli::parse_from(["tt", "--cwd", "/tmp", "status"]);
-        assert!(matches!(cli.command, Command::Status));
+        assert!(matches!(cli.command, Command::Status { json: false }));
         assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
     }
 
@@ -1879,10 +1936,10 @@ mod tests {
             false,
         );
 
-        assert!(text.contains("repo_root: /repo"));
-        assert!(text.contains("project_initialized: true"));
-        assert!(text.contains("project_state: attached (4/4)"));
-        assert!(text.contains("runtime: ready"));
+        assert_eq!(
+            text,
+            "status\nproject=Initialized runtime=Ready repo=/repo state=Attached (4/4)\n"
+        );
     }
 
     #[test]
@@ -1901,7 +1958,10 @@ mod tests {
             false,
         );
 
-        assert!(text.contains("runtime: unreachable"));
+        assert_eq!(
+            text,
+            "status\nproject=Initialized runtime=Unreachable repo=/repo state=Attached (4/4)\n"
+        );
     }
 
     #[test]
@@ -1916,10 +1976,31 @@ mod tests {
             ready_workspace_count: 3,
         }));
 
-        assert!(text.contains("repo_root: /repo"));
-        assert!(text.contains("project_initialized: true"));
-        assert!(text.contains("project_state: attached (4/4)"));
-        assert!(text.contains("runtime: unreachable"));
+        assert_eq!(
+            text,
+            "status\nproject=Initialized runtime=Unreachable repo=/repo state=Attached (4/4)\n"
+        );
+    }
+
+    #[test]
+    fn renders_status_as_json() {
+        let text = render_status_json(
+            &tt_daemon::DaemonStatus {
+                repo_root: Some("/repo".into()),
+                project_initialized: true,
+                project_state: Some("scaffolded (0/4)".into()),
+                project_count: 2,
+                work_unit_count: 6,
+                bound_thread_count: 4,
+                ready_workspace_count: 3,
+            },
+            false,
+        );
+
+        assert_eq!(
+            text,
+            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\",\n  \"state\": \"Scaffolded (0/4)\"\n}"
+        );
     }
 
     #[test]
