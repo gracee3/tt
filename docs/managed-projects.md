@@ -46,7 +46,7 @@ tt docs export-cli --output docs/cli-reference.md
 - `.tt/project.toml`
 - `.tt/plan.toml`
 - `.tt/contracts/worker-contract.md`
-- `.tt/state.toml`
+- `.tt/state.toml` for runtime bindings, control state, scenario progress, and checksums of the source files
 - `.tt/settings.env`
 
 Managed-project live runs also write scenario artifacts under `.tt/scenarios/`.

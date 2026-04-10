@@ -11,7 +11,7 @@ can inspect and steer work without losing the runtime context.
 - `tt-daemon` owns the local API boundary and the durable overlay state.
 - `tt-cli` is the thin command-line client over the daemon.
 - `tt-tui` is the interactive operator surface.
-- `.tt/` stores repo-local project policy, plans, and managed-project state.
+- `.tt/` stores repo-local project policy, plan text, and managed-project runtime state.
 - `tt-git` handles repo/worktree and merge-readiness inspection.
 
 The repo is set up for local development of TT itself. The checked-in
@@ -21,9 +21,9 @@ The repo is set up for local development of TT itself. The checked-in
 
 This checkout keeps a reference managed-project scaffold in `.tt/`:
 
-- `.tt/project.toml` for repo-local policy overrides
+- `.tt/project.toml` for repo-local policy and liveness defaults
 - `.tt/plan.toml` for the current director plan
-- `.tt/state.toml` for managed-project runtime state
+- `.tt/state.toml` for runtime bindings, control state, scenario progress, and checksums of the source files
 - `.tt/settings.env` for repo-local env defaults in this checkout
 - `.tt/contracts/worker-contract.md` for the worker contract
 

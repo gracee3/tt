@@ -22,6 +22,7 @@ use clap as _;
 use codex_app_server_protocol as protocol;
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tt_codex::{
     CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, apply_repo_settings_env,
     configured_app_server_listen_url, repo_env_var, repo_env_var_os, validate_runtime_contract,
@@ -643,12 +644,12 @@ struct ManagedProjectManifest {
     project_config_path: String,
     #[serde(default)]
     plan_path: String,
+    #[serde(default)]
+    project_config_sha256: String,
+    #[serde(default)]
+    plan_sha256: String,
     contract_path: String,
     codex_config_path: String,
-    #[serde(default)]
-    project_config: ManagedProjectProjectConfig,
-    #[serde(default)]
-    plan: ManagedProjectPlan,
     scenario: Option<ManagedProjectScenarioState>,
     roles: BTreeMap<String, ManagedProjectManifestRole>,
 }
@@ -1711,11 +1712,9 @@ impl DaemonService {
             &plan_path,
             &contract_path,
             &codex_config_path,
-            &project_config,
-            &plan,
             None,
             &[&director_role, &dev_role, &test_role, &integration_role],
-        );
+        )?;
         save_managed_project_manifest(&manifest_path, &manifest)?;
 
         Ok(ManagedProjectBootstrap {
@@ -2473,11 +2472,9 @@ fn build_managed_project_manifest(
     plan_path: &Path,
     contract_path: &Path,
     codex_config_path: &Path,
-    project_config: &ManagedProjectProjectConfig,
-    plan: &ManagedProjectPlan,
     scenario: Option<ManagedProjectScenarioState>,
     roles: &[&ManagedProjectRoleBootstrap],
-) -> ManagedProjectManifest {
+) -> Result<ManagedProjectManifest> {
     let mut role_map = BTreeMap::new();
     for role in roles {
         role_map.insert(
@@ -2500,7 +2497,7 @@ fn build_managed_project_manifest(
         );
     }
 
-    ManagedProjectManifest {
+    Ok(ManagedProjectManifest {
         schema: "tt-managed-project-v1".to_string(),
         project_id: project.id.clone(),
         slug: project.slug.clone(),
@@ -2511,15 +2508,20 @@ fn build_managed_project_manifest(
         worktree_root: worktree_root.display().to_string(),
         project_config_path: project_config_path.display().to_string(),
         plan_path: plan_path.display().to_string(),
+        project_config_sha256: file_sha256_hex(project_config_path)?,
+        plan_sha256: file_sha256_hex(plan_path)?,
         contract_path: contract_path.display().to_string(),
         codex_config_path: codex_config_path.display().to_string(),
-        // Persist the effective project config and plan with the manifest so
-        // inspect/attach paths can rebuild the same bootstrap view later.
-        project_config: project_config.clone(),
-        plan: plan.clone(),
         scenario,
         roles: role_map,
-    }
+    })
+}
+
+fn file_sha256_hex(path: &Path) -> Result<String> {
+    let contents =
+        fs::read(path).with_context(|| format!("read {} for checksum", path.display()))?;
+    let digest = Sha256::digest(contents);
+    Ok(format!("{digest:x}"))
 }
 
 fn save_managed_project_manifest(path: &Path, manifest: &ManagedProjectManifest) -> Result<()> {
@@ -2994,69 +2996,43 @@ impl DaemonService {
             });
         }
 
+        let project_config_path = if manifest.project_config_path.is_empty() {
+            PathBuf::from(&manifest.repo_root)
+                .join(".tt")
+                .join("project.toml")
+        } else {
+            PathBuf::from(&manifest.project_config_path)
+        };
+        let plan_path = if manifest.plan_path.is_empty() {
+            PathBuf::from(&manifest.repo_root)
+                .join(".tt")
+                .join("plan.toml")
+        } else {
+            PathBuf::from(&manifest.plan_path)
+        };
+        let project_config = load_or_seed_managed_project_config(
+            &project_config_path,
+            Path::new(&manifest.repo_root),
+            &project.title,
+            &project.objective,
+            &manifest.base_branch,
+        )?;
+        let role_refs: Vec<_> = roles.iter().collect();
+        let plan =
+            load_or_seed_managed_project_plan(&plan_path, &project_config, &project, &role_refs)?;
+
         Ok(ManagedProjectBootstrap {
             project: project.clone(),
             repo_root: PathBuf::from(&manifest.repo_root),
             base_branch: manifest.base_branch.clone(),
             worktree_root: PathBuf::from(&manifest.worktree_root),
             manifest_path: manifest_path.to_path_buf(),
-            project_config_path: if manifest.project_config_path.is_empty() {
-                PathBuf::from(&manifest.repo_root)
-                    .join(".tt")
-                    .join("project.toml")
-            } else {
-                PathBuf::from(&manifest.project_config_path)
-            },
-            plan_path: if manifest.plan_path.is_empty() {
-                PathBuf::from(&manifest.repo_root)
-                    .join(".tt")
-                    .join("plan.toml")
-            } else {
-                PathBuf::from(&manifest.plan_path)
-            },
+            project_config_path,
+            plan_path,
             contract_path: PathBuf::from(&manifest.contract_path),
             codex_config_path: PathBuf::from(&manifest.codex_config_path),
-            project_config: if manifest.project_config.schema.is_empty() {
-                let config_path = PathBuf::from(&manifest.repo_root)
-                    .join(".tt")
-                    .join("project.toml");
-                match load_managed_project_project_config(&config_path) {
-                    Ok(config) => config,
-                    Err(_) => default_managed_project_project_config(
-                        Path::new(&manifest.repo_root),
-                        &project.title,
-                        &project.objective,
-                        &manifest.base_branch,
-                    ),
-                }
-            } else {
-                manifest.project_config.clone()
-            },
-            plan: if manifest.plan.schema.is_empty() {
-                let config = if manifest.project_config.schema.is_empty() {
-                    load_or_seed_managed_project_config(
-                        &PathBuf::from(&manifest.repo_root)
-                            .join(".tt")
-                            .join("project.toml"),
-                        Path::new(&manifest.repo_root),
-                        &project.title,
-                        &project.objective,
-                        &manifest.base_branch,
-                    )?
-                } else {
-                    manifest.project_config.clone()
-                };
-                load_or_seed_managed_project_plan(
-                    &PathBuf::from(&manifest.repo_root)
-                        .join(".tt")
-                        .join("plan.toml"),
-                    &config,
-                    &project,
-                    &[],
-                )?
-            } else {
-                manifest.plan.clone()
-            },
+            project_config,
+            plan,
             scenario: manifest.scenario.clone(),
             roles: ordered_managed_project_roles(roles),
         })
@@ -3093,11 +3069,9 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
-            &bootstrap.project_config,
-            &bootstrap.plan,
             bootstrap.scenario.clone(),
             &role_refs,
-        );
+        )?;
         save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
         Ok(bootstrap)
     }
@@ -3222,11 +3196,9 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
-            &bootstrap.project_config,
-            &bootstrap.plan,
             bootstrap.scenario.clone(),
             &role_refs,
-        );
+        )?;
         save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
         Ok(bootstrap)
     }
@@ -4244,11 +4216,9 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
-            &bootstrap.project_config,
-            &bootstrap.plan,
             bootstrap.scenario.clone(),
             &role_refs,
-        );
+        )?;
         save_managed_project_manifest(&bootstrap.manifest_path, &manifest)
     }
 
@@ -6316,20 +6286,24 @@ mod tests {
             work_items: vec![],
             notes: ManagedProjectPlanNotes::default(),
         };
+        let project_config_path = dir.path().join(".tt/project.toml");
+        let plan_path = dir.path().join(".tt/plan.toml");
+        save_managed_project_project_config(&project_config_path, &project_config)
+            .expect("save project config");
+        save_managed_project_plan(&plan_path, &plan).expect("save plan");
         let manifest = build_managed_project_manifest(
             &project,
             dir.path(),
             "main",
             &dir.path().join(".tt-worktrees/alpha"),
-            &dir.path().join(".tt/project.toml"),
-            &dir.path().join(".tt/plan.toml"),
+            &project_config_path,
+            &plan_path,
             &dir.path().join(".tt/contracts/worker-contract.md"),
             &dir.path().join(".codex/config.toml"),
-            &project_config,
-            &plan,
             None,
             &[&role],
-        );
+        )
+        .expect("build manifest");
         let path = dir.path().join("state.toml");
         save_managed_project_manifest(&path, &manifest).expect("save manifest");
         let loaded = load_managed_project_manifest(&path).expect("load manifest");
@@ -6341,6 +6315,14 @@ mod tests {
         assert_eq!(
             loaded_role.workspace_binding_id.as_deref(),
             Some("alpha:dev")
+        );
+        assert_eq!(
+            loaded.project_config_sha256,
+            file_sha256_hex(&project_config_path).expect("project config checksum")
+        );
+        assert_eq!(
+            loaded.plan_sha256,
+            file_sha256_hex(&plan_path).expect("plan checksum")
         );
     }
 
