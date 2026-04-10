@@ -1869,6 +1869,12 @@ mod tests {
                 }],
                 notes: tt_daemon::ManagedProjectPlanNotes::default(),
             },
+            startup: tt_daemon::ManagedProjectStartupState {
+                phase: tt_daemon::ManagedProjectStartupPhase::Ready,
+                updated_at: ts(),
+                worker_reports: std::collections::BTreeMap::new(),
+                director_ack: None,
+            },
             scenario: Some(tt_daemon::ManagedProjectScenarioState {
                 scenario_id: "scn-1".into(),
                 scenario_kind: "rust-taskflow-four-round".into(),
@@ -2123,6 +2129,12 @@ mod tests {
                     operator_constraints: vec!["wait for approval".into()],
                 },
             },
+            startup: tt_daemon::ManagedProjectStartupState {
+                phase: tt_daemon::ManagedProjectStartupPhase::Ready,
+                updated_at: ts(),
+                worker_reports: std::collections::BTreeMap::new(),
+                director_ack: None,
+            },
             scenario: None,
             roles: vec![],
         };
@@ -2294,7 +2306,7 @@ mod tests {
                 repo_root: Some("/repo".into()),
                 project_initialized: true,
                 project_state: Some("scaffolded (0/4)".into()),
-                director_state: tt_daemon::ManagedProjectDirectorState::Stale,
+                director_state: tt_daemon::ManagedProjectDirectorState::Starting,
                 project_count: 2,
                 work_unit_count: 6,
                 bound_thread_count: 4,
@@ -2305,7 +2317,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "{\n  \"director\": \"Stale\",\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"NeedsAuth\"\n}"
+            "{\n  \"director\": \"Starting\",\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"NeedsAuth\"\n}"
         );
     }
 

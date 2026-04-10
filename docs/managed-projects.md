@@ -7,11 +7,14 @@ TT now exposes a minimal public operator flow:
 - `tt status`
 - `tt docs export-cli`
 
-`tt init` bootstraps the current repo as a managed project. `tt open` resumes the
-director-led workflow for that repo. In an interactive terminal, `tt open`
-hands off to the installed Codex TUI on the director thread. The Codex TUI
-owns any login flow it needs. When output is redirected, `tt open` keeps the
-current summary-style output for scripts and e2e.
+`tt init` bootstraps the current repo as a managed project and starts the
+managed startup handshake in the background. `tt open` resumes the
+director-led workflow for that repo only after the director has acknowledged
+that `dev`, `test`, and `integration` are connected and ready. In an
+interactive terminal, `tt open` hands off to the installed Codex TUI on the
+director thread. The Codex TUI owns any login flow it needs. When output is
+redirected, `tt open` keeps the current summary-style output for scripts and
+e2e.
 
 ## Public Workflow
 
@@ -32,6 +35,14 @@ Resume the director-managed workflow:
 ```bash
 tt open
 ```
+
+If startup warmup is still in progress, `tt open` fails fast. Check:
+
+```bash
+tt status
+```
+
+and wait for `director=Ready`.
 
 On a remote or headless machine, TT uses the repo-local Codex home and can be configured to direct the operator to:
 

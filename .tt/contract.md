@@ -10,6 +10,12 @@ Base branch: `main`
 - Workers only communicate with the director.
 - Peer-to-peer worker coordination is out of scope.
 
+## Startup Handshake
+- TT may start role threads before the operator opens the project.
+- Workers must answer TT startup readiness prompts with a concise report for the director.
+- The director must validate `dev`, `test`, and `integration` before acknowledging operator handoff.
+- `tt open` should only attach once the director has acknowledged startup readiness.
+
 ## Roles
 director: coordinates the operator, plans the project, dispatches work, and owns handoffs.
 dev: implements the assigned code slice only and reports concrete changes.

@@ -2573,6 +2573,13 @@ fn render_agent_file(
 - Keep checkpoint commits aligned with the plan's checkpoint triggers.\n\
 - Prefer concise milestone updates over broad status prose.\n",
     );
+    output.push_str(
+        "Startup handshake:\n\
+- TT may start this thread headlessly before the operator opens the project.\n\
+- When TT sends a startup readiness prompt, treat it as mandatory bootstrap protocol.\n\
+- Workers must return a concise readiness report for the director.\n\
+- The director must validate the full worker roster and emit the operator-facing readiness acknowledgement.\n",
+    );
     output.push_str(managed_project_progress_guidance());
     match role {
         ThreadRole::Director => {
@@ -2587,6 +2594,9 @@ fn render_agent_file(
             output.push_str(
                 "Review `.tt/project.toml` and `.tt/plan.toml` before dispatching any worker.\n",
             );
+            output.push_str(
+                "During startup, wait for `dev`, `test`, and `integration` readiness reports, validate them, and acknowledge when the project is ready for operator handoff.\n",
+            );
             output.push_str("Do not implement product code unless explicitly instructed.\n");
         }
         ThreadRole::Develop => {
@@ -2594,6 +2604,7 @@ fn render_agent_file(
             output.push_str("You report to the director, not to other workers or the operator.\n");
             output.push_str("Treat test as the validator and integration as the landing worker.\n");
             output.push_str("Report changed files, tests run, blockers, next step, and whether you are actively building, testing, or waiting on I/O.\n");
+            output.push_str("If TT sends a startup readiness prompt, do not change code; return a precise readiness report for the director.\n");
             output.push_str("If the operator takes over the thread for the next turn, keep the live thread open and wait for director control to be restored before the next autonomous turn.\n");
             output.push_str("Honor checkpoint commits required by the project plan.\n");
         }
@@ -2602,6 +2613,7 @@ fn render_agent_file(
             output.push_str("You report to the director, not to other workers or the operator.\n");
             output.push_str("Assume dev produced the change and integration will handle landing if tests pass.\n");
             output.push_str("Do not widen scope or rewrite implementation code.\n");
+            output.push_str("If TT sends a startup readiness prompt, do not change code; return a precise readiness report for the director.\n");
             output.push_str("Include progress checkpoints if tests are long-running or flaky so the director can distinguish quiet from stalled.\n");
             output.push_str("If the operator pauses the thread for manual takeover, stop automatic dispatch and resume only when the director regains control.\n");
             output.push_str("Honor checkpoint commits required by the project plan.\n");
@@ -2614,6 +2626,7 @@ fn render_agent_file(
                 "Assume dev implemented the slice and test validated it before landing.\n",
             );
             output.push_str("Keep the landing path narrow, evidence-driven, and punctuated with short status updates if merge prep takes a while.\n");
+            output.push_str("If TT sends a startup readiness prompt, do not change code; return a precise readiness report for the director.\n");
             output.push_str("If a manual takeover is requested for the next turn, pause automatic landing steps until the director is restored.\n");
             output.push_str("Honor checkpoint commits required by the project plan.\n");
         }
@@ -2657,6 +2670,11 @@ Base branch: `{base_branch}`\n\n\
 - The director plans, dispatches, and arbitrates for the project.\n\
 - Workers only communicate with the director.\n\
 - Peer-to-peer worker coordination is out of scope.\n\n\
+## Startup Handshake\n\
+- TT may start role threads before the operator opens the project.\n\
+- Workers must answer TT startup readiness prompts with a concise report for the director.\n\
+- The director must validate `dev`, `test`, and `integration` before acknowledging operator handoff.\n\
+- `tt open` should only attach once the director has acknowledged startup readiness.\n\n\
 ## Roles\n\
 {role_roster}\n\n\
 ## Project Policy\n\
@@ -6338,7 +6356,6 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
     use tempfile::tempdir;
-    use tt_codex::CodexSessionCatalog;
     use tt_domain::{
         ProjectStatus, ThreadBindingStatus, ThreadRole, WorkUnitStatus, WorkspaceCleanupPolicy,
         WorkspaceStatus, WorkspaceStrategy, WorkspaceSyncPolicy,
@@ -6935,6 +6952,8 @@ mod tests {
         assert_eq!(bootstrap.plan.status, "draft");
         assert_eq!(bootstrap.roles.len(), 4);
         assert!(bootstrap.roles.iter().all(|role| role.agent_path.exists()));
+        assert!(bootstrap.roles.iter().all(|role| role.thread_id.is_some()));
+        assert_ne!(bootstrap.startup.phase, ManagedProjectStartupPhase::Scaffolded);
 
         let director_role = bootstrap
             .roles
@@ -6945,20 +6964,7 @@ mod tests {
         assert_eq!(director_role.reasoning_effort.as_deref(), Some("medium"));
         assert!(director_role.branch_name.is_none());
         assert!(director_role.worktree_path.is_none());
-        assert!(director_role.thread_id.is_some());
         assert!(director_role.workspace_binding_id.is_some());
-        let codex_home = managed_project_codex_home(&repo);
-        let catalog = CodexSessionCatalog::load(&codex_home).expect("load catalog");
-        assert!(
-            catalog
-                .find_thread_by_id(
-                    director_role
-                        .thread_id
-                        .as_deref()
-                        .expect("director thread id")
-                )
-                .is_some()
-        );
 
         let dev_role = bootstrap
             .roles
@@ -7026,21 +7032,69 @@ mod tests {
                 Some("integration-model".to_string()),
             )
             .expect("open managed project");
-        let ready = service.status(&repo).expect("status");
+        let starting = service.status(&repo).expect("status");
         assert!(matches!(
-            ready.director_state,
-            ManagedProjectDirectorState::Ready
+            starting.director_state,
+            ManagedProjectDirectorState::Starting | ManagedProjectDirectorState::Ready
         ));
 
-        std::fs::remove_file(managed_project_codex_home(&repo).join("session_index.jsonl"))
-            .expect("remove session index");
-        let stale = service.status(&repo).expect("status");
+        let mut manifest =
+            load_managed_project_manifest(&bootstrap.manifest_path).expect("load manifest");
+        manifest.startup.phase = ManagedProjectStartupPhase::Blocked;
+        save_managed_project_manifest(&bootstrap.manifest_path, &manifest).expect("save manifest");
+        let blocked = service.status(&repo).expect("status");
         assert!(matches!(
-            stale.director_state,
-            ManagedProjectDirectorState::Stale
+            blocked.director_state,
+            ManagedProjectDirectorState::Blocked
         ));
 
         assert!(bootstrap.manifest_path.exists());
+    }
+
+    #[test]
+    fn direct_managed_project_fails_fast_until_startup_is_ready() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        let mut manifest =
+            load_managed_project_manifest(&bootstrap.manifest_path).expect("load manifest");
+        manifest.startup.phase = ManagedProjectStartupPhase::WorkerReportsPending;
+        save_managed_project_manifest(&bootstrap.manifest_path, &manifest).expect("save manifest");
+
+        let error = service
+            .direct_managed_project(
+                &repo,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                None,
+            )
+            .expect_err("open should fail fast before startup is ready");
+        assert!(error
+            .to_string()
+            .contains("managed project startup is not ready yet"));
     }
 
     #[test]
@@ -7364,6 +7418,7 @@ mod tests {
                     operator_constraints: vec!["wait for approval".into()],
                 },
             },
+            startup: default_managed_project_startup_state(),
             scenario: None,
             roles: vec![],
         };
