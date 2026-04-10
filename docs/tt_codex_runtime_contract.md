@@ -49,6 +49,8 @@ Project state:
 - Codex project state: `<repo>/.codex/`
 - TT user state: `~/.tt/`
 - TT project state: `<repo>/.tt/`
+- TT daemon socket: `<repo>/.tt/tt-daemon.sock`
+- Codex app-server log: `<repo>/.tt/codex-app-server.log`
 
 Auth file:
 - Codex auth: `~/.codex/auth.json`

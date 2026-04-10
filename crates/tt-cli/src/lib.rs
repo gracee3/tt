@@ -80,6 +80,10 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    Clean {
+        #[arg(long)]
+        full: bool,
+    },
     #[command(hide = true)]
     Internal {
         #[command(subcommand)]
@@ -168,6 +172,7 @@ pub fn run() -> Result<()> {
     }
     let is_open_command = matches!(&cli.command, Command::Open { .. });
     let is_status_command = matches!(&cli.command, Command::Status { .. });
+    let is_clean_command = matches!(&cli.command, Command::Clean { .. });
     let status_json = matches!(&cli.command, Command::Status { json: true });
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     if is_open_command {
@@ -176,8 +181,8 @@ pub fn run() -> Result<()> {
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
         .map_err(|error| rewrite_open_runtime_error(&cwd, is_open_command, error))?;
-    let output = match (is_status_command, response) {
-        (true, DaemonResponse::Status(status)) => {
+    let output = match (is_status_command, is_clean_command, response) {
+        (true, _, DaemonResponse::Status(status)) => {
             let runtime_ready = request_for_cwd(
                 &cwd,
                 DaemonRequest::InspectCodexAppServers { cwd: cwd.clone() },
@@ -196,7 +201,8 @@ pub fn run() -> Result<()> {
                 render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
             }
         }
-        (_, response) => render_response(&response),
+        (_, true, DaemonResponse::Count(count)) => format!("cleaned {count}\n"),
+        (_, _, response) => render_response(&response),
     };
     println!("{output}");
     Ok(())
@@ -294,6 +300,10 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         Command::Docs { .. } => anyhow::bail!("docs commands are handled locally"),
         Command::Status { .. } => DaemonRequest::Status {
             cwd: cwd.to_path_buf(),
+        },
+        Command::Clean { full } => DaemonRequest::CleanManagedProject {
+            cwd: cwd.to_path_buf(),
+            force: full,
         },
         Command::Internal { command } => match command {
             InternalCommand::Repo => DaemonRequest::RepositorySummary {
@@ -1587,7 +1597,7 @@ mod tests {
             manifest_path: "/repo/.tt/state.toml".into(),
             project_config_path: "/repo/.tt/project.toml".into(),
             plan_path: "/repo/.tt/plan.toml".into(),
-            contract_path: "/repo/.tt/contracts/worker-contract.md".into(),
+            contract_path: "/repo/.tt/contract.md".into(),
             codex_config_path: "/repo/.codex/config.toml".into(),
             project_config: tt_daemon::ManagedProjectProjectConfig {
                 schema: "tt-managed-project-config-v1".into(),
@@ -1801,6 +1811,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_clean_command() {
+        let cli = Cli::try_parse_from(["tt", "clean", "--full"]).expect("parse");
+        match cli.command {
+            Command::Clean { full } => assert!(full),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clean_command_maps_to_daemon_request() {
+        let request =
+            command_to_request(Command::Clean { full: true }, Path::new("/repo")).expect("request");
+        assert_eq!(
+            request,
+            DaemonRequest::CleanManagedProject {
+                cwd: PathBuf::from("/repo"),
+                force: true,
+            }
+        );
+    }
+
+    #[test]
     fn renders_managed_project_plan_details() {
         let project = Project {
             id: "p-plan".into(),
@@ -1819,7 +1851,7 @@ mod tests {
             manifest_path: "/repo/.tt/state.toml".into(),
             project_config_path: "/repo/.tt/project.toml".into(),
             plan_path: "/repo/.tt/plan.toml".into(),
-            contract_path: "/repo/.tt/contracts/worker-contract.md".into(),
+            contract_path: "/repo/.tt/contract.md".into(),
             codex_config_path: "/repo/.codex/config.toml".into(),
             project_config: tt_daemon::ManagedProjectProjectConfig {
                 schema: "tt-managed-project-config-v1".into(),

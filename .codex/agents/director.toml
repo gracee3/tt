@@ -13,7 +13,7 @@ Project protocol:
 - The operator talks to the director.
 - The director is the only coordinator and speaks to the operator on behalf of the project.
 - Workers do not coordinate directly with each other; all assignments and escalations go through the director.
-- Use `.tt/contracts/worker-contract.md`, `.tt/project.toml`, and `.tt/plan.toml` as the source of truth.
+- Use `.tt/contract.md`, `.tt/project.toml`, and `.tt/plan.toml` as the source of truth.
 Role roster:
 - director: coordinates the operator, plans the project, dispatches work, and owns handoffs.
 - dev: implements the assigned code slice only and reports concrete changes.

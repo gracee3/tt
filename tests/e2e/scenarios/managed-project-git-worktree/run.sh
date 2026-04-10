@@ -33,7 +33,7 @@ sleep 5
 
 init_stdout="$reports_dir/project-init.txt"
 inspect_before_stdout="$reports_dir/project-inspect-before-director.txt"
-contract_path="$repo_root/.tt/contracts/worker-contract.md"
+contract_path="$repo_root/.tt/contract.md"
 director_agent_path="$repo_root/.codex/agents/director.toml"
 dev_agent_path="$repo_root/.codex/agents/dev.toml"
 test_agent_path="$repo_root/.codex/agents/test.toml"
@@ -53,7 +53,7 @@ if [ -f "$worktree_path/.tt/state.toml" ]; then
   project_root="$worktree_path"
 fi
 
-contract_path="$project_root/.tt/contracts/worker-contract.md"
+contract_path="$project_root/.tt/contract.md"
 director_agent_path="$project_root/.codex/agents/director.toml"
 dev_agent_path="$project_root/.codex/agents/dev.toml"
 test_agent_path="$project_root/.codex/agents/test.toml"

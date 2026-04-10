@@ -1436,14 +1436,15 @@ fn start_codex_app_server_if_needed(
         .ancestors()
         .find(|ancestor| ancestor.join(".tt").is_dir())
         .unwrap_or(cwd);
-    let runtime_dir = repo_root.join(".tt").join("runtime");
-    fs::create_dir_all(&runtime_dir).with_context(|| {
-        format!(
-            "create Codex app-server runtime directory {}",
-            runtime_dir.display()
-        )
-    })?;
-    let log_path = runtime_dir.join("codex-app-server.log");
+    let log_path = repo_root.join(".tt").join("codex-app-server.log");
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create Codex app-server runtime directory {}",
+                parent.display()
+            )
+        })?;
+    }
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)

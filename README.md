@@ -11,7 +11,7 @@ can inspect and steer work without losing the runtime context.
 - `tt-daemon` owns the local API boundary and the durable overlay state.
 - `tt-cli` is the thin command-line client over the daemon.
 - `tt-tui` is the interactive operator surface.
-- `.tt/` stores repo-local project policy, plan text, and managed-project runtime state.
+- `.tt/` stores repo-local project policy, plan text, runtime state, and local env overrides.
 - `tt-git` handles repo/worktree and merge-readiness inspection.
 
 The repo is set up for local development of TT itself. The checked-in
@@ -26,9 +26,14 @@ This checkout keeps a reference managed-project scaffold in `.tt/`:
 - `.tt/state.toml` for runtime bindings, control state, scenario progress, and checksums of the source files
 - `.tt/worktrees/` for role worktree checkouts such as `.tt/worktrees/dev/`
 - `.tt/settings.env` for repo-local env defaults in this checkout
-- `.tt/contracts/worker-contract.md` for the worker contract
+- `.tt/contract.md` for the worker contract
+- `.tt/tt-daemon.sock` for the repo-local TT daemon socket
+- `.tt/codex-app-server.log` for the repo-local Codex app-server log
 
-Runtime-only state such as `.tt/overlay.db` stays ignored.
+Runtime-only state such as `.tt/overlay.db`, `.tt/tt-daemon.sock`, and
+`.tt/codex-app-server.log` stays ignored.
+
+Use `tt clean` to tear down the live managed-project runtime while keeping the checked-in policy scaffold.
 
 ## Development
 

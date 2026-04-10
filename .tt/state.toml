@@ -10,7 +10,7 @@ project_config_path = "/home/emmy/openai/tt/.tt/project.toml"
 plan_path = "/home/emmy/openai/tt/.tt/plan.toml"
 project_config_sha256 = "c75cd53925b298e99e5a8ab095ec6a266252ec1bada7420fcf6e356a6e8894af"
 plan_sha256 = "68ff792b84951b6862520480bf7e08b7d7ec5759341eb1d4fee6a9a261f5609b"
-contract_path = "/home/emmy/openai/tt/.tt/contracts/worker-contract.md"
+contract_path = "/home/emmy/openai/tt/.tt/contract.md"
 codex_config_path = "/home/emmy/openai/tt/.codex/config.toml"
 
 [roles.dev]
@@ -21,6 +21,8 @@ reasoning_effort = "medium"
 control_mode = "director"
 branch_name = "tt/dev"
 worktree_path = "/home/emmy/openai/tt/.tt/worktrees/dev"
+thread_id = "019d74f9-ca28-7ed1-a3a8-b2fd2fe8ad2e"
+workspace_binding_id = "tt:dev"
 
 [roles.director]
 work_unit_id = "019d74f8-14aa-70e1-9b6f-7663beafca88"
@@ -28,6 +30,8 @@ agent_path = "/home/emmy/openai/tt/.codex/agents/director.toml"
 model = "gpt-5.4"
 reasoning_effort = "medium"
 control_mode = "director"
+thread_id = "019d74f9-c993-7b11-8ed0-3e7cdd4c4566"
+workspace_binding_id = "tt:director"
 
 [roles.integration]
 work_unit_id = "019d74f8-153f-7530-b135-51f454c8aa0a"
@@ -37,6 +41,8 @@ reasoning_effort = "medium"
 control_mode = "director"
 branch_name = "tt/integration"
 worktree_path = "/home/emmy/openai/tt/.tt/worktrees/integration"
+thread_id = "019d74f9-cb41-71e0-907b-7240040e0f08"
+workspace_binding_id = "tt:integration"
 
 [roles.test]
 work_unit_id = "019d74f8-1503-7d22-8206-1b41ebd9fee8"
@@ -46,3 +52,5 @@ reasoning_effort = "medium"
 control_mode = "director"
 branch_name = "tt/test"
 worktree_path = "/home/emmy/openai/tt/.tt/worktrees/test"
+thread_id = "019d74f9-cab3-7a03-bf8c-484b67b598e7"
+workspace_binding_id = "tt:test"

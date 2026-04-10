@@ -40,6 +40,8 @@ use url::Url;
 
 pub const TT_DAEMON_API_VERSION: &str = "v2";
 pub const TT_DAEMON_SOCKET_NAME: &str = "tt-daemon.sock";
+pub const TT_CONTRACT_FILE_NAME: &str = "contract.md";
+pub const TT_CODEX_APP_SERVER_LOG_FILE_NAME: &str = "codex-app-server.log";
 const DEFAULT_AGENT_CONFIG_MAX_THREADS: usize = 6;
 const DEFAULT_AGENT_CONFIG_MAX_DEPTH: usize = 1;
 const DOCTOR_LISTEN_TIMEOUT_MS: u64 = 1500;
@@ -126,6 +128,10 @@ pub enum DaemonRequest {
     },
     RefreshManagedProjectPlan {
         cwd: PathBuf,
+    },
+    CleanManagedProject {
+        cwd: PathBuf,
+        force: bool,
     },
     SetManagedProjectThreadControl {
         cwd: PathBuf,
@@ -1120,6 +1126,98 @@ impl DaemonService {
         Ok(Some(binding))
     }
 
+    pub fn clean_managed_project(&self, cwd: impl AsRef<Path>, force: bool) -> Result<usize> {
+        let cwd = cwd.as_ref();
+        let Some(repo_root) = managed_project_repo_root(cwd)? else {
+            anyhow::bail!("managed project clean requires a git repository");
+        };
+        if !repo_root.join(".tt").is_dir() {
+            return Ok(0);
+        }
+
+        let repo_root_text = repo_root.display().to_string();
+        let manifest_path = repo_root.join(".tt").join("state.toml");
+        let manifest = load_managed_project_manifest(&manifest_path).ok();
+        let repository = GitRepository::discover(&repo_root)?
+            .ok_or_else(|| anyhow::anyhow!("managed project clean requires a git repository"))?;
+        let mut worktree_targets: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+        if let Some(manifest) = manifest.as_ref() {
+            for role in manifest.roles.values() {
+                if let Some(worktree_path) = role.worktree_path.as_ref() {
+                    worktree_targets.insert(PathBuf::from(worktree_path), role.branch_name.clone());
+                }
+            }
+        }
+        let workspace_bindings = self
+            .list_workspace_bindings()?
+            .into_iter()
+            .filter(|binding| binding.repo_root == repo_root_text)
+            .collect::<Vec<_>>();
+        for binding in &workspace_bindings {
+            if let Some(worktree_path) = binding.worktree_path.as_ref() {
+                worktree_targets
+                    .entry(PathBuf::from(worktree_path))
+                    .or_insert_with(|| binding.branch_name.clone());
+            }
+        }
+
+        if !force {
+            for worktree_path in worktree_targets.keys() {
+                let Some(inspection) = tt_git::GitRepository::inspect(&worktree_path)? else {
+                    anyhow::bail!(
+                        "workspace binding `{}` has no inspectable git repository; pass --full to clean",
+                        worktree_path.display()
+                    );
+                };
+                if inspection.dirty {
+                    anyhow::bail!(
+                        "workspace binding `{}` has dirty changes; pass --full to clean",
+                        worktree_path.display()
+                    );
+                }
+            }
+        }
+
+        let mut removed = 0usize;
+        for (worktree_path, branch_name) in &worktree_targets {
+            if repository.prune_worktree(worktree_path)? {
+                removed += 1;
+            } else if !force {
+                anyhow::bail!(
+                    "failed to prune worktree {}; pass --full to force cleanup",
+                    worktree_path.display()
+                );
+            }
+            if let Some(branch_name) = branch_name.as_deref() {
+                let branch_deleted = repository.delete_branch(branch_name)?;
+                if branch_deleted {
+                    removed += 1;
+                } else if !force {
+                    anyhow::bail!("failed to delete branch {}", branch_name);
+                }
+            }
+        }
+
+        for binding in &workspace_bindings {
+            removed += self.delete_workspace_binding(&binding.id)?;
+        }
+
+        for project in self.list_projects()? {
+            removed += self.delete_project(&project.id)?;
+        }
+
+        removed += remove_if_exists(repo_root.join(".tt").join("state.toml"))?;
+        removed += remove_if_exists(repo_root.join(".tt").join(TT_DAEMON_SOCKET_NAME))?;
+        removed += remove_if_exists(
+            repo_root
+                .join(".tt")
+                .join(TT_CODEX_APP_SERVER_LOG_FILE_NAME),
+        )?;
+        removed += remove_if_exists(repo_root.join(".tt").join("runtime"))?;
+        removed += remove_if_exists(repo_root.join(".tt").join("contracts"))?;
+        Ok(removed)
+    }
+
     pub fn park_workspace(
         &self,
         cwd: impl AsRef<Path>,
@@ -1624,10 +1722,7 @@ impl DaemonService {
             .unwrap_or_else(|| default_worktree_root(&repo_root, &slug));
         fs::create_dir_all(&worktree_root)?;
 
-        let contract_path = repo_root
-            .join(".tt")
-            .join("contracts")
-            .join("worker-contract.md");
+        let contract_path = repo_root.join(".tt").join(TT_CONTRACT_FILE_NAME);
         let codex_config_path = repo_root.join(".codex").join("config.toml");
         let project_config_path = repo_root.join(".tt").join("project.toml");
         let plan_path = repo_root.join(".tt").join("plan.toml");
@@ -1826,6 +1921,9 @@ impl DaemonService {
             }
             RefreshManagedProjectPlan { cwd } => {
                 DaemonResponse::ManagedProjectPlan(self.refresh_managed_project_plan(cwd)?)
+            }
+            CleanManagedProject { cwd, force } => {
+                DaemonResponse::Count(self.clean_managed_project(cwd, force)?)
             }
             SetManagedProjectThreadControl { cwd, role, mode } => {
                 DaemonResponse::ManagedProjectInspection(
@@ -2297,7 +2395,7 @@ fn render_agent_file(
         "- Workers do not coordinate directly with each other; all assignments and escalations go through the director.\n",
     );
     output.push_str(
-        "- Use `.tt/contracts/worker-contract.md`, `.tt/project.toml`, and `.tt/plan.toml` as the source of truth.\n",
+        "- Use `.tt/contract.md`, `.tt/project.toml`, and `.tt/plan.toml` as the source of truth.\n",
     );
     output.push_str("Role roster:\n");
     for line in role_roster.lines() {
@@ -4313,7 +4411,7 @@ impl DaemonService {
             sandbox: Some(sandbox),
             service_name: Some("tt-managed-project".to_string()),
             base_instructions: Some(format!(
-                "Managed TT project `{}` role `{}`. Follow `.tt/contracts/worker-contract.md` and stay inside the assigned scope.",
+                "Managed TT project `{}` role `{}`. Follow `.tt/contract.md` and stay inside the assigned scope.",
                 project.slug,
                 role_slug(role)
             )),
@@ -5429,11 +5527,21 @@ fn sanitize_branch_component(raw: &str) -> String {
     }
 }
 
+fn remove_if_exists(path: PathBuf) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let metadata = fs::metadata(&path)?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(&path)?;
+    } else {
+        fs::remove_file(&path)?;
+    }
+    Ok(1)
+}
+
 pub fn socket_path_for(cwd: impl AsRef<Path>) -> PathBuf {
-    cwd.as_ref()
-        .join(".tt")
-        .join("runtime")
-        .join(TT_DAEMON_SOCKET_NAME)
+    cwd.as_ref().join(".tt").join(TT_DAEMON_SOCKET_NAME)
 }
 
 pub fn request_for_cwd(cwd: impl AsRef<Path>, request: DaemonRequest) -> Result<DaemonResponse> {
@@ -5947,15 +6055,26 @@ mod tests {
     }
 
     #[test]
+    fn clean_request_round_trips() {
+        let request = DaemonRequest::CleanManagedProject {
+            cwd: PathBuf::from("/repo"),
+            force: true,
+        };
+        let encoded = serde_json::to_string(&request).expect("serialize request");
+        let decoded: DaemonRequest = serde_json::from_str(&encoded).expect("deserialize request");
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
     fn codex_app_server_summary_reports_repo_scoped_defaults() {
         let dir = tempdir().expect("tempdir");
         let repo = dir.path().join("repo");
-        std::fs::create_dir_all(repo.join(".tt/runtime")).expect("create runtime dir");
+        std::fs::create_dir_all(repo.join(".tt")).expect("create tt dir");
         let summary = codex_app_server_summary_for_cwd(&repo);
         assert_eq!(summary.repo_root, repo);
         assert_eq!(
             summary.daemon_socket_path,
-            summary.repo_root.join(".tt/runtime/tt-daemon.sock")
+            summary.repo_root.join(".tt/tt-daemon.sock")
         );
         assert!(!summary.daemon_socket_exists);
         assert!(!summary.daemon_socket_reachable);
@@ -5988,6 +6107,54 @@ mod tests {
         let plan_after = std::fs::read_to_string(&bootstrap.plan_path).expect("read plan");
         assert_eq!(plan_before, plan_after);
         assert_eq!(refreshed.bootstrap.plan, bootstrap.plan);
+    }
+
+    #[test]
+    fn clean_managed_project_tears_down_runtime_state() {
+        let (repo, _worktree) = setup_repo();
+        let dir = tempdir().expect("tempdir");
+        let service = DaemonService::new(OverlayStore::open_in_dir(dir.path()).expect("store"));
+        let bootstrap = service
+            .open_managed_project(
+                &repo,
+                Some("Alpha".to_string()),
+                Some("Ship the alpha slice".to_string()),
+                None,
+                None,
+                Some("director-model".to_string()),
+                Some("dev-model".to_string()),
+                Some("test-model".to_string()),
+                Some("integration-model".to_string()),
+            )
+            .expect("open managed project");
+
+        assert!(bootstrap.manifest_path.exists());
+        assert!(bootstrap.contract_path.exists());
+        assert!(!service.list_projects().expect("list projects").is_empty());
+        let dev_worktree = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Develop)
+            .and_then(|role| role.worktree_path.clone())
+            .expect("dev worktree");
+        assert!(dev_worktree.exists());
+
+        let removed = service
+            .clean_managed_project(&repo, false)
+            .expect("clean managed project");
+        assert!(removed > 0);
+        assert!(!bootstrap.manifest_path.exists());
+        assert!(bootstrap.project_config_path.exists());
+        assert!(bootstrap.plan_path.exists());
+        assert!(bootstrap.contract_path.exists());
+        assert!(!dev_worktree.exists());
+        assert!(service.list_projects().expect("list projects").is_empty());
+        assert!(
+            service
+                .list_workspace_bindings()
+                .expect("list workspace bindings")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -6297,7 +6464,7 @@ mod tests {
             &dir.path().join(".tt/worktrees"),
             &project_config_path,
             &plan_path,
-            &dir.path().join(".tt/contracts/worker-contract.md"),
+            &dir.path().join(".tt/contract.md"),
             &dir.path().join(".codex/config.toml"),
             None,
             &[&role],
@@ -6343,7 +6510,7 @@ mod tests {
             manifest_path: PathBuf::from("/repo/.tt/state.toml"),
             project_config_path: PathBuf::from("/repo/.tt/project.toml"),
             plan_path: PathBuf::from("/repo/.tt/plan.toml"),
-            contract_path: PathBuf::from("/repo/.tt/contracts/worker-contract.md"),
+            contract_path: PathBuf::from("/repo/.tt/contract.md"),
             codex_config_path: PathBuf::from("/repo/.codex/config.toml"),
             project_config: ManagedProjectProjectConfig {
                 schema: "tt-managed-project-config-v1".into(),

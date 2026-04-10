@@ -4,11 +4,16 @@ TT now exposes a minimal public operator flow:
 
 - `tt init`
 - `tt open`
+- `tt clean`
 - `tt status`
 - `tt docs export-cli`
 
 `tt init` bootstraps the current repo as a managed project. `tt open` resumes the
 director-led workflow for that repo.
+
+`tt clean` tears down the live runtime, worktrees, and bindings while keeping
+the repo-local policy files by default. Pass `--full` to force cleanup through
+dirty worktrees.
 
 ## Public Workflow
 
@@ -45,12 +50,15 @@ tt docs export-cli --output docs/cli-reference.md
 - `.codex/agents/integration.toml`
 - `.tt/project.toml`
 - `.tt/plan.toml`
-- `.tt/contracts/worker-contract.md`
+- `.tt/contract.md`
 - `.tt/state.toml` for runtime bindings, control state, scenario progress, and checksums of the source files
 - `.tt/worktrees/<role>/...` for role checkouts, with branches named `tt/<role>`
 - `.tt/settings.env`
+- `.tt/tt-daemon.sock`
+- `.tt/codex-app-server.log`
 
 Managed-project live runs also write scenario artifacts under `.tt/scenarios/`.
+Runtime-only state such as `.tt/overlay.db` remains ignored.
 
 ## Role Model
 
