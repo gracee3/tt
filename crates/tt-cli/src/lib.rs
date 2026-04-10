@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
-use tt_codex::{CodexHome, managed_project_codex_home};
+use tt_codex::managed_project_codex_home;
 #[cfg(test)]
 use tt_codex::{TT_CODEX_LOGIN_MODE_ENV, load_repo_settings_env, repo_env_var};
 use tt_daemon::{
@@ -870,13 +870,15 @@ fn render_status_response(
     };
     let director_label = match status.director_state {
         ManagedProjectDirectorState::Ready => "Ready",
-        ManagedProjectDirectorState::Stale => "Stale",
+        ManagedProjectDirectorState::Starting => "Starting",
+        ManagedProjectDirectorState::Blocked => "Blocked",
         ManagedProjectDirectorState::Missing => "Missing",
     };
     let director_value = if colorize {
         match status.director_state {
             ManagedProjectDirectorState::Ready => "\u{1b}[1;32mReady\u{1b}[0m".to_string(),
-            ManagedProjectDirectorState::Stale => "\u{1b}[1;33mStale\u{1b}[0m".to_string(),
+            ManagedProjectDirectorState::Starting => "\u{1b}[1;33mStarting\u{1b}[0m".to_string(),
+            ManagedProjectDirectorState::Blocked => "\u{1b}[1;31mBlocked\u{1b}[0m".to_string(),
             ManagedProjectDirectorState::Missing => "\u{1b}[1;31mMissing\u{1b}[0m".to_string(),
         }
     } else {
@@ -902,7 +904,8 @@ fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_state: RuntimeSt
         },
         "director": match status.director_state {
             ManagedProjectDirectorState::Ready => "Ready",
-            ManagedProjectDirectorState::Stale => "Stale",
+            ManagedProjectDirectorState::Starting => "Starting",
+            ManagedProjectDirectorState::Blocked => "Blocked",
             ManagedProjectDirectorState::Missing => "Missing",
         },
         "repo": status
@@ -1389,29 +1392,8 @@ fn launch_codex_tui_for_director(
         .codex_bin
         .ok_or_else(|| anyhow::anyhow!("Codex CLI binary is unavailable"))?;
     let codex_home = managed_project_codex_home(&bootstrap.repo_root);
-    let resume_thread_id = match director_thread_id_in_session_catalog(
-        &codex_home,
-        director_thread_id,
-    ) {
-        Ok(true) => Some(director_thread_id),
-        Ok(false) => {
-            eprintln!(
-                "Warning: saved director session {} is not present in {}; opening Codex session picker instead",
-                director_thread_id,
-                codex_home.display()
-            );
-            None
-        }
-        Err(error) => {
-            eprintln!(
-                "Warning: could not inspect Codex session catalog at {}: {error}; opening Codex session picker instead",
-                codex_home.display()
-            );
-            None
-        }
-    };
     let mut command =
-        build_codex_resume_command(&codex_bin, &bootstrap.repo_root, resume_thread_id);
+        build_codex_resume_command(&codex_bin, &bootstrap.repo_root, Some(director_thread_id));
     command.env("CODEX_HOME", codex_home);
 
     #[cfg(unix)]
@@ -1453,11 +1435,6 @@ fn build_codex_resume_command(
         command.arg(thread_id);
     }
     command
-}
-
-fn director_thread_id_in_session_catalog(codex_home: &Path, thread_id: &str) -> Result<bool> {
-    let catalog = CodexHome::from_path(codex_home).session_catalog()?;
-    Ok(catalog.find_thread_by_id(thread_id).is_some())
 }
 
 fn role_name(role: ThreadRole) -> &'static str {
@@ -2433,32 +2410,6 @@ mod tests {
                 "resume".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn director_thread_id_lookup_matches_local_session_catalog() {
-        let codex_home = std::env::temp_dir().join(format!(
-            "tt-cli-session-catalog-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&codex_home);
-        std::fs::create_dir_all(&codex_home).expect("create codex home");
-        std::fs::write(
-            codex_home.join(tt_codex::SESSION_INDEX_FILE),
-            concat!(
-                "{\"id\":\"present\",\"thread_name\":\"director\",\"updated_at\":\"2026-04-10T12:00:00Z\"}\n",
-            ),
-        )
-        .expect("write session index");
-
-        assert!(
-            director_thread_id_in_session_catalog(&codex_home, "present").expect("inspect catalog")
-        );
-        assert!(
-            !director_thread_id_in_session_catalog(&codex_home, "missing")
-                .expect("inspect catalog")
-        );
-        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     #[test]

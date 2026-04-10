@@ -65,7 +65,8 @@ pub struct DaemonStatus {
 #[serde(rename_all = "PascalCase")]
 pub enum ManagedProjectDirectorState {
     Ready,
-    Stale,
+    Starting,
+    Blocked,
     Missing,
 }
 
@@ -409,6 +410,7 @@ pub struct ManagedProjectBootstrap {
     pub codex_config_path: PathBuf,
     pub project_config: ManagedProjectProjectConfig,
     pub plan: ManagedProjectPlan,
+    pub startup: ManagedProjectStartupState,
     pub scenario: Option<ManagedProjectScenarioState>,
     pub roles: Vec<ManagedProjectRoleBootstrap>,
 }
@@ -423,6 +425,59 @@ pub struct ManagedProjectInspection {
 pub struct ManagedProjectThreadAttachment {
     pub role: ThreadRole,
     pub thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectStartupState {
+    pub phase: ManagedProjectStartupPhase,
+    pub updated_at: DateTime<Utc>,
+    pub worker_reports: BTreeMap<String, ManagedProjectStartupRoleState>,
+    pub director_ack: Option<ManagedProjectStartupDirectorAck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProjectStartupPhase {
+    Scaffolded,
+    ThreadsStarted,
+    WorkerReportsPending,
+    DirectorAckPending,
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectStartupRoleState {
+    pub status: ManagedProjectStartupRoleStatus,
+    pub updated_at: DateTime<Utc>,
+    pub turn_id: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProjectStartupRoleStatus {
+    NotStarted,
+    Pending,
+    Reported,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedProjectStartupDirectorAck {
+    pub status: ManagedProjectStartupAckStatus,
+    pub updated_at: DateTime<Utc>,
+    pub turn_id: Option<String>,
+    pub summary: String,
+    pub received_roles: Vec<String>,
+    pub missing_roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProjectStartupAckStatus {
+    Ready,
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +730,8 @@ struct ManagedProjectManifest {
     plan_sha256: String,
     contract_path: String,
     codex_config_path: String,
+    #[serde(default = "default_managed_project_startup_state")]
+    startup: ManagedProjectStartupState,
     scenario: Option<ManagedProjectScenarioState>,
     roles: BTreeMap<String, ManagedProjectManifestRole>,
 }
@@ -733,6 +790,27 @@ struct ManagedProjectTurnAttempt {
     turn_id: Option<String>,
     status: Option<String>,
     failure_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ManagedProjectBootstrapWorkerReport {
+    role: String,
+    cwd: String,
+    worktree: String,
+    branch: String,
+    contract_loaded: bool,
+    plan_loaded: bool,
+    status: String,
+    blocker: Option<String>,
+    summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ManagedProjectBootstrapDirectorAckPayload {
+    status: String,
+    received_roles: Vec<String>,
+    missing_roles: Vec<String>,
+    summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1862,10 +1940,15 @@ impl DaemonService {
             codex_config_path,
             project_config,
             plan,
+            startup: default_managed_project_startup_state(),
             scenario: None,
             roles: vec![director_role, dev_role, test_role, integration_role],
         };
-        self.spawn_managed_project_role(&repository, &mut bootstrap, ThreadRole::Director)?;
+        for role in default_managed_project_roles() {
+            self.spawn_managed_project_role(&repository, &mut bootstrap, role)?;
+        }
+        bootstrap.startup.phase = ManagedProjectStartupPhase::ThreadsStarted;
+        bootstrap.startup.updated_at = Utc::now();
 
         let manifest = build_managed_project_manifest(
             &bootstrap.project,
@@ -1876,10 +1959,12 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
+            &bootstrap.startup,
             None,
             &bootstrap.roles.iter().collect::<Vec<_>>(),
         )?;
         save_managed_project_manifest(&bootstrap.manifest_path, &manifest)?;
+        self.launch_managed_project_startup(&bootstrap);
 
         Ok(bootstrap)
     }
@@ -2636,6 +2721,7 @@ fn build_managed_project_manifest(
     plan_path: &Path,
     contract_path: &Path,
     codex_config_path: &Path,
+    startup: &ManagedProjectStartupState,
     scenario: Option<ManagedProjectScenarioState>,
     roles: &[&ManagedProjectRoleBootstrap],
 ) -> Result<ManagedProjectManifest> {
@@ -2676,6 +2762,7 @@ fn build_managed_project_manifest(
         plan_sha256: file_sha256_hex(plan_path)?,
         contract_path: contract_path.display().to_string(),
         codex_config_path: codex_config_path.display().to_string(),
+        startup: startup.clone(),
         scenario,
         roles: role_map,
     })
@@ -2725,6 +2812,32 @@ fn load_managed_project_seed(path: Option<&Path>) -> Result<ManagedProjectScenar
 
 fn default_taskflow_operator_seed() -> String {
     "Build a Rust CLI called taskflow.\n\nRequirements:\n- Read a YAML workflow file describing tasks with ids, commands, dependencies, and retry counts.\n- Validate dependency graphs and reject cycles or missing dependencies.\n- Execute tasks in topological order.\n- Retry failed tasks up to the configured retry count.\n- Write a JSON report summarizing task results, retries, execution order, and overall outcome.\n- Expose:\n  - taskflow validate <workflow.yml>\n  - taskflow run <workflow.yml> --report <report.json>\n- Include unit tests, integration tests, example workflows, and a README.\n".to_string()
+}
+
+fn default_managed_project_startup_state() -> ManagedProjectStartupState {
+    ManagedProjectStartupState {
+        phase: ManagedProjectStartupPhase::Scaffolded,
+        updated_at: Utc::now(),
+        worker_reports: default_managed_project_worker_report_state(),
+        director_ack: None,
+    }
+}
+
+fn default_managed_project_worker_report_state() -> BTreeMap<String, ManagedProjectStartupRoleState> {
+    [ThreadRole::Develop, ThreadRole::Test, ThreadRole::Integrate]
+        .into_iter()
+        .map(|role| {
+            (
+                role_slug(role).to_string(),
+                ManagedProjectStartupRoleState {
+                    status: ManagedProjectStartupRoleStatus::NotStarted,
+                    updated_at: Utc::now(),
+                    turn_id: None,
+                    summary: None,
+                },
+            )
+        })
+        .collect()
 }
 
 fn managed_project_roles_in_order(
@@ -3197,6 +3310,7 @@ impl DaemonService {
             codex_config_path: PathBuf::from(&manifest.codex_config_path),
             project_config,
             plan,
+            startup: manifest.startup.clone(),
             scenario: manifest.scenario.clone(),
             roles: ordered_managed_project_roles(roles),
         })
@@ -3233,6 +3347,7 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
+            &bootstrap.startup,
             bootstrap.scenario.clone(),
             &role_refs,
         )?;
@@ -3267,59 +3382,66 @@ impl DaemonService {
         let mut bootstrap =
             self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
         self.save_managed_project_bootstrap(&bootstrap)?;
-
-        let selected_roles = roles.unwrap_or_else(default_managed_project_roles);
-        let mut binding_map = BTreeMap::new();
-        for binding in bindings {
-            let role_key = role_slug(binding.role).to_string();
-            if binding_map
-                .insert(role_key.clone(), binding.thread_id.clone())
-                .is_some()
-            {
-                anyhow::bail!(
-                    "managed project role `{}` was specified more than once",
-                    role_key
-                );
-            }
-        }
-
-        for role in selected_roles {
-            let role_index = bootstrap
-                .roles
-                .iter()
-                .position(|candidate| candidate.role == role)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("managed project role `{}` not found", role_slug(role))
-                })?;
-            let existing_thread_id = bootstrap.roles[role_index].thread_id.clone();
-            if let Some(existing_thread_id) = existing_thread_id.as_ref() {
-                if let Some(requested_thread_id) = binding_map.get(role_slug(role))
-                    && requested_thread_id != existing_thread_id
+        if !bindings.is_empty() || roles.is_some() {
+            let selected_roles = roles.unwrap_or_else(default_managed_project_roles);
+            let mut binding_map = BTreeMap::new();
+            for binding in bindings {
+                let role_key = role_slug(binding.role).to_string();
+                if binding_map
+                    .insert(role_key.clone(), binding.thread_id.clone())
+                    .is_some()
                 {
                     anyhow::bail!(
-                        "managed project role `{}` is already bound to thread `{}`",
-                        role_slug(role),
-                        existing_thread_id
+                        "managed project role `{}` was specified more than once",
+                        role_key
                     );
                 }
-                continue;
             }
 
-            if let Some(thread_id) = binding_map.get(role_slug(role)).cloned() {
-                self.attach_managed_project_role(
-                    &repository,
-                    &mut bootstrap,
-                    ManagedProjectThreadAttachment {
-                        role,
-                        thread_id: thread_id.clone(),
-                    },
-                )?;
-            } else {
-                self.spawn_managed_project_role(&repository, &mut bootstrap, role)?;
+            for role in selected_roles {
+                let role_index = bootstrap
+                    .roles
+                    .iter()
+                    .position(|candidate| candidate.role == role)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("managed project role `{}` not found", role_slug(role))
+                    })?;
+                let existing_thread_id = bootstrap.roles[role_index].thread_id.clone();
+                if let Some(existing_thread_id) = existing_thread_id.as_ref() {
+                    if let Some(requested_thread_id) = binding_map.get(role_slug(role))
+                        && requested_thread_id != existing_thread_id
+                    {
+                        anyhow::bail!(
+                            "managed project role `{}` is already bound to thread `{}`",
+                            role_slug(role),
+                            existing_thread_id
+                        );
+                    }
+                    continue;
+                }
+
+                if let Some(thread_id) = binding_map.get(role_slug(role)).cloned() {
+                    self.attach_managed_project_role(
+                        &repository,
+                        &mut bootstrap,
+                        ManagedProjectThreadAttachment {
+                            role,
+                            thread_id: thread_id.clone(),
+                        },
+                    )?;
+                } else {
+                    self.spawn_managed_project_role(&repository, &mut bootstrap, role)?;
+                }
             }
+
+            self.save_managed_project_bootstrap(&bootstrap)?;
         }
-
-        self.save_managed_project_bootstrap(&bootstrap)?;
+        if bootstrap.startup.phase != ManagedProjectStartupPhase::Ready {
+            anyhow::bail!(
+                "managed project startup is not ready yet (phase={:?}); run `tt status` and wait for director=Ready",
+                bootstrap.startup.phase
+            );
+        }
         if let Some(scenario_kind) = scenario.as_deref() {
             let seed = load_managed_project_seed(seed_file.as_deref())?;
             let scenario_state =
@@ -3360,6 +3482,7 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
+            &bootstrap.startup,
             bootstrap.scenario.clone(),
             &role_refs,
         )?;
@@ -4380,6 +4503,7 @@ impl DaemonService {
             &bootstrap.plan_path,
             &bootstrap.contract_path,
             &bootstrap.codex_config_path,
+            &bootstrap.startup,
             bootstrap.scenario.clone(),
             &role_refs,
         )?;
@@ -4419,6 +4543,197 @@ impl DaemonService {
             self.bind_managed_project_role(repository, bootstrap, &role_bootstrap, &thread)?;
         bootstrap.roles[role_index] = updated;
         Ok(())
+    }
+
+    fn launch_managed_project_startup(&self, bootstrap: &ManagedProjectBootstrap) {
+        let service = self.clone();
+        let mut bootstrap = bootstrap.clone();
+        thread::spawn(move || {
+            if let Err(error) = service.run_managed_project_startup(&mut bootstrap) {
+                let _ = service.mark_managed_project_startup_blocked(
+                    &bootstrap.repo_root,
+                    format!("startup handshake failed: {}", format_error_chain(&error)),
+                );
+                eprintln!("tt managed startup error: {error:?}");
+            }
+        });
+    }
+
+    fn run_managed_project_startup(
+        &self,
+        bootstrap: &mut ManagedProjectBootstrap,
+    ) -> Result<()> {
+        bootstrap.startup.phase = ManagedProjectStartupPhase::WorkerReportsPending;
+        bootstrap.startup.updated_at = Utc::now();
+        self.save_managed_project_bootstrap(bootstrap)?;
+
+        let worker_roles = [ThreadRole::Develop, ThreadRole::Test, ThreadRole::Integrate];
+        let mut reports = Vec::new();
+        for role in worker_roles {
+            let Some(role_bootstrap) = bootstrap.roles.iter().find(|candidate| candidate.role == role).cloned() else {
+                continue;
+            };
+            let role_key = role_slug(role).to_string();
+            if let Some(state) = bootstrap.startup.worker_reports.get_mut(&role_key) {
+                state.status = ManagedProjectStartupRoleStatus::Pending;
+                state.updated_at = Utc::now();
+                state.turn_id = None;
+                state.summary = Some("waiting for bootstrap readiness report".to_string());
+            }
+            bootstrap.startup.updated_at = Utc::now();
+            self.save_managed_project_bootstrap(bootstrap)?;
+
+            let outcome = self.run_managed_project_startup_turn(
+                bootstrap,
+                &role_bootstrap,
+                &build_worker_startup_prompt(bootstrap, &role_bootstrap),
+            )?;
+            let report = parse_bootstrap_worker_report(&outcome.summary, &outcome.extraction)?;
+            let blocked = report.status.eq_ignore_ascii_case("blocked")
+                || report.blocker.as_deref().is_some_and(|value| !value.trim().is_empty());
+            if let Some(state) = bootstrap.startup.worker_reports.get_mut(&role_key) {
+                state.status = if blocked {
+                    ManagedProjectStartupRoleStatus::Blocked
+                } else {
+                    ManagedProjectStartupRoleStatus::Reported
+                };
+                state.updated_at = Utc::now();
+                state.turn_id = Some(outcome.turn_id.clone());
+                state.summary = Some(report.summary.clone());
+            }
+            bootstrap.startup.updated_at = Utc::now();
+            reports.push(report);
+            if blocked {
+                bootstrap.startup.phase = ManagedProjectStartupPhase::Blocked;
+                self.save_managed_project_bootstrap(bootstrap)?;
+                return Ok(());
+            }
+            self.save_managed_project_bootstrap(bootstrap)?;
+        }
+
+        bootstrap.startup.phase = ManagedProjectStartupPhase::DirectorAckPending;
+        bootstrap.startup.updated_at = Utc::now();
+        self.save_managed_project_bootstrap(bootstrap)?;
+
+        let director = bootstrap
+            .roles
+            .iter()
+            .find(|role| role.role == ThreadRole::Director)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("managed project director role missing"))?;
+        let director_outcome = self.run_managed_project_startup_turn(
+            bootstrap,
+            &director,
+            &build_director_startup_prompt(bootstrap, &reports),
+        )?;
+        let ack = parse_bootstrap_director_ack(&director_outcome.summary, &director_outcome.extraction)?;
+        bootstrap.startup.director_ack = Some(ManagedProjectStartupDirectorAck {
+            status: if ack.status.eq_ignore_ascii_case("ready") {
+                ManagedProjectStartupAckStatus::Ready
+            } else {
+                ManagedProjectStartupAckStatus::Blocked
+            },
+            updated_at: Utc::now(),
+            turn_id: Some(director_outcome.turn_id),
+            summary: ack.summary,
+            received_roles: ack.received_roles,
+            missing_roles: ack.missing_roles.clone(),
+        });
+        bootstrap.startup.phase = if bootstrap
+            .startup
+            .director_ack
+            .as_ref()
+            .is_some_and(|ack| ack.status == ManagedProjectStartupAckStatus::Ready && ack.missing_roles.is_empty())
+        {
+            ManagedProjectStartupPhase::Ready
+        } else {
+            ManagedProjectStartupPhase::Blocked
+        };
+        bootstrap.startup.updated_at = Utc::now();
+        self.save_managed_project_bootstrap(bootstrap)?;
+        Ok(())
+    }
+
+    fn run_managed_project_startup_turn(
+        &self,
+        bootstrap: &ManagedProjectBootstrap,
+        role_bootstrap: &ManagedProjectRoleBootstrap,
+        prompt: &str,
+    ) -> Result<ManagedProjectTurnOutcome> {
+        let thread_id = role_bootstrap
+            .thread_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("managed project role `{}` is not attached", role_slug(role_bootstrap.role)))?;
+        let cwd = role_bootstrap
+            .worktree_path
+            .as_deref()
+            .unwrap_or(bootstrap.repo_root.as_path());
+        let model = role_bootstrap
+            .model
+            .clone()
+            .unwrap_or_else(|| role_default_model(role_bootstrap.role).to_string());
+        let reasoning_effort = role_bootstrap
+            .reasoning_effort
+            .clone()
+            .unwrap_or_else(|| role_default_reasoning_effort(role_bootstrap.role).to_string());
+        let client = self.codex_runtime_client(cwd)?;
+        let turn = client.start_turn(
+            thread_id,
+            prompt,
+            Some(cwd),
+            Some(model.clone()),
+            Some(parse_managed_project_reasoning_effort(&reasoning_effort)?),
+            None,
+        )?;
+        let completed = client.wait_for_turn_completion(thread_id, &turn.id)?;
+        let finished_turn = client
+            .load_completed_turn_with_history(thread_id, &completed.id, Some(cwd), Some(model))?
+            .ok_or_else(|| anyhow::anyhow!("turn `{}` not found after completion", completed.id))?;
+        match finished_turn.status {
+            protocol::TurnStatus::Completed => Ok(ManagedProjectTurnOutcome {
+                turn_id: finished_turn.id,
+                summary: summarize_turn_items(&finished_turn.items),
+                extraction: extract_worker_handoff(&finished_turn.items),
+                attempts: Vec::new(),
+                watchdog: None,
+            }),
+            protocol::TurnStatus::Failed => anyhow::bail!(
+                "{}",
+                render_turn_failure(
+                    &finished_turn,
+                    role_slug(role_bootstrap.role),
+                    &role_bootstrap.model.clone().unwrap_or_default(),
+                    &reasoning_effort
+                )
+            ),
+            protocol::TurnStatus::Interrupted => anyhow::bail!(
+                "startup turn `{}` for role `{}` was interrupted",
+                finished_turn.id,
+                role_slug(role_bootstrap.role)
+            ),
+            protocol::TurnStatus::InProgress => anyhow::bail!(
+                "startup turn `{}` for role `{}` did not complete",
+                finished_turn.id,
+                role_slug(role_bootstrap.role)
+            ),
+        }
+    }
+
+    fn mark_managed_project_startup_blocked(&self, repo_root: &Path, summary: String) -> Result<()> {
+        let manifest_path = require_initialized_managed_project(repo_root)?;
+        let manifest = load_managed_project_manifest(&manifest_path)?;
+        let mut bootstrap = self.managed_project_bootstrap_from_manifest(&manifest_path, &manifest)?;
+        bootstrap.startup.phase = ManagedProjectStartupPhase::Blocked;
+        bootstrap.startup.updated_at = Utc::now();
+        bootstrap.startup.director_ack = Some(ManagedProjectStartupDirectorAck {
+            status: ManagedProjectStartupAckStatus::Blocked,
+            updated_at: Utc::now(),
+            turn_id: None,
+            summary,
+            received_roles: Vec::new(),
+            missing_roles: vec!["dev".to_string(), "test".to_string(), "integration".to_string()],
+        });
+        self.save_managed_project_bootstrap(&bootstrap)
     }
 
     fn attach_managed_project_role(
@@ -4811,7 +5126,7 @@ fn managed_project_status_for_repo(repo_root: &Path) -> Result<(bool, Option<Str
 }
 
 fn managed_project_director_state_for_repo(
-    service: &DaemonService,
+    _service: &DaemonService,
     repo_root: &Path,
 ) -> Result<ManagedProjectDirectorState> {
     let tt_root = repo_root.join(".tt");
@@ -4832,22 +5147,16 @@ fn managed_project_director_state_for_repo(
     else {
         return Ok(ManagedProjectDirectorState::Missing);
     };
-
-    let codex_home = service
-        .codex_home
-        .clone()
-        .or_else(|| CodexHome::discover_in(repo_root).ok());
-    let Some(codex_home) = codex_home.as_ref() else {
-        return Ok(ManagedProjectDirectorState::Stale);
-    };
-    let catalog = match codex_home.session_catalog() {
-        Ok(catalog) => catalog,
-        Err(_) => return Ok(ManagedProjectDirectorState::Stale),
-    };
-    if catalog.find_thread_by_id(director_thread_id).is_some() {
-        Ok(ManagedProjectDirectorState::Ready)
-    } else {
-        Ok(ManagedProjectDirectorState::Stale)
+    let _ = director_thread_id;
+    match manifest.startup.phase {
+        ManagedProjectStartupPhase::Ready => Ok(ManagedProjectDirectorState::Ready),
+        ManagedProjectStartupPhase::Blocked => Ok(ManagedProjectDirectorState::Blocked),
+        ManagedProjectStartupPhase::Scaffolded
+        | ManagedProjectStartupPhase::ThreadsStarted
+        | ManagedProjectStartupPhase::WorkerReportsPending
+        | ManagedProjectStartupPhase::DirectorAckPending => {
+            Ok(ManagedProjectDirectorState::Starting)
+        }
     }
 }
 
@@ -5025,6 +5334,125 @@ fn build_worker_round_prompt(
         director_summary,
         approval_text
     )
+}
+
+fn build_worker_startup_prompt(
+    bootstrap: &ManagedProjectBootstrap,
+    role: &ManagedProjectRoleBootstrap,
+) -> String {
+    let cwd = role
+        .worktree_path
+        .as_deref()
+        .unwrap_or(bootstrap.repo_root.as_path())
+        .display()
+        .to_string();
+    format!(
+        "TT managed project startup handshake for project `{}`.\n\
+Role: {}\n\
+Repository root: {}\n\
+Assigned cwd: {}\n\
+Assigned worktree: {}\n\
+Assigned branch: {}\n\
+\n\
+Do not change code. This turn is only a startup readiness report to the director.\n\
+Confirm that you loaded `.tt/contract.md` and `.tt/plan.toml`, that you are in the correct cwd/worktree/branch, and whether you are ready or blocked.\n\
+Return exactly one JSON object with this shape:\n\
+{{\n\
+  \"role\": \"{}\",\n\
+  \"cwd\": \"{}\",\n\
+  \"worktree\": \"{}\",\n\
+  \"branch\": \"{}\",\n\
+  \"contract_loaded\": true,\n\
+  \"plan_loaded\": true,\n\
+  \"status\": \"ready|blocked\",\n\
+  \"blocker\": null,\n\
+  \"summary\": \"one concise readiness summary for the director\"\n\
+}}",
+        bootstrap.project.slug,
+        role_slug(role.role),
+        bootstrap.repo_root.display(),
+        cwd,
+        role.worktree_path
+            .as_deref()
+            .map(Path::display)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| cwd.clone()),
+        role.branch_name.as_deref().unwrap_or("<none>"),
+        role_slug(role.role),
+        cwd,
+        role.worktree_path
+            .as_deref()
+            .map(Path::display)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| cwd.clone()),
+        role.branch_name.as_deref().unwrap_or("<none>")
+    )
+}
+
+fn build_director_startup_prompt(
+    bootstrap: &ManagedProjectBootstrap,
+    reports: &[ManagedProjectBootstrapWorkerReport],
+) -> String {
+    let mut report_lines = Vec::new();
+    for report in reports {
+        report_lines.push(format!(
+            "- role={} cwd={} worktree={} branch={} status={} blocker={} summary={}",
+            report.role,
+            report.cwd,
+            report.worktree,
+            report.branch,
+            report.status,
+            report.blocker.as_deref().unwrap_or("<none>"),
+            report.summary
+        ));
+    }
+    format!(
+        "TT managed project startup handshake for project `{}`.\n\
+All worker startup reports have been collected by TT.\n\
+Validate the roster for `dev`, `test`, and `integration`, confirm whether the project is ready for operator handoff, and report any missing or blocked workers.\n\
+\n\
+Worker reports:\n{}\n\
+\n\
+Return exactly one JSON object with this shape:\n\
+{{\n\
+  \"status\": \"ready|blocked\",\n\
+  \"received_roles\": [\"dev\", \"test\", \"integration\"],\n\
+  \"missing_roles\": [],\n\
+  \"summary\": \"one concise operator-facing startup acknowledgement\"\n\
+}}",
+        bootstrap.project.slug,
+        if report_lines.is_empty() {
+            "<none>".to_string()
+        } else {
+            report_lines.join("\n")
+        }
+    )
+}
+
+fn parse_bootstrap_worker_report(
+    summary: &str,
+    extraction: &WorkerHandoffExtraction,
+) -> Result<ManagedProjectBootstrapWorkerReport> {
+    let candidate = extraction
+        .raw_text
+        .as_deref()
+        .and_then(normalize_worker_handoff_json_candidate)
+        .or_else(|| normalize_worker_handoff_json_candidate(summary))
+        .ok_or_else(|| anyhow::anyhow!("startup worker report did not contain a JSON object"))?;
+    Ok(serde_json::from_str(&candidate)?)
+}
+
+fn parse_bootstrap_director_ack(
+    summary: &str,
+    extraction: &WorkerHandoffExtraction,
+) -> Result<ManagedProjectBootstrapDirectorAckPayload> {
+    let candidate = extraction
+        .raw_text
+        .as_deref()
+        .and_then(normalize_worker_handoff_json_candidate)
+        .or_else(|| normalize_worker_handoff_json_candidate(summary))
+        .ok_or_else(|| anyhow::anyhow!("startup director ack did not contain a JSON object"))?;
+    Ok(serde_json::from_str(&candidate)?)
 }
 
 fn summarize_turn_items(items: &[protocol::ThreadItem]) -> String {
@@ -6854,6 +7282,7 @@ mod tests {
             &plan_path,
             &dir.path().join(".tt/contract.md"),
             &dir.path().join(".codex/config.toml"),
+            &default_managed_project_startup_state(),
             None,
             &[&role],
         )
