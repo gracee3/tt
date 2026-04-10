@@ -5,6 +5,7 @@ TT now exposes a minimal public operator flow:
 - `tt init`
 - `tt open`
 - `tt status`
+- `tt events`
 - `tt docs export-cli`
 
 `tt init` bootstraps the current repo as a managed project and starts the
@@ -44,6 +45,13 @@ tt status
 
 and wait for `director=Ready`.
 
+Inspect the repo-local event stream:
+
+```bash
+tt events
+tt events --follow
+```
+
 On a remote or headless machine, TT uses the repo-local Codex home and can be configured to direct the operator to:
 
 ```bash
@@ -72,6 +80,7 @@ tt docs export-cli --output docs/cli-reference.md
 - `.tt/state.toml` for runtime bindings, control state, scenario progress, and checksums of the source files
 - `.tt/worktrees/<role>/...` for role checkouts, with branches named `tt/<role>`
 - `.tt/settings.env`
+- `.tt/events.jsonl`
 - `.tt/tt-daemon.sock`
 - `.tt/codex-app-server.log`
 

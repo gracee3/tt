@@ -6,6 +6,7 @@
 .tt/overlay.db-wal
 .tt/tt-daemon.sock
 .tt/codex-app-server.log
+.tt/events.jsonl
 .tt/scenarios/
 .tt/worktrees/
 .codex/config.toml

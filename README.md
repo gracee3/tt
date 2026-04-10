@@ -12,6 +12,7 @@ can inspect and steer work without losing the runtime context.
 - `tt-cli` is the thin command-line client over the daemon.
 - `tt init` starts the managed startup handshake in the background so workers can report readiness to the director before the operator attaches.
 - `tt open` resumes the director thread only after startup reaches `director=Ready`, then hands off into the installed Codex TUI in an interactive terminal. The Codex TUI owns any required login flow.
+- `tt events` shows the repo-local TT event stream as a chat transcript, with `--follow` for live tailing.
 - `tt-tui` is the internal dashboard / diagnostic surface.
 - `.codex/` is the repo-local Codex home used by TT-managed sessions.
 - `.tt/` stores repo-local project policy, plan text, runtime state, and local env overrides.
@@ -30,6 +31,7 @@ This checkout keeps a reference managed-project scaffold in `.tt/`:
 - `.tt/worktrees/` for role worktree checkouts such as `.tt/worktrees/dev/`
 - `.tt/settings.env` for repo-local env defaults in this checkout
 - `.tt/contract.md` for the worker contract
+- `.tt/events.jsonl` for the repo-local TT event stream
 - `.tt/tt-daemon.sock` for the repo-local TT daemon socket
 - `.tt/codex-app-server.log` for the repo-local Codex app-server log
 

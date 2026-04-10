@@ -5,9 +5,11 @@
 
 use std::fs;
 use std::io::IsTerminal;
+use std::io::{BufRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
@@ -15,8 +17,9 @@ use tt_codex::managed_project_codex_home;
 #[cfg(test)]
 use tt_codex::{TT_CODEX_LOGIN_MODE_ENV, load_repo_settings_env, repo_env_var};
 use tt_daemon::{
-    DaemonRequest, DaemonResponse, ManagedProjectDirectorState, ManagedProjectThreadAttachment,
-    ManagedProjectThreadControlMode, request_for_cwd,
+    DaemonRequest, DaemonResponse, ManagedProjectDirectorState, ManagedProjectEvent,
+    ManagedProjectEventKind, ManagedProjectThreadAttachment, ManagedProjectThreadControlMode,
+    load_managed_project_events, managed_project_events_path, request_for_cwd,
 };
 use tt_domain as _;
 use tt_domain::ThreadRole;
@@ -96,6 +99,14 @@ pub enum Command {
     Clean {
         #[arg(long = "all", alias = "full")]
         all: bool,
+    },
+    Events {
+        #[arg(long)]
+        follow: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
     #[command(hide = true)]
     Internal {
@@ -179,6 +190,20 @@ pub enum ProjectPlanCommand {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Events {
+        follow,
+        json,
+        limit,
+    } = &cli.command
+    {
+        let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
+        if *follow {
+            follow_events_for_cwd(&cwd, *json, *limit)?;
+            return Ok(());
+        }
+        print!("{}", read_events_output_for_cwd(&cwd, *json, *limit)?);
+        return Ok(());
+    }
     if let Some(output) = local_command_output(&cli.command, &cli.cwd)? {
         print!("{output}");
         return Ok(());
@@ -242,6 +267,131 @@ fn local_command_output(command: &Command, cli_cwd: &Option<PathBuf>) -> Result<
             Ok(Some(markdown))
         }
         _ => Ok(None),
+    }
+}
+
+fn read_events_output_for_cwd(cwd: &Path, json: bool, limit: usize) -> Result<String> {
+    let repo_root = resolve_repo_root(cwd)
+        .ok_or_else(|| anyhow::anyhow!("tt events requires a git repository"))?;
+    let events = load_managed_project_events(&repo_root, Some(limit))?;
+    if events.is_empty() {
+        return Ok("no events yet\n".to_string());
+    }
+    Ok(if json {
+        events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n")
+            + "\n"
+    } else {
+        render_events_chat(&events)
+    })
+}
+
+fn follow_events_for_cwd(cwd: &Path, json: bool, limit: usize) -> Result<()> {
+    let repo_root = resolve_repo_root(cwd)
+        .ok_or_else(|| anyhow::anyhow!("tt events requires a git repository"))?;
+    let initial = read_events_output_for_cwd(&repo_root, json, limit)?;
+    print!("{initial}");
+    let path = managed_project_events_path(&repo_root);
+    let mut offset = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                offset = 0;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.len() < offset {
+            offset = 0;
+        }
+        if metadata.len() == offset {
+            continue;
+        }
+        let mut file = fs::File::open(&path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        while reader.read_line(&mut line)? > 0 {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                let event: ManagedProjectEvent = serde_json::from_str(trimmed)?;
+                if json {
+                    println!("{}", serde_json::to_string(&event)?);
+                } else {
+                    print!("{}", render_events_chat(&[event]));
+                }
+            }
+            line.clear();
+        }
+        offset = metadata.len();
+    }
+}
+
+fn resolve_repo_root(cwd: &Path) -> Option<PathBuf> {
+    let mut current = Some(cwd);
+    while let Some(path) = current {
+        if path.join(".git").exists() {
+            return Some(path.to_path_buf());
+        }
+        current = path.parent();
+    }
+    None
+}
+
+fn render_events_chat(events: &[ManagedProjectEvent]) -> String {
+    let mut output = String::new();
+    for event in events {
+        let ts = event.ts.format("%H:%M:%S").to_string();
+        output.push_str(&format!("{}        {}\n", event_actor_label(event), ts));
+        output.push_str(&event_body_text(event));
+        output.push_str("\n\n");
+    }
+    output
+}
+
+fn event_actor_label(event: &ManagedProjectEvent) -> String {
+    format_role_label(event.role.as_deref().unwrap_or("tt"))
+}
+
+fn format_role_label(role: &str) -> String {
+    match role {
+        "tt" => "TT".to_string(),
+        "dev" => "Dev".to_string(),
+        "test" => "Test".to_string(),
+        "integration" => "Integration".to_string(),
+        "director" => "Director".to_string(),
+        "operator" => "Operator".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "TT".to_string(),
+            }
+        }
+    }
+}
+
+fn event_body_text(event: &ManagedProjectEvent) -> String {
+    match event.kind {
+        ManagedProjectEventKind::PromptSent | ManagedProjectEventKind::ResponseReceived => {
+            event.text.clone()
+        }
+        ManagedProjectEventKind::TurnFailed => {
+            let error = event.error.as_deref().unwrap_or("<unknown error>");
+            format!("{}\n\nError: {}", event.text, error)
+        }
+        ManagedProjectEventKind::PhaseChanged | ManagedProjectEventKind::SystemNote => {
+            if let Some(status) = event.status.as_deref() {
+                format!("{}\n\nStatus: {}", event.text, status)
+            } else {
+                event.text.clone()
+            }
+        }
     }
 }
 
@@ -364,6 +514,7 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
             cwd: cwd.to_path_buf(),
             force: all,
         },
+        Command::Events { .. } => anyhow::bail!("events commands are handled locally"),
         Command::Internal { command } => match command {
             InternalCommand::Repo => DaemonRequest::RepositorySummary {
                 cwd: cwd.to_path_buf(),
@@ -2482,5 +2633,59 @@ mod tests {
         assert!(markdown.contains("`export-cli`"));
         assert!(!markdown.contains("`internal`"));
         assert!(!markdown.contains("`project`"));
+    }
+
+    #[test]
+    fn parses_events_command() {
+        let cli = Cli::parse_from(["tt", "events", "--follow", "--json", "--limit", "10"]);
+        match cli.command {
+            Command::Events {
+                follow,
+                json,
+                limit,
+            } => {
+                assert!(follow);
+                assert!(json);
+                assert_eq!(limit, 10);
+            }
+            other => panic!("expected events command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renders_events_as_chat() {
+        let events = vec![
+            tt_daemon::ManagedProjectEvent {
+                ts: ts(),
+                project_id: "p1".into(),
+                phase: "startup".into(),
+                kind: tt_daemon::ManagedProjectEventKind::PromptSent,
+                role: Some("director".into()),
+                counterparty_role: Some("dev".into()),
+                thread_id: Some("thread-1".into()),
+                turn_id: Some("turn-1".into()),
+                text: "this is an example prompt".into(),
+                status: None,
+                error: None,
+            },
+            tt_daemon::ManagedProjectEvent {
+                ts: ts(),
+                project_id: "p1".into(),
+                phase: "startup".into(),
+                kind: tt_daemon::ManagedProjectEventKind::ResponseReceived,
+                role: Some("dev".into()),
+                counterparty_role: Some("director".into()),
+                thread_id: Some("thread-2".into()),
+                turn_id: Some("turn-2".into()),
+                text: "this is an example response".into(),
+                status: Some("reported".into()),
+                error: None,
+            },
+        ];
+        let text = render_events_chat(&events);
+        assert!(text.contains("Director"));
+        assert!(text.contains("Dev"));
+        assert!(text.contains("this is an example prompt"));
+        assert!(text.contains("this is an example response"));
     }
 }
