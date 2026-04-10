@@ -5444,7 +5444,6 @@ fn write_or_replace_managed_file(path: &Path, contents: &str) -> Result<()> {
 
 fn prune_repo_codex_runtime_artifacts(codex_root: &Path) -> Result<usize> {
     let mut removed = 0usize;
-    removed += remove_if_exists(codex_root.join("auth.json"))?;
     removed += remove_if_exists(codex_root.join("session_index.jsonl"))?;
     removed += remove_if_exists(codex_root.join("sessions"))?;
     removed += remove_if_exists(codex_root.join("archived_sessions"))?;
@@ -5492,7 +5491,7 @@ fn scaffold_managed_project_template(path: &Path, template: Option<&str>) -> Res
             )?;
             write_managed_file(
                 &path.join(".gitignore"),
-                "/target\n/.tt\n/.codex/config.toml\n/.codex/config.local.toml\n/.codex/auth.json\n/.codex/session_index.jsonl\n/.codex/sessions/\n/.codex/archived_sessions/\n/.codex/*.sqlite\n/.codex/logs/\n*.log\n",
+                "/target\n/.tt\n/.codex/config.toml\n/.codex/config.local.toml\n/.codex/session_index.jsonl\n/.codex/sessions/\n/.codex/archived_sessions/\n/.codex/*.sqlite\n/.codex/logs/\n*.log\n",
             )?;
             if !path.join("tests").exists() {
                 fs::create_dir_all(path.join("tests"))?;
@@ -7552,7 +7551,7 @@ mod tests {
             .clean_managed_project(&repo, true)
             .expect("clean managed project");
         assert!(removed > 0);
-        assert!(!codex_root.join("auth.json").exists());
+        assert!(codex_root.join("auth.json").exists());
         assert!(!codex_root.join("session_index.jsonl").exists());
         assert!(!codex_root.join("sessions").exists());
         assert!(!codex_root.join("archived_sessions").exists());

@@ -86,9 +86,8 @@ tt docs export-cli --output docs/cli-reference.md
 
 Managed-project live runs also write scenario artifacts under `.tt/scenarios/`.
 Runtime-only state such as `.tt/overlay.db` remains ignored. Repo-local Codex
-runtime artifacts such as `.codex/auth.json`, `.codex/session_index.jsonl`,
-`.codex/sessions/`, `.codex/archived_sessions/`, and `.codex/*.sqlite` should
-also remain ignored.
+runtime artifacts such as `.codex/session_index.jsonl`, `.codex/sessions/`,
+`.codex/archived_sessions/`, and `.codex/*.sqlite` should also remain ignored.
 
 `.tt/settings.env` may contain non-secret repo-local Codex flags such as:
 
@@ -101,7 +100,7 @@ Do not store auth tokens or device codes in `.tt/settings.env`.
 ## Cleanup
 
 - `tt clean` removes TT project runtime state only.
-- `tt clean --all` also prunes repo-local Codex runtime artifacts such as `.codex/auth.json`, sessions, sqlite files, and logs, while preserving `.codex/config.defaults.toml`, `.codex/config.local.toml`, `.codex/agents/**`, and other curated tracked files.
+- `tt clean --all` also prunes repo-local Codex runtime artifacts such as sessions, sqlite files, and logs, while preserving `.codex/config.defaults.toml`, `.codex/config.local.toml`, `.codex/agents/**`, and repo-local auth.
 
 ## Role Model
 

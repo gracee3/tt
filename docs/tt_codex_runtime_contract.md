@@ -103,7 +103,7 @@ Current Codex auth requirement enforced by TT:
 
 Cleanup behavior:
 - `tt clean` removes TT runtime state only
-- `tt clean --all` prunes repo-local Codex auth/session/sqlite/log artifacts while preserving `.codex/config.defaults.toml`, `.codex/config.local.toml`, and `.codex/agents/**`
+- `tt clean --all` prunes repo-local Codex session/sqlite/log artifacts while preserving `.codex/config.defaults.toml`, `.codex/config.local.toml`, `.codex/agents/**`, and repo-local auth
 
 TT should continue to support explicit listen URL override for testing and
 runtime control.
