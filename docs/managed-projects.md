@@ -5,7 +5,6 @@ TT now exposes a minimal public operator flow:
 - `tt init`
 - `tt open`
 - `tt status`
-- `tt codex`
 - `tt docs export-cli`
 
 `tt init` bootstraps the current repo as a managed project. `tt open` resumes the

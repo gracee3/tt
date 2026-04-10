@@ -79,10 +79,6 @@ pub enum Command {
         #[command(subcommand)]
         command: DocsCommand,
     },
-    Codex {
-        #[command(subcommand)]
-        command: CodexCommand,
-    },
     Status,
     #[command(hide = true)]
     Internal {
@@ -120,41 +116,6 @@ pub enum InternalCommand {
     Records {
         #[command(subcommand)]
         command: RecordsCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum CodexCommand {
-    Threads {
-        #[command(subcommand)]
-        command: CodexThreadsCommand,
-    },
-    AppServers,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum CodexThreadsCommand {
-    List {
-        limit: Option<usize>,
-    },
-    Get {
-        selector: String,
-    },
-    Read {
-        selector: String,
-        #[arg(long, default_value_t = true)]
-        include_turns: bool,
-    },
-    Start {
-        #[arg(long)]
-        model: Option<String>,
-        #[arg(long, default_value_t = false)]
-        ephemeral: bool,
-    },
-    Resume {
-        selector: String,
-        #[arg(long)]
-        model: Option<String>,
     },
 }
 
@@ -412,12 +373,31 @@ pub fn run() -> Result<()> {
         print!("{output}");
         return Ok(());
     }
-    let is_open_command = matches!(cli.command, Command::Open { .. });
+    let is_open_command = matches!(&cli.command, Command::Open { .. });
+    let is_status_command = matches!(&cli.command, Command::Status);
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
         .map_err(|error| rewrite_open_runtime_error(&cwd, is_open_command, error))?;
-    println!("{}", render_response(&response));
+    let output = match (is_status_command, response) {
+        (true, DaemonResponse::Status(status)) => {
+            let runtime_ready = request_for_cwd(
+                &cwd,
+                DaemonRequest::InspectCodexAppServers { cwd: cwd.clone() },
+            )
+            .ok()
+            .and_then(|response| match response {
+                DaemonResponse::CodexAppServers(servers) => {
+                    servers.first().map(|server| server.listen_reachable)
+                }
+                _ => None,
+            })
+            .unwrap_or(false);
+            render_status_response(&status, runtime_ready)
+        }
+        (_, response) => render_response(&response),
+    };
+    println!("{output}");
     Ok(())
 }
 
@@ -522,43 +502,6 @@ fn command_to_request(command: Command, cwd: &Path) -> Result<DaemonRequest> {
         Command::Docs { .. } => anyhow::bail!("docs commands are handled locally"),
         Command::Status => DaemonRequest::Status {
             cwd: cwd.to_path_buf(),
-        },
-        Command::Codex { command } => match command {
-            CodexCommand::Threads { command } => match command {
-                CodexThreadsCommand::List { limit } => DaemonRequest::ListCodexThreads {
-                    cwd: cwd.to_path_buf(),
-                    limit,
-                },
-                CodexThreadsCommand::Get { selector } => DaemonRequest::GetCodexThread {
-                    cwd: cwd.to_path_buf(),
-                    selector,
-                },
-                CodexThreadsCommand::Read {
-                    selector,
-                    include_turns,
-                } => DaemonRequest::ReadCodexThread {
-                    cwd: cwd.to_path_buf(),
-                    selector,
-                    include_turns,
-                },
-                CodexThreadsCommand::Start { model, ephemeral } => {
-                    DaemonRequest::StartCodexThread {
-                        cwd: cwd.to_path_buf(),
-                        model,
-                        ephemeral,
-                    }
-                }
-                CodexThreadsCommand::Resume { selector, model } => {
-                    DaemonRequest::ResumeCodexThread {
-                        cwd: cwd.to_path_buf(),
-                        selector,
-                        model,
-                    }
-                }
-            },
-            CodexCommand::AppServers => DaemonRequest::InspectCodexAppServers {
-                cwd: cwd.to_path_buf(),
-            },
         },
         Command::Internal { command } => match command {
             InternalCommand::Repo => DaemonRequest::RepositorySummary {
@@ -1038,20 +981,7 @@ fn render_response(response: &DaemonResponse) -> String {
                 .unwrap_or_else(|| "<unresolved>".to_string()),
             report.error.as_deref().unwrap_or("<none>")
         ),
-        DaemonResponse::Status(status) => format!(
-            "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
-            status
-                .repo_root
-                .as_deref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            status.project_initialized,
-            status.project_state.as_deref().unwrap_or("<none>"),
-            status.project_count,
-            status.work_unit_count,
-            status.bound_thread_count,
-            status.ready_workspace_count
-        ),
+        DaemonResponse::Status(status) => render_status_response(status, false),
         DaemonResponse::DashboardSummary(summary) => format!(
             "dashboard\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
             summary.active_projects,
@@ -1117,6 +1047,27 @@ fn render_response(response: &DaemonResponse) -> String {
             run.head_commit.as_deref().unwrap_or("<unset>")
         ),
         DaemonResponse::MergeRun(None) => "merge run not found".to_string(),
+        DaemonResponse::CodexAppServers(servers) => format!(
+            "{}",
+            servers
+                .iter()
+                .map(|server| {
+                    format!(
+                        "repo={}\ndaemon_socket={}\ndaemon_socket_exists={}\ndaemon_socket_reachable={}\nlisten_url={}\nlisten_source={}\nlisten_reachable={}\nlisten_error={}\nnote={}\n",
+                        server.repo_root.display(),
+                        server.daemon_socket_path.display(),
+                        server.daemon_socket_exists,
+                        server.daemon_socket_reachable,
+                        server.configured_listen_url,
+                        server.source,
+                        server.listen_reachable,
+                        server.listen_error.as_deref().unwrap_or("-"),
+                        server.note.as_deref().unwrap_or("-"),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
         DaemonResponse::Projects(projects) => format!(
             "{}",
             projects
@@ -1227,27 +1178,6 @@ fn render_response(response: &DaemonResponse) -> String {
             thread.workspace_binding_count
         ),
         DaemonResponse::CodexThreadDetail(None) => "codex thread not found".to_string(),
-        DaemonResponse::CodexAppServers(servers) => format!(
-            "{}",
-            servers
-                .iter()
-                .map(|server| {
-                    format!(
-                        "repo={}\ndaemon_socket={}\ndaemon_socket_exists={}\ndaemon_socket_reachable={}\nlisten_url={}\nlisten_source={}\nlisten_reachable={}\nlisten_error={}\nnote={}\n",
-                        server.repo_root.display(),
-                        server.daemon_socket_path.display(),
-                        server.daemon_socket_exists,
-                        server.daemon_socket_reachable,
-                        server.configured_listen_url,
-                        server.source,
-                        server.listen_reachable,
-                        server.listen_error.as_deref().unwrap_or("-"),
-                        server.note.as_deref().unwrap_or("-"),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
         DaemonResponse::ManagedProject(bootstrap) => render_managed_project_bootstrap(bootstrap),
         DaemonResponse::ManagedProjectInspection(inspection) => {
             render_managed_project_inspection(inspection)
@@ -1257,6 +1187,28 @@ fn render_response(response: &DaemonResponse) -> String {
             render_managed_project_inspection(inspection)
         }
     }
+}
+
+fn render_status_response(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> String {
+    format!(
+        "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\nruntime: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
+        status
+            .repo_root
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        status.project_initialized,
+        status.project_state.as_deref().unwrap_or("<none>"),
+        if runtime_ready {
+            "ready"
+        } else {
+            "unreachable"
+        },
+        status.project_count,
+        status.work_unit_count,
+        status.bound_thread_count,
+        status.ready_workspace_count
+    )
 }
 
 fn render_managed_project_plan(inspection: &tt_daemon::ManagedProjectInspection) -> String {
@@ -1693,12 +1645,31 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
         print!("{output}");
         return Ok(());
     }
-    let is_open_command = matches!(cli.command, Command::Open { .. });
+    let is_open_command = matches!(&cli.command, Command::Open { .. });
+    let is_status_command = matches!(&cli.command, Command::Status);
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
         .map_err(|error| rewrite_open_runtime_error(&cwd, is_open_command, error))?;
-    println!("{}", serde_json::to_string_pretty(&response)?);
+    let output = match (is_status_command, response) {
+        (true, DaemonResponse::Status(status)) => {
+            let runtime_ready = request_for_cwd(
+                &cwd,
+                DaemonRequest::InspectCodexAppServers { cwd: cwd.clone() },
+            )
+            .ok()
+            .and_then(|response| match response {
+                DaemonResponse::CodexAppServers(servers) => {
+                    servers.first().map(|server| server.listen_reachable)
+                }
+                _ => None,
+            })
+            .unwrap_or(false);
+            render_status_response(&status, runtime_ready)
+        }
+        (_, response) => serde_json::to_string_pretty(&response)?,
+    };
+    println!("{output}");
     Ok(())
 }
 
@@ -1927,30 +1898,6 @@ mod tests {
         let cli = Cli::parse_from(["tt", "--cwd", "/tmp", "status"]);
         assert!(matches!(cli.command, Command::Status));
         assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
-    }
-
-    #[test]
-    fn parses_codex_thread_list_command() {
-        let cli = Cli::parse_from(["tt", "codex", "threads", "list"]);
-        assert!(matches!(
-            cli.command,
-            Command::Codex {
-                command: CodexCommand::Threads {
-                    command: CodexThreadsCommand::List { limit: None }
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn parses_codex_app_servers_command() {
-        let cli = Cli::parse_from(["tt", "codex", "app-servers"]);
-        assert!(matches!(
-            cli.command,
-            Command::Codex {
-                command: CodexCommand::AppServers
-            }
-        ));
     }
 
     #[test]
@@ -2460,6 +2407,46 @@ mod tests {
     }
 
     #[test]
+    fn renders_status_with_runtime_summary() {
+        let text = render_status_response(
+            &tt_daemon::DaemonStatus {
+                repo_root: Some("/repo".into()),
+                project_initialized: true,
+                project_state: Some("attached (4/4)".into()),
+                project_count: 2,
+                work_unit_count: 6,
+                bound_thread_count: 4,
+                ready_workspace_count: 3,
+            },
+            true,
+        );
+
+        assert!(text.contains("repo_root: /repo"));
+        assert!(text.contains("project_initialized: true"));
+        assert!(text.contains("project_state: attached (4/4)"));
+        assert!(text.contains("runtime: ready"));
+        assert!(text.contains("projects: 2"));
+    }
+
+    #[test]
+    fn renders_status_when_runtime_is_unreachable() {
+        let text = render_status_response(
+            &tt_daemon::DaemonStatus {
+                repo_root: Some("/repo".into()),
+                project_initialized: true,
+                project_state: Some("attached (4/4)".into()),
+                project_count: 2,
+                work_unit_count: 6,
+                bound_thread_count: 4,
+                ready_workspace_count: 3,
+            },
+            false,
+        );
+
+        assert!(text.contains("runtime: unreachable"));
+    }
+
+    #[test]
     fn renders_status_with_project_snapshot_only() {
         let text = render_response(&DaemonResponse::Status(tt_daemon::DaemonStatus {
             repo_root: Some("/repo".into()),
@@ -2474,6 +2461,7 @@ mod tests {
         assert!(text.contains("repo_root: /repo"));
         assert!(text.contains("project_initialized: true"));
         assert!(text.contains("project_state: attached (4/4)"));
+        assert!(text.contains("runtime: unreachable"));
         assert!(text.contains("projects: 2"));
     }
 
@@ -2521,7 +2509,7 @@ mod tests {
         assert!(markdown.contains("## `tt`"));
         assert!(markdown.contains("### `tt init`"));
         assert!(markdown.contains("### `tt open`"));
-        assert!(markdown.contains("#### `tt codex threads`"));
+        assert!(!markdown.contains("tt codex"));
         assert!(markdown.contains("`docs`"));
         assert!(markdown.contains("`export-cli`"));
         assert!(!markdown.contains("`internal`"));

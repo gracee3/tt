@@ -160,7 +160,6 @@ Recommended lanes:
 - catches protocol and runtime drift before the next stable release
 
 TT should add an explicit compatibility check surface, preferably through:
-- `tt codex app-servers`
 - an internal runtime probe used by `tt open` and the live harness
 
 That output should include:
@@ -173,8 +172,8 @@ That output should include:
 - project `.tt` root
 
 Current repo-scoped runtime inspection:
-- `tt codex app-servers` reports TT's repo-local daemon socket path plus the
-  effective configured Codex app-server listen URL for the current repo
+- the hidden internal runtime probe reports TT's repo-local daemon socket path
+  plus the effective configured app-server listen URL for the current repo
 - it performs repo-scoped metadata and reachability inspection only
 - it does not enumerate host-wide processes or listening ports
 
