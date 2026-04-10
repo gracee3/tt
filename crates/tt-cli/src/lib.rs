@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
@@ -182,7 +183,7 @@ pub fn run() -> Result<()> {
                 _ => None,
             })
             .unwrap_or(false);
-            render_status_response(&status, runtime_ready)
+            render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
         }
         (_, response) => render_response(&response),
     };
@@ -539,7 +540,7 @@ fn render_response(response: &DaemonResponse) -> String {
                 .unwrap_or_else(|| "<unresolved>".to_string()),
             report.error.as_deref().unwrap_or("<none>")
         ),
-        DaemonResponse::Status(status) => render_status_response(status, false),
+        DaemonResponse::Status(status) => render_status_response(status, false, false),
         DaemonResponse::DashboardSummary(summary) => format!(
             "dashboard\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
             summary.active_projects,
@@ -747,7 +748,22 @@ fn render_response(response: &DaemonResponse) -> String {
     }
 }
 
-fn render_status_response(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> String {
+fn render_status_response(
+    status: &tt_daemon::DaemonStatus,
+    runtime_ready: bool,
+    colorize: bool,
+) -> String {
+    let runtime_label = if colorize {
+        if runtime_ready {
+            "\u{1b}[32mready\u{1b}[0m"
+        } else {
+            "\u{1b}[31munreachable\u{1b}[0m"
+        }
+    } else if runtime_ready {
+        "ready"
+    } else {
+        "unreachable"
+    };
     format!(
         "status\nrepo_root: {}\nproject_initialized: {}\nproject_state: {}\nruntime: {}\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
         status
@@ -757,11 +773,7 @@ fn render_status_response(status: &tt_daemon::DaemonStatus, runtime_ready: bool)
             .unwrap_or_else(|| "<none>".to_string()),
         status.project_initialized,
         status.project_state.as_deref().unwrap_or("<none>"),
-        if runtime_ready {
-            "ready"
-        } else {
-            "unreachable"
-        },
+        runtime_label,
         status.project_count,
         status.work_unit_count,
         status.bound_thread_count,
@@ -1215,7 +1227,7 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
                 _ => None,
             })
             .unwrap_or(false);
-            render_status_response(&status, runtime_ready)
+            render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
         }
         (_, response) => serde_json::to_string_pretty(&response)?,
     };
@@ -1862,6 +1874,7 @@ mod tests {
                 ready_workspace_count: 3,
             },
             true,
+            false,
         );
 
         assert!(text.contains("repo_root: /repo"));
@@ -1883,6 +1896,7 @@ mod tests {
                 bound_thread_count: 4,
                 ready_workspace_count: 3,
             },
+            false,
             false,
         );
 
