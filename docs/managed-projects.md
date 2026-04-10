@@ -42,6 +42,7 @@ tt docs export-cli --output docs/cli-reference.md
 ## What `tt init` Creates
 
 - `.codex/config.toml`
+- `.codex/auth.json` after the operator signs in for that repo
 - `.codex/agents/director.toml`
 - `.codex/agents/dev.toml`
 - `.codex/agents/test.toml`
@@ -56,7 +57,10 @@ tt docs export-cli --output docs/cli-reference.md
 - `.tt/codex-app-server.log`
 
 Managed-project live runs also write scenario artifacts under `.tt/scenarios/`.
-Runtime-only state such as `.tt/overlay.db` remains ignored.
+Runtime-only state such as `.tt/overlay.db` remains ignored. Repo-local Codex
+runtime artifacts such as `.codex/auth.json`, `.codex/session_index.jsonl`,
+`.codex/sessions/`, `.codex/archived_sessions/`, and `.codex/*.sqlite` should
+also remain ignored.
 
 ## Role Model
 

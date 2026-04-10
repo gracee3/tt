@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser, Subcommand};
+use tt_codex::managed_project_codex_home;
 use tt_daemon::{
     DaemonRequest, DaemonResponse, ManagedProjectThreadAttachment, ManagedProjectThreadControlMode,
     request_for_cwd,
@@ -178,6 +179,7 @@ pub fn run() -> Result<()> {
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     if is_open_command {
         ensure_project_initialized_for_open(&cwd)?;
+        ensure_repo_codex_auth_for_open(&cwd)?;
     }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -191,22 +193,11 @@ pub fn run() -> Result<()> {
     }
     let output = match (is_status_command, is_clean_command, response) {
         (true, _, DaemonResponse::Status(status)) => {
-            let runtime_ready = request_for_cwd(
-                &cwd,
-                DaemonRequest::InspectCodexAppServers { cwd: cwd.clone() },
-            )
-            .ok()
-            .and_then(|response| match response {
-                DaemonResponse::CodexAppServers(servers) => {
-                    servers.first().map(|server| server.listen_reachable)
-                }
-                _ => None,
-            })
-            .unwrap_or(false);
+            let runtime_state = runtime_state_for_cwd(&cwd);
             if status_json {
-                render_status_json(&status, runtime_ready)
+                render_status_json(&status, runtime_state)
             } else {
-                render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+                render_status_response(&status, runtime_state, std::io::stdout().is_terminal())
             }
         }
         (_, true, DaemonResponse::Count(count)) => format!("cleaned {count}\n"),
@@ -241,6 +232,56 @@ fn local_command_output(command: &Command, cli_cwd: &Option<PathBuf>) -> Result<
             Ok(Some(markdown))
         }
         _ => Ok(None),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeState {
+    Ready,
+    NeedsAuth,
+    Unreachable,
+}
+
+fn codex_doctor_for_cwd(cwd: &Path, check_listen: bool) -> Option<tt_daemon::CodexDoctorReport> {
+    request_for_cwd(
+        cwd,
+        DaemonRequest::DoctorCodex {
+            cwd: cwd.to_path_buf(),
+            check_listen,
+        },
+    )
+    .ok()
+    .and_then(|response| match response {
+        DaemonResponse::CodexDoctor(report) => Some(report),
+        _ => None,
+    })
+}
+
+fn runtime_state_for_cwd(cwd: &Path) -> RuntimeState {
+    let codex_doctor = codex_doctor_for_cwd(cwd, false);
+    if codex_doctor.as_ref().and_then(|report| report.auth_present) == Some(false) {
+        return RuntimeState::NeedsAuth;
+    }
+
+    let runtime_ready = request_for_cwd(
+        cwd,
+        DaemonRequest::InspectCodexAppServers {
+            cwd: cwd.to_path_buf(),
+        },
+    )
+    .ok()
+    .and_then(|response| match response {
+        DaemonResponse::CodexAppServers(servers) => {
+            servers.first().map(|server| server.listen_reachable)
+        }
+        _ => None,
+    })
+    .unwrap_or(false);
+
+    if runtime_ready {
+        RuntimeState::Ready
+    } else {
+        RuntimeState::Unreachable
     }
 }
 
@@ -569,7 +610,9 @@ fn render_response(response: &DaemonResponse) -> String {
                 .unwrap_or_else(|| "<unresolved>".to_string()),
             report.error.as_deref().unwrap_or("<none>")
         ),
-        DaemonResponse::Status(status) => render_status_response(status, false, false),
+        DaemonResponse::Status(status) => {
+            render_status_response(status, RuntimeState::Unreachable, false)
+        }
         DaemonResponse::DashboardSummary(summary) => format!(
             "dashboard\nprojects: {}\nwork-units: {}\nbound-threads: {}\nready-workspaces: {}\n",
             summary.active_projects,
@@ -779,7 +822,7 @@ fn render_response(response: &DaemonResponse) -> String {
 
 fn render_status_response(
     status: &tt_daemon::DaemonStatus,
-    runtime_ready: bool,
+    runtime_state: RuntimeState,
     colorize: bool,
 ) -> String {
     let project_label = if status.project_initialized {
@@ -787,10 +830,10 @@ fn render_status_response(
     } else {
         "Uninitialized"
     };
-    let runtime_label = if runtime_ready {
-        "Ready"
-    } else {
-        "Unreachable"
+    let runtime_label = match runtime_state {
+        RuntimeState::Ready => "Ready",
+        RuntimeState::NeedsAuth => "NeedsAuth",
+        RuntimeState::Unreachable => "Unreachable",
     };
     let repo_value = status
         .repo_root
@@ -807,10 +850,10 @@ fn render_status_response(
         project_label.to_string()
     };
     let runtime_value = if colorize {
-        if runtime_ready {
-            "\u{1b}[1;32mReady\u{1b}[0m".to_string()
-        } else {
-            "\u{1b}[1;31mUnreachable\u{1b}[0m".to_string()
+        match runtime_state {
+            RuntimeState::Ready => "\u{1b}[1;32mReady\u{1b}[0m".to_string(),
+            RuntimeState::NeedsAuth => "\u{1b}[1;33mNeedsAuth\u{1b}[0m".to_string(),
+            RuntimeState::Unreachable => "\u{1b}[1;31mUnreachable\u{1b}[0m".to_string(),
         }
     } else {
         runtime_label.to_string()
@@ -823,10 +866,14 @@ fn render_status_response(
     format!("project={project_value} runtime={runtime_value} repo={repo_value}\n",)
 }
 
-fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> String {
+fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_state: RuntimeState) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "project": if status.project_initialized { "Initialized" } else { "Uninitialized" },
-        "runtime": if runtime_ready { "Ready" } else { "Unreachable" },
+        "runtime": match runtime_state {
+            RuntimeState::Ready => "Ready",
+            RuntimeState::NeedsAuth => "NeedsAuth",
+            RuntimeState::Unreachable => "Unreachable",
+        },
         "repo": status
             .repo_root
             .as_deref()
@@ -1235,18 +1282,8 @@ fn launch_codex_tui_for_director(
         .find(|role| role.role == ThreadRole::Director)
         .and_then(|role| role.thread_id.as_deref())
         .ok_or_else(|| anyhow::anyhow!("managed project director thread is not attached"))?;
-    let codex_doctor = match request_for_cwd(
-        cwd,
-        DaemonRequest::DoctorCodex {
-            cwd: cwd.to_path_buf(),
-            check_listen: true,
-        },
-    )? {
-        DaemonResponse::CodexDoctor(report) => report,
-        other => anyhow::bail!(
-            "unexpected runtime response while resolving Codex launch info: {other:?}"
-        ),
-    };
+    let codex_doctor = codex_doctor_for_cwd(cwd, true)
+        .ok_or_else(|| anyhow::anyhow!("could not resolve Codex runtime launch info"))?;
     if !codex_doctor.contract_ok {
         anyhow::bail!(
             "cannot open TT project in {} because the Codex runtime contract is not satisfied",
@@ -1270,6 +1307,10 @@ fn launch_codex_tui_for_director(
         &bootstrap.repo_root,
         director_thread_id,
         &listen_url,
+    );
+    command.env(
+        "CODEX_HOME",
+        managed_project_codex_home(&bootstrap.repo_root),
     );
 
     #[cfg(unix)]
@@ -1383,6 +1424,7 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
     let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
     if is_open_command {
         ensure_project_initialized_for_open(&cwd)?;
+        ensure_repo_codex_auth_for_open(&cwd)?;
     }
     let request_cwd = request_cwd_for_command(&cwd, &cli.command);
     let response = request_for_cwd(&request_cwd, command_to_request(cli.command, &cwd)?)
@@ -1396,27 +1438,62 @@ pub fn run_from_args(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
     let output = match (is_status_command, response) {
         (true, DaemonResponse::Status(status)) => {
-            let runtime_ready = request_for_cwd(
-                &cwd,
-                DaemonRequest::InspectCodexAppServers { cwd: cwd.clone() },
-            )
-            .ok()
-            .and_then(|response| match response {
-                DaemonResponse::CodexAppServers(servers) => {
-                    servers.first().map(|server| server.listen_reachable)
-                }
-                _ => None,
-            })
-            .unwrap_or(false);
+            let runtime_state = runtime_state_for_cwd(&cwd);
             if status_json {
-                render_status_json(&status, runtime_ready)
+                render_status_json(&status, runtime_state)
             } else {
-                render_status_response(&status, runtime_ready, std::io::stdout().is_terminal())
+                render_status_response(&status, runtime_state, std::io::stdout().is_terminal())
             }
         }
         (_, response) => serde_json::to_string_pretty(&response)?,
     };
     println!("{output}");
+    Ok(())
+}
+
+fn ensure_repo_codex_auth_for_open(cwd: &Path) -> Result<()> {
+    let codex_doctor = codex_doctor_for_cwd(cwd, false)
+        .ok_or_else(|| anyhow::anyhow!("could not resolve Codex runtime metadata"))?;
+    if !codex_doctor.contract_ok {
+        anyhow::bail!(
+            "cannot open TT project in {} because the Codex runtime contract is not satisfied",
+            cwd.display()
+        );
+    }
+    if codex_doctor.auth_present == Some(true) {
+        return Ok(());
+    }
+
+    let codex_bin = codex_doctor
+        .codex_bin
+        .ok_or_else(|| anyhow::anyhow!("Codex CLI binary is unavailable"))?;
+    let codex_home = managed_project_codex_home(cwd);
+    fs::create_dir_all(&codex_home)
+        .with_context(|| format!("create Codex home {}", codex_home.display()))?;
+
+    if !should_launch_codex_tui() {
+        anyhow::bail!(
+            "cannot open TT project in {} because repo-local Codex auth is missing at {}.\nRun `CODEX_HOME={} {} login` and retry.",
+            cwd.display(),
+            codex_home.join("auth.json").display(),
+            codex_home.display(),
+            codex_bin.display()
+        );
+    }
+
+    let status = ProcessCommand::new(&codex_bin)
+        .current_dir(cwd)
+        .env("CODEX_HOME", &codex_home)
+        .arg("login")
+        .status()
+        .with_context(|| format!("launch Codex login `{}`", codex_bin.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "cannot open TT project in {} because repo-local Codex login did not complete successfully",
+            cwd.display()
+        );
+    }
+
     Ok(())
 }
 
@@ -2080,7 +2157,7 @@ mod tests {
                 bound_thread_count: 4,
                 ready_workspace_count: 3,
             },
-            true,
+            RuntimeState::Ready,
             false,
         );
 
@@ -2099,11 +2176,30 @@ mod tests {
                 bound_thread_count: 4,
                 ready_workspace_count: 3,
             },
-            false,
+            RuntimeState::Unreachable,
             false,
         );
 
         assert_eq!(text, "project=Initialized runtime=Unreachable repo=/repo\n");
+    }
+
+    #[test]
+    fn renders_status_when_runtime_needs_auth() {
+        let text = render_status_response(
+            &tt_daemon::DaemonStatus {
+                repo_root: Some("/repo".into()),
+                project_initialized: true,
+                project_state: Some("attached (4/4)".into()),
+                project_count: 2,
+                work_unit_count: 6,
+                bound_thread_count: 4,
+                ready_workspace_count: 3,
+            },
+            RuntimeState::NeedsAuth,
+            false,
+        );
+
+        assert_eq!(text, "project=Initialized runtime=NeedsAuth repo=/repo\n");
     }
 
     #[test]
@@ -2133,12 +2229,33 @@ mod tests {
                 bound_thread_count: 4,
                 ready_workspace_count: 3,
             },
-            false,
+            RuntimeState::Unreachable,
         );
 
         assert_eq!(
             text,
             "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\"\n}"
+        );
+    }
+
+    #[test]
+    fn renders_status_as_json_when_auth_is_missing() {
+        let text = render_status_json(
+            &tt_daemon::DaemonStatus {
+                repo_root: Some("/repo".into()),
+                project_initialized: true,
+                project_state: Some("scaffolded (0/4)".into()),
+                project_count: 2,
+                work_unit_count: 6,
+                bound_thread_count: 4,
+                ready_workspace_count: 3,
+            },
+            RuntimeState::NeedsAuth,
+        );
+
+        assert_eq!(
+            text,
+            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"NeedsAuth\"\n}"
         );
     }
 

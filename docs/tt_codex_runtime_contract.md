@@ -45,7 +45,6 @@ TT binaries:
 - `~/.local/bin/tt-tui`
 
 Project state:
-- Codex user state: `~/.codex/`
 - Codex project state: `<repo>/.codex/`
 - TT user state: `~/.tt/`
 - TT project state: `<repo>/.tt/`
@@ -53,7 +52,7 @@ Project state:
 - Codex app-server log: `<repo>/.tt/codex-app-server.log`
 
 Auth file:
-- Codex auth: `~/.codex/auth.json`
+- TT-managed Codex auth: `<repo>/.codex/auth.json`
 
 TT should keep its own config and state separate from Codex config and state.
 For repo-local development checkouts, TT may also load `<repo>/.tt/settings.env`
@@ -83,9 +82,10 @@ Current app-server listen URL overrides used by TT:
 - `TT_APP_SERVER_LISTEN_URL`
 
 Current Codex auth requirement enforced by TT:
-- `~/.codex/auth.json` must exist and be readable
-- live e2e app-server launches use `CODEX_HOME=$HOME/.codex`
-- TT fails fast if the auth file is missing
+- TT-managed runs use `CODEX_HOME=<repo>/.codex`
+- `tt open` launches repo-local Codex login automatically when `<repo>/.codex/auth.json` is missing in an interactive terminal
+- non-interactive flows must provide repo-local auth up front
+- live e2e app-server launches seed `<repo>/.codex/auth.json` from `~/.codex/auth.json` only as test bootstrap
 
 TT should continue to support explicit listen URL override for testing and
 runtime control.
@@ -180,8 +180,7 @@ Current repo-scoped runtime inspection:
 - it does not enumerate host-wide processes or listening ports
 - `tt open` uses the same runtime contract to start or connect to the project
   runtime, then resumes the director thread; in an interactive terminal it
-  hands off to the installed Codex TUI directly while preserving the normal
-  repo-local `.codex` discovery and the user-home auth file lookup
+  hands off to the installed Codex TUI directly with `CODEX_HOME=<repo>/.codex`
 
 ## CI Expectations
 

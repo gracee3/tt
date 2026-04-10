@@ -445,12 +445,16 @@ e2e_start_codex_app_server_for_repo() {
   : >"$app_server_log"
   printf 'preparing codex-app-server for repo %s\n' "$repo_root" >>"$app_server_log"
   app_server_bin="$(e2e_resolve_codex_app_server_bin "$app_server_log")"
-  [[ -f "$HOME/.codex/auth.json" ]] || e2e_fail "Codex auth file is missing: $HOME/.codex/auth.json"
+  [[ -f "$repo_root/.codex/auth.json" ]] || {
+    [[ -f "$HOME/.codex/auth.json" ]] || e2e_fail "Codex auth file is missing: $repo_root/.codex/auth.json and no bootstrap auth exists at $HOME/.codex/auth.json"
+    cp "$HOME/.codex/auth.json" "$repo_root/.codex/auth.json" \
+      || e2e_fail "failed to seed repo-local Codex auth into $repo_root/.codex/auth.json"
+  }
 
   printf 'starting codex-app-server via %s on %s\n' "$app_server_bin" "$TT_RUNTIME_LISTEN_URL" >>"$app_server_log"
   export TT_CODEX_APP_SERVER_LOG_PATH="$app_server_log"
   (
-    export CODEX_HOME="$HOME/.codex"
+    export CODEX_HOME="$repo_root/.codex"
     export XDG_DATA_HOME="$E2E_SCENARIO_XDG_DATA_HOME"
     export XDG_CONFIG_HOME="$E2E_SCENARIO_XDG_CONFIG_HOME"
     export XDG_RUNTIME_DIR="$E2E_SCENARIO_XDG_RUNTIME_HOME"

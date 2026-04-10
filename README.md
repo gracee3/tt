@@ -10,8 +10,9 @@ can inspect and steer work without losing the runtime context.
 
 - `tt-daemon` owns the local API boundary and the durable overlay state.
 - `tt-cli` is the thin command-line client over the daemon.
-- `tt open` resumes the director thread and hands off into the installed Codex TUI in an interactive terminal.
+- `tt open` ensures repo-local Codex auth in `.codex/`, resumes the director thread, and hands off into the installed Codex TUI in an interactive terminal.
 - `tt-tui` is the internal dashboard / diagnostic surface.
+- `.codex/` is the repo-local Codex home used by TT-managed sessions.
 - `.tt/` stores repo-local project policy, plan text, runtime state, and local env overrides.
 - `tt-git` handles repo/worktree and merge-readiness inspection.
 

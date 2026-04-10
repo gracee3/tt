@@ -2974,6 +2974,7 @@ dependencies = [
  "chrono",
  "clap",
  "serde_json",
+ "tt-codex",
  "tt-daemon",
  "tt-domain",
  "tt-ui-core",

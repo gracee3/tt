@@ -239,19 +239,17 @@ pub struct CodexHome {
 impl CodexHome {
     pub fn discover() -> Result<Self> {
         load_repo_settings_env(env::current_dir()?)?;
-        validate_runtime_contract(env::current_dir()?)?;
-        Self::discover_from(repo_env_var_os(CODEX_HOME_ENV), dirs::home_dir())
+        Self::discover_in(env::current_dir()?)
     }
 
     pub fn discover_in(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
         load_repo_settings_env(cwd)?;
-        validate_runtime_contract(cwd)?;
-        let codex_dir = cwd.join(".codex");
+        let codex_dir = managed_project_codex_home(cwd);
         if codex_dir.is_dir() {
             return Ok(Self::from_path(codex_dir));
         }
-        Self::discover()
+        Self::discover_from(repo_env_var_os(CODEX_HOME_ENV), dirs::home_dir())
     }
 
     pub fn from_path(root: impl Into<PathBuf>) -> Self {
@@ -1392,8 +1390,8 @@ pub fn validate_runtime_contract(cwd: impl AsRef<Path>) -> Result<CodexRuntimeCo
         CODEX_APP_SERVER_BIN_FILENAME,
         "Codex app-server",
     )?;
-    let contract = validate_runtime_contract_paths(codex_bin, app_server_bin)?;
-    validate_canonical_auth_json()?;
+    let mut contract = validate_runtime_contract_paths(codex_bin, app_server_bin)?;
+    contract.auth_json = managed_project_auth_json_path(cwd);
     Ok(contract)
 }
 
@@ -1406,21 +1404,24 @@ fn validate_runtime_contract_paths(
     Ok(CodexRuntimeContract {
         codex_bin,
         app_server_bin,
-        auth_json: resolve_canonical_auth_json_path()?,
+        auth_json: PathBuf::new(),
     })
 }
 
-fn resolve_canonical_auth_json_path() -> Result<PathBuf> {
-    let home_dir = repo_env_var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .context("could not resolve a home directory for Codex auth")?;
-    Ok(home_dir.join(".codex").join(CODEX_AUTH_FILE_NAME))
+pub fn managed_project_codex_home(cwd: impl AsRef<Path>) -> PathBuf {
+    let cwd = cwd.as_ref();
+    cwd.ancestors()
+        .find(|ancestor| ancestor.join(".tt").is_dir())
+        .unwrap_or(cwd)
+        .join(".codex")
 }
 
-fn validate_canonical_auth_json() -> Result<PathBuf> {
-    let path = resolve_canonical_auth_json_path()?;
-    ensure_auth_file(path)
+pub fn managed_project_auth_json_path(cwd: impl AsRef<Path>) -> PathBuf {
+    managed_project_codex_home(cwd).join(CODEX_AUTH_FILE_NAME)
+}
+
+pub fn managed_project_auth_is_present(cwd: impl AsRef<Path>) -> bool {
+    ensure_auth_file(managed_project_auth_json_path(cwd)).is_ok()
 }
 
 fn start_codex_app_server_if_needed(
@@ -1454,17 +1455,15 @@ fn start_codex_app_server_if_needed(
         .try_clone()
         .with_context(|| format!("clone Codex app-server log {}", log_path.display()))?;
 
-    let codex_home = contract
-        .auth_json()
-        .parent()
-        .and_then(|path| path.parent())
-        .context("resolve Codex home for app-server startup")?;
+    let codex_home = managed_project_codex_home(repo_root);
+    fs::create_dir_all(&codex_home)
+        .with_context(|| format!("create Codex home {}", codex_home.display()))?;
 
     let mut command = Command::new(contract.app_server_bin());
     command
         .arg("--listen")
         .arg(listen_url)
-        .env("CODEX_HOME", codex_home)
+        .env("CODEX_HOME", &codex_home)
         .env("TT_RUNTIME_LISTEN_URL", listen_url)
         .env("TT_APP_SERVER_LISTEN_URL", listen_url)
         .env("CODEX_APP_SERVER_LISTEN_URL", listen_url)
@@ -1666,6 +1665,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let codex_bin = dir.path().join(CODEX_BIN_FILENAME);
         let app_server_bin = dir.path().join(CODEX_APP_SERVER_BIN_FILENAME);
+        std::fs::create_dir_all(dir.path().join(".tt")).expect("create tt dir");
         std::fs::write(&codex_bin, "#!/bin/sh\n").expect("write codex bin");
         std::fs::write(&app_server_bin, "#!/bin/sh\n").expect("write app-server bin");
         #[cfg(unix)]
@@ -1683,6 +1683,18 @@ mod tests {
 
         assert_eq!(contract.codex_bin(), codex_bin.as_path());
         assert_eq!(contract.app_server_bin(), app_server_bin.as_path());
+    }
+
+    #[test]
+    fn discover_in_prefers_repo_local_codex_home_without_auth() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".tt")).expect("create tt dir");
+        std::fs::create_dir_all(dir.path().join(".codex")).expect("create codex dir");
+
+        let discovered = CodexHome::discover_in(dir.path()).expect("discover codex home");
+
+        assert_eq!(discovered.root(), dir.path().join(".codex").as_path());
+        assert!(!managed_project_auth_is_present(dir.path()));
     }
 
     #[test]

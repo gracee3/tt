@@ -13,6 +13,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+tt-codex = { path = "../tt-codex" }
 tt-domain = { path = "../tt-domain" }
 tt-daemon = { path = "../tt-daemon" }
 

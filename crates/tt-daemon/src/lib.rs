@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tt_codex::{
     CodexHome, CodexRuntimeClient, CodexThreadRuntimeSnapshot, apply_repo_settings_env,
-    configured_app_server_listen_url, repo_env_var, repo_env_var_os, validate_runtime_contract,
+    configured_app_server_listen_url, managed_project_auth_is_present,
+    managed_project_auth_json_path, repo_env_var, repo_env_var_os, validate_runtime_contract,
 };
 use tt_domain::{
     MergeAuthorizationStatus, MergeExecutionStatus, MergeReadiness, MergeRun, Project,
@@ -64,6 +65,7 @@ pub struct CodexDoctorReport {
     pub codex_bin: Option<PathBuf>,
     pub app_server_bin: Option<PathBuf>,
     pub auth_json: Option<PathBuf>,
+    pub auth_present: Option<bool>,
     pub codex_version: Option<String>,
     pub app_server_version: Option<String>,
     pub configured_listen_url: String,
@@ -95,6 +97,7 @@ pub struct DoctorReport {
     pub codex_project_root: Option<PathBuf>,
     pub daemon_socket_path: PathBuf,
     pub codex_auth_json: Option<PathBuf>,
+    pub codex_auth_present: Option<bool>,
     pub codex_contract_ok: bool,
     pub codex_error: Option<String>,
     pub codex_listen_url: String,
@@ -4597,7 +4600,10 @@ fn scaffold_managed_project_template(path: &Path, template: Option<&str>) -> Res
                 &path.join("src").join("lib.rs"),
                 "pub fn project_name() -> &'static str {\n    \"taskflow\"\n}\n",
             )?;
-            write_managed_file(&path.join(".gitignore"), "/target\n/.tt\n/.codex\n*.log\n")?;
+            write_managed_file(
+                &path.join(".gitignore"),
+                "/target\n/.tt\n/.codex/auth.json\n/.codex/session_index.jsonl\n/.codex/sessions/\n/.codex/archived_sessions/\n/.codex/*.sqlite\n/.codex/logs/\n*.log\n",
+            )?;
             if !path.join("tests").exists() {
                 fs::create_dir_all(path.join("tests"))?;
             }
@@ -5633,7 +5639,8 @@ fn doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> DoctorReport {
         tt_project_root: cwd.join(".tt").is_dir().then_some(cwd.clone()),
         codex_project_root: cwd.join(".codex").is_dir().then_some(cwd.clone()),
         daemon_socket_path: socket_path_for(&cwd),
-        codex_auth_json: canonical_codex_auth_json_path(),
+        codex_auth_json: Some(managed_project_auth_json_path(&cwd)),
+        codex_auth_present: Some(managed_project_auth_is_present(&cwd)),
         codex_contract_ok: codex_doctor.contract_ok,
         codex_error: codex_doctor.error.clone(),
         codex_listen_url: codex_doctor.configured_listen_url.clone(),
@@ -5701,6 +5708,7 @@ fn codex_doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> CodexDocto
             codex_bin: Some(contract.codex_bin().to_path_buf()),
             app_server_bin: Some(contract.app_server_bin().to_path_buf()),
             auth_json: Some(contract.auth_json().to_path_buf()),
+            auth_present: Some(managed_project_auth_is_present(cwd.as_ref())),
             codex_home: CodexHome::discover_in(cwd)
                 .ok()
                 .map(|home| home.root().to_path_buf()),
@@ -5713,7 +5721,8 @@ fn codex_doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> CodexDocto
             contract_ok: false,
             codex_bin: None,
             app_server_bin: None,
-            auth_json: canonical_codex_auth_json_path(),
+            auth_json: Some(managed_project_auth_json_path(cwd.as_ref())),
+            auth_present: Some(managed_project_auth_is_present(cwd.as_ref())),
             codex_version: None,
             app_server_version: None,
             codex_home: None,
@@ -5723,10 +5732,6 @@ fn codex_doctor_for_cwd(cwd: impl AsRef<Path>, check_listen: bool) -> CodexDocto
             error: Some(format!("{error:#}")),
         },
     }
-}
-
-fn canonical_codex_auth_json_path() -> Option<PathBuf> {
-    repo_env_var_os("HOME").map(|home| PathBuf::from(home).join(".codex").join("auth.json"))
 }
 
 fn check_listen_reachability(listen_url: &str) -> Result<bool> {

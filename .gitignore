@@ -8,3 +8,9 @@
 .tt/codex-app-server.log
 .tt/scenarios/
 .tt/worktrees/
+.codex/auth.json
+.codex/session_index.jsonl
+.codex/sessions/
+.codex/archived_sessions/
+.codex/*.sqlite
+.codex/logs/
