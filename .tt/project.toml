@@ -13,7 +13,12 @@ soft_silence_seconds = 900
 hard_ceiling_seconds = 7200
 default_validation_commands = ["cargo test"]
 smoke_validation_commands = ["cargo check"]
-checkpoint_triggers = ["after_plan", "after_develop", "after_test", "before_merge"]
+checkpoint_triggers = [
+    "after_plan",
+    "after_develop",
+    "after_test",
+    "before_merge",
+]
 pitfalls = []
 hints = []
 exceptions = []

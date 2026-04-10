@@ -11,24 +11,115 @@ plan_path = "/home/emmy/openai/tt/.tt/plan.toml"
 contract_path = "/home/emmy/openai/tt/.tt/contracts/worker-contract.md"
 codex_config_path = "/home/emmy/openai/tt/.codex/config.toml"
 
+[project_config]
+schema = "tt-managed-project-config-v1"
+title = "tt"
+objective = "Coordinate dev, test, and integration work for tt"
+base_branch = "main"
+branch_prefix = "tt"
+tt_runtime_bin = "./target/debug/tt-cli"
+plan_first = true
+commit_policy = "checkpoint-enforced"
+require_operator_merge_approval = true
+expected_long_build = false
+require_progress_updates = true
+soft_silence_seconds = 900
+hard_ceiling_seconds = 7200
+default_validation_commands = ["cargo test"]
+smoke_validation_commands = ["cargo check"]
+checkpoint_triggers = [
+    "after_plan",
+    "after_develop",
+    "after_test",
+    "before_merge",
+]
+pitfalls = []
+hints = []
+exceptions = []
+
+[plan]
+schema = "tt-managed-project-plan-v1"
+status = "draft"
+objective = "Coordinate dev, test, and integration work for tt"
+updated_at = "2026-04-09T22:15:59.885056875+00:00"
+work_items = []
+
+[[plan.milestones]]
+id = "milestone-1"
+title = "Plan and scope the work"
+success_criteria = [
+    "The director has an explicit plan",
+    "Workers have clear ownership",
+]
+evidence = []
+
+[[plan.milestones]]
+id = "milestone-2"
+title = "Implement and validate the change set"
+success_criteria = [
+    "The director has an explicit plan",
+    "Workers have clear ownership",
+]
+evidence = []
+
+[[plan.milestones]]
+id = "milestone-3"
+title = "Prepare merge readiness"
+success_criteria = [
+    "The director has an explicit plan",
+    "Workers have clear ownership",
+]
+evidence = []
+
+[plan.notes]
+risks = []
+pitfalls = []
+open_questions = [
+    "What exact scope and non-goals should the director enforce for `tt`?",
+    "Which validation commands are required before the director can mark the plan ready to dispatch?",
+    "What repo-specific pitfalls or exceptions should the director carry forward during execution?",
+    "What operator approval or landing gate must be satisfied before merge?",
+]
+operator_constraints = []
+
 [roles.dev]
 work_unit_id = "019d6f7d-50b2-7d81-9f9d-d6ce5f07af39"
 agent_path = "/home/emmy/openai/tt/.codex/agents/dev.toml"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+control_mode = "director"
 branch_name = "tt/tt/dev"
 worktree_path = "/home/emmy/openai/.tt-worktrees/tt/dev"
+thread_id = "019d74da-1c64-7362-ae2e-e8a27259ba68"
+workspace_binding_id = "tt:dev"
 
 [roles.director]
 work_unit_id = "019d6f7d-5096-7550-917f-5bed67376468"
 agent_path = "/home/emmy/openai/tt/.codex/agents/director.toml"
+model = "gpt-5.4"
+reasoning_effort = "medium"
+control_mode = "director"
+thread_id = "019d74da-1be6-70f0-8f94-d854e5fa72dd"
+workspace_binding_id = "tt:director"
 
 [roles.integration]
 work_unit_id = "019d6f7d-511d-7030-93b9-8686cc85fbee"
 agent_path = "/home/emmy/openai/tt/.codex/agents/integration.toml"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+control_mode = "director"
 branch_name = "tt/tt/integration"
 worktree_path = "/home/emmy/openai/.tt-worktrees/tt/integration"
+thread_id = "019d74da-1d87-7061-8d39-cdcc0df8972b"
+workspace_binding_id = "tt:integration"
 
 [roles.test]
 work_unit_id = "019d6f7d-50e8-7fd3-90be-10630e7a563f"
 agent_path = "/home/emmy/openai/tt/.codex/agents/test.toml"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+control_mode = "director"
 branch_name = "tt/tt/test"
 worktree_path = "/home/emmy/openai/.tt-worktrees/tt/test"
+thread_id = "019d74da-1cf4-7e53-bf54-ea7299016640"
+workspace_binding_id = "tt:test"
