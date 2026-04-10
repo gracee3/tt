@@ -776,11 +776,6 @@ fn render_status_response(
         .as_deref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "<none>".to_string());
-    let state_value = status
-        .project_state
-        .as_deref()
-        .map(title_case_status_value)
-        .unwrap_or_else(|| "Unknown".to_string());
     let project_value = if colorize {
         if status.project_initialized {
             "\u{1b}[1;32mInitialized\u{1b}[0m".to_string()
@@ -805,7 +800,7 @@ fn render_status_response(
         repo_value
     };
     format!(
-        "status\nproject={project_value} runtime={runtime_value} repo={repo_value} state={state_value}\n",
+        "project={project_value} runtime={runtime_value} repo={repo_value}\n",
     )
 }
 
@@ -818,21 +813,8 @@ fn render_status_json(status: &tt_daemon::DaemonStatus, runtime_ready: bool) -> 
             .as_deref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<none>".to_string()),
-        "state": status
-            .project_state
-            .as_deref()
-            .map(title_case_status_value)
-            .unwrap_or_else(|| "Unknown".to_string()),
     }))
     .expect("serialize status")
-}
-
-fn title_case_status_value(value: &str) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 fn render_managed_project_plan(inspection: &tt_daemon::ManagedProjectInspection) -> String {
@@ -1938,7 +1920,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "status\nproject=Initialized runtime=Ready repo=/repo state=Attached (4/4)\n"
+            "project=Initialized runtime=Ready repo=/repo\n"
         );
     }
 
@@ -1960,7 +1942,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "status\nproject=Initialized runtime=Unreachable repo=/repo state=Attached (4/4)\n"
+            "project=Initialized runtime=Unreachable repo=/repo\n"
         );
     }
 
@@ -1978,7 +1960,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "status\nproject=Initialized runtime=Unreachable repo=/repo state=Attached (4/4)\n"
+            "project=Initialized runtime=Unreachable repo=/repo\n"
         );
     }
 
@@ -1999,7 +1981,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\",\n  \"state\": \"Scaffolded (0/4)\"\n}"
+            "{\n  \"project\": \"Initialized\",\n  \"repo\": \"/repo\",\n  \"runtime\": \"Unreachable\"\n}"
         );
     }
 
