@@ -1144,6 +1144,52 @@ fn render_managed_project_bootstrap(bootstrap: &tt_daemon::ManagedProjectBootstr
             bootstrap.project_config.pitfalls.join(" | ")
         ));
     }
+    output.push_str("\nStartup\n");
+    output.push_str("-------\n");
+    output.push_str(&format!(
+        "phase: {}\n",
+        match bootstrap.startup.phase {
+            tt_daemon::ManagedProjectStartupPhase::Scaffolded => "scaffolded",
+            tt_daemon::ManagedProjectStartupPhase::ThreadsStarted => "threads_started",
+            tt_daemon::ManagedProjectStartupPhase::WorkerReportsPending => {
+                "worker_reports_pending"
+            }
+            tt_daemon::ManagedProjectStartupPhase::DirectorAckPending => "director_ack_pending",
+            tt_daemon::ManagedProjectStartupPhase::Ready => "ready",
+            tt_daemon::ManagedProjectStartupPhase::Blocked => "blocked",
+        }
+    ));
+    output.push_str(&format!(
+        "updated_at: {}\n",
+        bootstrap.startup.updated_at.to_rfc3339()
+    ));
+    for role in ["dev", "test", "integration"] {
+        if let Some(report) = bootstrap.startup.worker_reports.get(role) {
+            output.push_str(&format!(
+                "{}: status={} turn={} summary={}\n",
+                role,
+                match report.status {
+                    tt_daemon::ManagedProjectStartupRoleStatus::NotStarted => "not_started",
+                    tt_daemon::ManagedProjectStartupRoleStatus::Pending => "pending",
+                    tt_daemon::ManagedProjectStartupRoleStatus::Reported => "reported",
+                    tt_daemon::ManagedProjectStartupRoleStatus::Blocked => "blocked",
+                },
+                report.turn_id.as_deref().unwrap_or("<none>"),
+                report.summary.as_deref().unwrap_or("<none>")
+            ));
+        }
+    }
+    if let Some(ack) = bootstrap.startup.director_ack.as_ref() {
+        output.push_str(&format!(
+            "director_ack: status={} turn={} summary={}\n",
+            match ack.status {
+                tt_daemon::ManagedProjectStartupAckStatus::Ready => "ready",
+                tt_daemon::ManagedProjectStartupAckStatus::Blocked => "blocked",
+            },
+            ack.turn_id.as_deref().unwrap_or("<none>"),
+            ack.summary
+        ));
+    }
     if let Some(scenario) = bootstrap.scenario.as_ref() {
         let progress_stream = bootstrap
             .repo_root
